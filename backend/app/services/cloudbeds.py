@@ -200,11 +200,61 @@ def sync_branch_revenue(
                 updated += 1
 
         db.commit()
+
+        # Fallback: reservations with no Room Revenue transactions → use
+        # balanceDetailed.subTotal from getReservation (accommodation-only, USALI).
+        null_res = db.query(Reservation).filter(
+            Reservation.branch_id == branch_id,
+            Reservation.check_in_date >= date_from,
+            Reservation.check_in_date <= date_to,
+            Reservation.grand_total_native == None,  # noqa: E711
+        ).all()
+
+        fallback_updated = 0
+        if null_res:
+            logger.info(
+                "Revenue fallback: %d NULL-revenue reservations — fetching subTotal from getReservation",
+                len(null_res),
+            )
+            with httpx.Client(timeout=30) as client:
+                for i, r in enumerate(null_res):
+                    try:
+                        resp = client.get(
+                            f"{CLOUDBEDS_BASE_URL}/getReservation",
+                            headers=_headers(api_key),
+                            params={"propertyID": property_id, "reservationID": r.cloudbeds_reservation_id},
+                        )
+                        resp.raise_for_status()
+                        detail = resp.json().get("data", {})
+                        sub_total = _safe_decimal(
+                            (detail.get("balanceDetailed") or {}).get("subTotal")
+                        )
+                        if sub_total is not None and sub_total > 0:
+                            r.grand_total_native = round(sub_total, 2)
+                            r.grand_total_vnd = (
+                                round(sub_total * rate, 2) if rate is not None else None
+                            )
+                            fallback_updated += 1
+                    except Exception as e:
+                        logger.warning("Fallback fetch failed res %s: %s", r.cloudbeds_reservation_id, e)
+
+                    # Commit every 50 rows to avoid large batch failures
+                    if (i + 1) % 50 == 0:
+                        db.commit()
+                        logger.info("Fallback progress: %d/%d", i + 1, len(null_res))
+
+            db.commit()
+            logger.info("Revenue fallback complete: %d reservations filled via subTotal", fallback_updated)
+
         logger.info(
-            "Revenue sync complete branch %s: %d reservations updated",
-            branch_id, updated,
+            "Revenue sync complete branch %s: %d from transactions + %d from fallback",
+            branch_id, updated, fallback_updated,
         )
-        return {"branch_id": branch_id, "revenue_reservations_updated": updated}
+        return {
+            "branch_id": branch_id,
+            "revenue_reservations_updated": updated,
+            "revenue_fallback_updated": fallback_updated,
+        }
 
     except Exception as exc:
         logger.error("Revenue sync failed for branch %s: %s", branch_id, exc)
