@@ -246,7 +246,8 @@ def sync_branch_revenue(
 
     today = date.today()
     if date_from is None:
-        date_from = today - timedelta(days=CHECKIN_LOOKBACK_DAYS)
+        # Default: first day of current month — past months already settled, skip them
+        date_from = today.replace(day=1)
     if date_to is None:
         date_to = today + timedelta(days=CHECKIN_FUTURE_DAYS)
 
@@ -300,94 +301,40 @@ def sync_branch_revenue(
                 break
             page += 1
 
-        # Update DB — new session per row to survive pgBouncer connection drops
+        # Update DB — raw SQL per row, commit every BATCH_SIZE rows to avoid
+        # pgBouncer executemany failures while keeping round-trips reasonable.
+        BATCH_SIZE = 20
         updated = 0
-        for cloudbeds_id, total_rev in revenue_map.items():
-            native = round(total_rev, 2)
-            vnd = round(total_rev * rate, 2) if rate is not None else None
-            now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        items = list(revenue_map.items())
+        for batch_start in range(0, len(items), BATCH_SIZE):
+            batch = items[batch_start: batch_start + BATCH_SIZE]
             _s = SessionLocal()
             try:
-                _s.execute(_text(
-                    "UPDATE reservations SET grand_total_native=:n, grand_total_vnd=:v, updated_at=:t "
-                    "WHERE cloudbeds_reservation_id=:cid"
-                ), {"n": native, "v": vnd, "t": now, "cid": str(cloudbeds_id)})
-                if cloudbeds_id in room_type_map:
-                    rt = room_type_map[cloudbeds_id]
-                    rt_cat = map_room_type_category(rt)
+                for cloudbeds_id, total_rev in batch:
+                    native = round(total_rev, 2)
+                    vnd = round(total_rev * rate, 2) if rate is not None else None
                     _s.execute(_text(
-                        "UPDATE reservations SET room_type=:rt, room_type_category=:rc "
-                        "WHERE cloudbeds_reservation_id=:cid AND room_type IS NULL"
-                    ), {"rt": rt, "rc": rt_cat, "cid": str(cloudbeds_id)})
+                        "UPDATE reservations SET grand_total_native=:n, grand_total_vnd=:v, updated_at=:t "
+                        "WHERE cloudbeds_reservation_id=:cid"
+                    ), {"n": native, "v": vnd, "t": now, "cid": str(cloudbeds_id)})
+                    if cloudbeds_id in room_type_map:
+                        rt = room_type_map[cloudbeds_id]
+                        _s.execute(_text(
+                            "UPDATE reservations SET room_type=:rt, room_type_category=:rc "
+                            "WHERE cloudbeds_reservation_id=:cid AND room_type IS NULL"
+                        ), {"rt": rt, "rc": map_room_type_category(rt), "cid": str(cloudbeds_id)})
+                    updated += 1
                 _s.commit()
-                updated += 1
             except Exception as e:
                 _s.rollback()
-                logger.warning("Revenue write failed res %s: %s", cloudbeds_id, e)
+                logger.warning("Revenue batch write failed at row %d: %s", batch_start, e)
             finally:
                 _s.close()
 
-        # Fallback: reservations with no Room Revenue transactions (e.g. OTA net-rate
-        # bookings where Cloudbeds doesn't create Room Revenue debits).
-        # Use balanceDetailed.subTotal - additionalItems = accommodation-only revenue.
-        null_res = db.query(Reservation).filter(
-            Reservation.branch_id == branch_id,
-            Reservation.check_in_date >= date_from,
-            Reservation.check_in_date <= date_to,
-            Reservation.grand_total_native == None,  # noqa: E711
-            Reservation.status.notin_(["cancelled", "canceled", "no_show", "noshow"]),
-        ).all()
-
         fallback_updated = 0
-        if null_res:
-            logger.info(
-                "Revenue fallback: %d NULL reservations — fetching accommodation revenue",
-                len(null_res),
-            )
-            # Phase 1: collect all revenue from API (no DB connection held during API calls)
-            fallback_map: dict[str, float] = {}  # res UUID str → accom revenue
-            with httpx.Client(timeout=30) as client:
-                for i, r in enumerate(null_res):
-                    res_id = str(r.id)
-                    cb_id = r.cloudbeds_reservation_id
-                    try:
-                        resp = client.get(
-                            f"{CLOUDBEDS_BASE_URL}/getReservation",
-                            headers=_headers(api_key),
-                            params={"propertyID": property_id, "reservationID": cb_id},
-                        )
-                        resp.raise_for_status()
-                        bd = (resp.json().get("data") or {}).get("balanceDetailed") or {}
-                        sub_total = _safe_decimal(bd.get("subTotal")) or 0.0
-                        additional = _safe_decimal(bd.get("additionalItems")) or 0.0
-                        accom = float(sub_total) - float(additional)
-                        if accom > 0:
-                            fallback_map[res_id] = accom
-                    except Exception as e:
-                        logger.warning("Fallback API failed res %s: %s", cb_id, e)
-                    if (i + 1) % 20 == 0:
-                        logger.info("Fallback API progress: %d/%d", i + 1, len(null_res))
-
-            # Phase 2: write to DB — new session per update to survive connection drops
-            for res_id, accom in fallback_map.items():
-                native = round(accom, 2)
-                vnd = round(accom * rate, 2) if rate is not None else None
-                now = datetime.now(timezone.utc)
-                _s = SessionLocal()
-                try:
-                    _s.execute(_text(
-                        "UPDATE reservations SET grand_total_native=:n, grand_total_vnd=:v, updated_at=:t "
-                        "WHERE id=CAST(:rid AS UUID)"
-                    ), {"n": native, "v": vnd, "t": now, "rid": res_id})
-                    _s.commit()
-                    fallback_updated += 1
-                except Exception as e:
-                    _s.rollback()
-                    logger.warning("Fallback DB write failed res %s: %s", res_id, e)
-                finally:
-                    _s.close()
-
-            logger.info("Fallback complete: %d/%d reservations filled", fallback_updated, len(fallback_map))
+        # Cloudbeds bulk getReservations returns lite payload (no accommodation total).
+        # For NULL reservations, use backfill_accommodation_total() as a one-time job.
 
         logger.info(
             "Revenue sync complete branch %s: %d from transactions + %d from fallback",
@@ -404,6 +351,92 @@ def sync_branch_revenue(
         raise
     finally:
         db.close()
+
+
+def backfill_accommodation_total(
+    branch_id: str,
+    property_id: str,
+    currency: str,
+    api_key: str,
+    checkin_from: Optional[date] = None,
+    checkin_to: Optional[date] = None,
+    limit: Optional[int] = None,
+) -> dict:
+    """
+    One-time backfill: for reservations with NULL grand_total_native, call
+    getReservation individually and store balanceDetailed.subTotal (accommodation only).
+    Slow (~1s/call) — run once, not in the daily sync loop.
+    """
+    today = date.today()
+    df = checkin_from or today.replace(day=1)
+    dt = checkin_to or (today + timedelta(days=CHECKIN_FUTURE_DAYS))
+
+    db = SessionLocal()
+    query = db.query(Reservation).filter(
+        Reservation.branch_id == branch_id,
+        Reservation.check_in_date >= df,
+        Reservation.check_in_date <= dt,
+        Reservation.grand_total_native == None,  # noqa: E711
+        Reservation.status.notin_(["cancelled", "canceled", "no_show", "noshow"]),
+    )
+    if limit:
+        query = query.limit(limit)
+    null_res = query.all()
+    db.close()
+
+    rate = get_cached_rate(currency, "VND")
+    total_fetched = filled = 0
+    now = datetime.now(timezone.utc)
+    BATCH_SIZE = 20
+
+    logger.info("Backfill: %d NULL reservations for branch %s", len(null_res), branch_id)
+
+    with httpx.Client(timeout=30) as client:
+        batch_buf: list[tuple[str, float]] = []
+        for i, r in enumerate(null_res):
+            try:
+                resp = client.get(
+                    f"{CLOUDBEDS_BASE_URL}/getReservation",
+                    headers=_headers(api_key),
+                    params={"propertyID": property_id, "reservationID": r.cloudbeds_reservation_id},
+                )
+                resp.raise_for_status()
+                bd = (resp.json().get("data") or {}).get("balanceDetailed") or {}
+                sub = float(_safe_decimal(bd.get("subTotal")) or 0)
+                extra = float(_safe_decimal(bd.get("additionalItems")) or 0)
+                accom = sub - extra
+                if accom > 0:
+                    batch_buf.append((r.cloudbeds_reservation_id, accom))
+                total_fetched += 1
+            except Exception as e:
+                logger.warning("Backfill fetch failed res %s: %s", r.cloudbeds_reservation_id, e)
+
+            # Flush batch every BATCH_SIZE rows
+            if len(batch_buf) >= BATCH_SIZE or (i == len(null_res) - 1 and batch_buf):
+                _s = SessionLocal()
+                try:
+                    for cb_id, accom in batch_buf:
+                        native = round(accom, 2)
+                        vnd = round(accom * rate, 2) if rate else None
+                        result = _s.execute(_text(
+                            "UPDATE reservations SET grand_total_native=:n, grand_total_vnd=:v, updated_at=:t "
+                            "WHERE cloudbeds_reservation_id=:cid AND grand_total_native IS NULL"
+                        ), {"n": native, "v": vnd, "t": now, "cid": cb_id})
+                        if result.rowcount:
+                            filled += 1
+                    _s.commit()
+                except Exception as e:
+                    _s.rollback()
+                    logger.warning("Backfill batch write failed: %s", e)
+                finally:
+                    _s.close()
+                batch_buf.clear()
+
+            if (i + 1) % 50 == 0:
+                logger.info("Backfill progress: %d/%d fetched, %d filled", i + 1, len(null_res), filled)
+
+    logger.info("Backfill complete branch %s: %d fetched, %d filled", branch_id, total_fetched, filled)
+    return {"branch_id": branch_id, "fetched": total_fetched, "filled": filled}
 
 
 def _fetch_reservations_page(
