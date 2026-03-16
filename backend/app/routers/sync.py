@@ -12,7 +12,7 @@ from app.models.branch import Branch
 from app.models.reservation import Reservation
 from pathlib import Path
 
-from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, fetch_total_rooms
+from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms
 from app.services.ingest_csv import import_all_csvs, import_csv_file, CSV_CONFIGS
 from app.services import meta_ads as meta_service
 from app.services import angle_classifier
@@ -67,6 +67,52 @@ def trigger_revenue_sync(payload: SyncRequest = SyncRequest(), db: Session = Dep
             continue
         try:
             result = sync_branch_revenue(str(branch.id), str(pid), branch.currency or "VND", api_key=api_key)
+            result["branch"] = branch.name
+            results.append(result)
+        except Exception as exc:
+            results.append({"branch": branch.name, "error": str(exc)})
+
+    return _envelope({"synced_branches": results})
+
+
+@router.post("/daily-revenue")
+def trigger_daily_revenue_sync(
+    branch_id: Optional[UUID] = Query(None),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD, defaults to start of current month"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD, defaults to today"),
+    db: Session = Depends(get_db),
+):
+    """
+    Sync revenue directly from Cloudbeds transaction dates into daily_metrics.
+    Uses getTransactions filtered by TRANSACTION DATE (= the night the charge was posted).
+    Each stay-night already has its own Room Revenue transaction — no proration needed.
+    Matches Cloudbeds OCC report exactly. Much simpler than reservation-based approach.
+    """
+    from datetime import date, timedelta
+    from app.config import settings
+
+    today = date.today()
+    df = date.fromisoformat(date_from) if date_from else today.replace(day=1)
+    dt = date.fromisoformat(date_to) if date_to else today
+
+    branches_q = db.query(Branch).filter_by(is_active=True)
+    if branch_id:
+        branches_q = branches_q.filter(Branch.id == branch_id)
+    branches = branches_q.all()
+
+    results = []
+    for branch in branches:
+        pid = branch.cloudbeds_property_id
+        if not pid:
+            results.append({"branch": branch.name, "error": "no property_id"})
+            continue
+        api_key = settings.get_api_key_for_property(str(pid))
+        if not api_key:
+            results.append({"branch": branch.name, "error": f"no api_key for property {pid}"})
+            continue
+        try:
+            result = sync_daily_revenue(str(branch.id), str(pid), branch.currency or "VND",
+                                        api_key=api_key, date_from=df, date_to=dt)
             result["branch"] = branch.name
             results.append(result)
         except Exception as exc:

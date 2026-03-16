@@ -1,8 +1,9 @@
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
+from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -85,10 +86,7 @@ def _fetch_transactions_page(
     checkin_from: Optional[date] = None,
     checkin_to: Optional[date] = None,
 ) -> dict:
-    """Fetch a page of transactions from Cloudbeds getTransactions.
-    Note: the 'category' API filter is non-functional (returns all categories
-    regardless). We filter client-side to Room Revenue debits only.
-    """
+    """Fetch transactions filtered by guest check-in date (for reservation revenue sync)."""
     params: dict = {
         "propertyID": property_id,
         "pageNumber": page,
@@ -106,6 +104,126 @@ def _fetch_transactions_page(
         )
         response.raise_for_status()
         return response.json()
+
+
+def _fetch_transactions_by_date_page(
+    property_id: str,
+    page: int,
+    api_key: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> dict:
+    """Fetch transactions filtered by TRANSACTION DATE (the night the charge was posted).
+    Each night of a multi-night stay has its own Room Revenue transaction on that date.
+    This naturally produces per-night revenue without any proration math.
+    Matches the Cloudbeds OCC report methodology exactly.
+    """
+    params: dict = {
+        "propertyID": property_id,
+        "pageNumber": page,
+        "pageSize": PAGE_SIZE,
+    }
+    if date_from:
+        params["date[gte]"] = date_from.isoformat()
+    if date_to:
+        params["date[lte]"] = date_to.isoformat()
+    with httpx.Client(timeout=60) as client:
+        response = client.get(
+            f"{CLOUDBEDS_BASE_URL}/getTransactions",
+            headers=_headers(api_key),
+            params=params,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+def sync_daily_revenue(
+    branch_id: str,
+    property_id: str,
+    currency: str,
+    api_key: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> dict:
+    """
+    Sync daily revenue directly from Cloudbeds transaction dates into daily_metrics.
+
+    Fetches all Room Revenue debit transactions filtered by TRANSACTION DATE
+    (= the actual night the room charge was posted). Groups by date and writes
+    revenue_native / revenue_vnd into daily_metrics rows.
+
+    This matches the Cloudbeds OCC report exactly — no per-night proration needed
+    since each stay-night already has its own transaction. Also handles stayovers
+    automatically (Feb check-in → March transactions appear in March naturally).
+    No per-reservation API calls, no fallback logic needed.
+    """
+    today = date.today()
+    if date_from is None:
+        date_from = today.replace(day=1)  # start of current month
+    if date_to is None:
+        date_to = today
+
+    rate = get_cached_rate(currency, "VND")
+    daily_rev: dict[date, float] = {}  # date → sum of Room Revenue debits
+
+    logger.info(
+        "Daily revenue sync branch %s property %s [%s → %s]",
+        branch_id, property_id, date_from, date_to,
+    )
+
+    page = 1
+    while True:
+        data = _fetch_transactions_by_date_page(
+            property_id, page, api_key,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        records = data.get("data", [])
+        total_count = data.get("total", 0)
+
+        for txn in records:
+            is_room_revenue = (
+                txn.get("category") == "Room Revenue"
+                and txn.get("transactionType") == "debit"
+                and not txn.get("isDeleted", False)
+            )
+            if not is_room_revenue:
+                continue
+            txn_date_str = txn.get("serviceDate") or txn.get("transactionDateTime") or ""
+            try:
+                txn_date = date.fromisoformat(txn_date_str[:10])
+            except (ValueError, TypeError):
+                continue
+            amount = float(_safe_decimal(txn.get("amount")) or 0)
+            daily_rev[txn_date] = daily_rev.get(txn_date, 0.0) + amount
+
+        logger.info("Daily rev page %d/%d — %d txns, %d dates so far",
+                    page, (total_count // PAGE_SIZE) + 1, len(records), len(daily_rev))
+        if (page - 1) * PAGE_SIZE + len(records) >= total_count or not records:
+            break
+        page += 1
+
+    # Write to daily_metrics — one raw SQL UPDATE per date
+    updated = 0
+    for d, rev in daily_rev.items():
+        rev_vnd = round(rev * rate, 2) if rate is not None else None
+        _s = SessionLocal()
+        try:
+            _s.execute(_text(
+                "UPDATE daily_metrics "
+                "SET revenue_native=:n, revenue_vnd=:v, computed_at=NOW() "
+                "WHERE branch_id=CAST(:bid AS UUID) AND date=:d"
+            ), {"n": round(rev, 2), "v": rev_vnd, "bid": branch_id, "d": d})
+            _s.commit()
+            updated += 1
+        except Exception as e:
+            _s.rollback()
+            logger.warning("Daily rev write failed date %s: %s", d, e)
+        finally:
+            _s.close()
+
+    logger.info("Daily revenue sync complete branch %s: %d dates updated", branch_id, updated)
+    return {"branch_id": branch_id, "dates_updated": updated, "date_from": str(date_from), "date_to": str(date_to)}
 
 
 def sync_branch_revenue(
@@ -182,69 +300,94 @@ def sync_branch_revenue(
                 break
             page += 1
 
-        # Update DB
+        # Update DB — new session per row to survive pgBouncer connection drops
         updated = 0
         for cloudbeds_id, total_rev in revenue_map.items():
-            r = db.query(Reservation).filter_by(
-                cloudbeds_reservation_id=cloudbeds_id
-            ).first()
-            if r:
-                r.grand_total_native = round(total_rev, 2)
-                r.grand_total_vnd = (
-                    round(total_rev * rate, 2)
-                    if rate is not None else None
-                )
-                if cloudbeds_id in room_type_map and r.room_type is None:
-                    r.room_type = room_type_map[cloudbeds_id]
-                    r.room_type_category = map_room_type_category(room_type_map[cloudbeds_id])
+            native = round(total_rev, 2)
+            vnd = round(total_rev * rate, 2) if rate is not None else None
+            now = datetime.now(timezone.utc)
+            _s = SessionLocal()
+            try:
+                _s.execute(_text(
+                    "UPDATE reservations SET grand_total_native=:n, grand_total_vnd=:v, updated_at=:t "
+                    "WHERE cloudbeds_reservation_id=:cid"
+                ), {"n": native, "v": vnd, "t": now, "cid": str(cloudbeds_id)})
+                if cloudbeds_id in room_type_map:
+                    rt = room_type_map[cloudbeds_id]
+                    rt_cat = map_room_type_category(rt)
+                    _s.execute(_text(
+                        "UPDATE reservations SET room_type=:rt, room_type_category=:rc "
+                        "WHERE cloudbeds_reservation_id=:cid AND room_type IS NULL"
+                    ), {"rt": rt, "rc": rt_cat, "cid": str(cloudbeds_id)})
+                _s.commit()
                 updated += 1
+            except Exception as e:
+                _s.rollback()
+                logger.warning("Revenue write failed res %s: %s", cloudbeds_id, e)
+            finally:
+                _s.close()
 
-        db.commit()
-
-        # Fallback: reservations with no Room Revenue transactions → use
-        # balanceDetailed.subTotal from getReservation (accommodation-only, USALI).
+        # Fallback: reservations with no Room Revenue transactions (e.g. OTA net-rate
+        # bookings where Cloudbeds doesn't create Room Revenue debits).
+        # Use balanceDetailed.subTotal - additionalItems = accommodation-only revenue.
         null_res = db.query(Reservation).filter(
             Reservation.branch_id == branch_id,
             Reservation.check_in_date >= date_from,
             Reservation.check_in_date <= date_to,
             Reservation.grand_total_native == None,  # noqa: E711
+            Reservation.status.notin_(["cancelled", "canceled", "no_show", "noshow"]),
         ).all()
 
         fallback_updated = 0
         if null_res:
             logger.info(
-                "Revenue fallback: %d NULL-revenue reservations — fetching subTotal from getReservation",
+                "Revenue fallback: %d NULL reservations — fetching accommodation revenue",
                 len(null_res),
             )
+            # Phase 1: collect all revenue from API (no DB connection held during API calls)
+            fallback_map: dict[str, float] = {}  # res UUID str → accom revenue
             with httpx.Client(timeout=30) as client:
                 for i, r in enumerate(null_res):
+                    res_id = str(r.id)
+                    cb_id = r.cloudbeds_reservation_id
                     try:
                         resp = client.get(
                             f"{CLOUDBEDS_BASE_URL}/getReservation",
                             headers=_headers(api_key),
-                            params={"propertyID": property_id, "reservationID": r.cloudbeds_reservation_id},
+                            params={"propertyID": property_id, "reservationID": cb_id},
                         )
                         resp.raise_for_status()
-                        detail = resp.json().get("data", {})
-                        sub_total = _safe_decimal(
-                            (detail.get("balanceDetailed") or {}).get("subTotal")
-                        )
-                        if sub_total is not None and sub_total > 0:
-                            r.grand_total_native = round(sub_total, 2)
-                            r.grand_total_vnd = (
-                                round(sub_total * rate, 2) if rate is not None else None
-                            )
-                            fallback_updated += 1
+                        bd = (resp.json().get("data") or {}).get("balanceDetailed") or {}
+                        sub_total = _safe_decimal(bd.get("subTotal")) or 0.0
+                        additional = _safe_decimal(bd.get("additionalItems")) or 0.0
+                        accom = float(sub_total) - float(additional)
+                        if accom > 0:
+                            fallback_map[res_id] = accom
                     except Exception as e:
-                        logger.warning("Fallback fetch failed res %s: %s", r.cloudbeds_reservation_id, e)
+                        logger.warning("Fallback API failed res %s: %s", cb_id, e)
+                    if (i + 1) % 20 == 0:
+                        logger.info("Fallback API progress: %d/%d", i + 1, len(null_res))
 
-                    # Commit every 50 rows to avoid large batch failures
-                    if (i + 1) % 50 == 0:
-                        db.commit()
-                        logger.info("Fallback progress: %d/%d", i + 1, len(null_res))
+            # Phase 2: write to DB — new session per update to survive connection drops
+            for res_id, accom in fallback_map.items():
+                native = round(accom, 2)
+                vnd = round(accom * rate, 2) if rate is not None else None
+                now = datetime.now(timezone.utc)
+                _s = SessionLocal()
+                try:
+                    _s.execute(_text(
+                        "UPDATE reservations SET grand_total_native=:n, grand_total_vnd=:v, updated_at=:t "
+                        "WHERE id=CAST(:rid AS UUID)"
+                    ), {"n": native, "v": vnd, "t": now, "rid": res_id})
+                    _s.commit()
+                    fallback_updated += 1
+                except Exception as e:
+                    _s.rollback()
+                    logger.warning("Fallback DB write failed res %s: %s", res_id, e)
+                finally:
+                    _s.close()
 
-            db.commit()
-            logger.info("Revenue fallback complete: %d reservations filled via subTotal", fallback_updated)
+            logger.info("Fallback complete: %d/%d reservations filled", fallback_updated, len(fallback_map))
 
         logger.info(
             "Revenue sync complete branch %s: %d from transactions + %d from fallback",

@@ -50,7 +50,7 @@ function AllBranchesTable({ data, loading }) {
             <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide text-left">
               <th className="px-5 py-3">Branch</th>
               <th className="px-4 py-3">Currency</th>
-              <th className="px-4 py-3 text-right">Revenue MTD</th>
+              <th className="px-4 py-3 text-right">Revenue</th>
               <th className="px-4 py-3 text-right">Target</th>
               <th className="px-4 py-3 text-center">KPI %</th>
               <th className="px-4 py-3 text-center">Forecast (this month)</th>
@@ -144,7 +144,7 @@ function SingleBranchView({ branch }) {
       )}
       {kpi && (
         <KPICard
-          label={branch.name + " — Revenue MTD"}
+          label={branch.name + " — Revenue"}
           actual={kpi.actual_revenue_native}
           target={kpi.target_revenue_native}
           currency={branch.currency || branch.native_currency}

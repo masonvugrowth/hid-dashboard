@@ -327,8 +327,9 @@ def weekly_report(db: Session = Depends(get_db)):
 
 
 @router.post("/send-weekly")
-def send_weekly_email(db: Session = Depends(get_db)):
-    """Generate and send weekly HTML email via Gmail SMTP."""
+def send_weekly_email(to: Optional[str] = None, db: Session = Depends(get_db)):
+    """Generate and send weekly HTML email via Gmail SMTP.
+    Pass ?to=email@example.com to override recipients (useful for testing)."""
     gmail_user = getattr(settings, "GMAIL_USER", "") or ""
     gmail_pass = getattr(settings, "GMAIL_APP_PASSWORD", "") or ""
     recipients_raw = getattr(settings, "EMAIL_RECIPIENTS", "") or ""
@@ -339,7 +340,10 @@ def send_weekly_email(db: Session = Depends(get_db)):
             detail="GMAIL_USER and GMAIL_APP_PASSWORD not configured in .env"
         )
 
-    recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
+    if to:
+        recipients = [t.strip() for t in to.split(",") if t.strip()]
+    else:
+        recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
     if not recipients:
         raise HTTPException(status_code=500, detail="EMAIL_RECIPIENTS not configured in .env")
 

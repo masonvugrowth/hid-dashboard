@@ -91,9 +91,9 @@ export default function Report() {
           </div>
 
           <div className="p-5 space-y-5">
-            {/* Revenue MTD */}
+            {/* Revenue */}
             <div>
-              <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-2">Revenue MTD</p>
+              <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-2">Revenue</p>
               <div className="flex items-end gap-3">
                 <p className="text-2xl font-bold text-gray-800">{fmt(b.mtd_revenue, b.currency)}</p>
                 {b.target_revenue != null && (
