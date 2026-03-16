@@ -67,24 +67,43 @@ def _revenue_query(db: Session, branch_id: UUID, year: int, month: int):
 
 def get_actual_revenue(db: Session, branch_id: UUID, year: int, month: int) -> float:
     """
-    Sum grand_total_native for all check-ins in the given month.
-    Includes future bookings already made. Excludes internal sources.
+    MTD revenue using daily_metrics (per-night prorated) — matches Cloudbeds Occupancy Report.
+    Each night's revenue = grand_total_native / nights, so a booking spanning two months
+    only contributes its nights in this month (e.g. 10-night stay starting Mar 28:
+    contributes 4/10 of its value to March, 6/10 to April).
+    For current month: sums up to today. For past/future months: sums all days.
     """
-    result = (
-        _revenue_query(db, branch_id, year, month)
-        .with_entities(func.coalesce(func.sum(Reservation.grand_total_native), 0))
-        .scalar()
-    )
+    today = _today()
+    first_day = date(year, month, 1)
+    last_day = date(year, month, _days_in_month(year, month))
+    if today.year == year and today.month == month:
+        last_day = min(last_day, today)
+
+    result = db.query(
+        func.coalesce(func.sum(DailyMetrics.revenue_native), 0)
+    ).filter(
+        DailyMetrics.branch_id == branch_id,
+        DailyMetrics.date >= first_day,
+        DailyMetrics.date <= last_day,
+    ).scalar()
     return float(result or 0)
 
 
 def get_actual_revenue_vnd(db: Session, branch_id: UUID, year: int, month: int) -> float:
-    """Sum grand_total_vnd for all check-ins in the given month."""
-    result = (
-        _revenue_query(db, branch_id, year, month)
-        .with_entities(func.coalesce(func.sum(Reservation.grand_total_vnd), 0))
-        .scalar()
-    )
+    """MTD revenue in VND using daily_metrics (per-night prorated)."""
+    today = _today()
+    first_day = date(year, month, 1)
+    last_day = date(year, month, _days_in_month(year, month))
+    if today.year == year and today.month == month:
+        last_day = min(last_day, today)
+
+    result = db.query(
+        func.coalesce(func.sum(DailyMetrics.revenue_vnd), 0)
+    ).filter(
+        DailyMetrics.branch_id == branch_id,
+        DailyMetrics.date >= first_day,
+        DailyMetrics.date <= last_day,
+    ).scalar()
     return float(result or 0)
 
 
