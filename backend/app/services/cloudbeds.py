@@ -85,12 +85,14 @@ def _fetch_transactions_page(
     checkin_from: Optional[date] = None,
     checkin_to: Optional[date] = None,
 ) -> dict:
-    """Fetch a page of Accommodation transactions from Cloudbeds getTransactions."""
+    """Fetch a page of transactions from Cloudbeds getTransactions.
+    Note: the 'category' API filter is non-functional (returns all categories
+    regardless). We filter client-side to Room Revenue debits only.
+    """
     params: dict = {
         "propertyID": property_id,
         "pageNumber": page,
         "pageSize": PAGE_SIZE,
-        "category": "Accommodation",
     }
     if checkin_from:
         params["guestCheckIn[gte]"] = checkin_from.isoformat()
@@ -155,8 +157,16 @@ def sync_branch_revenue(
 
             for txn in records:
                 res_id = str(txn.get("reservationID", ""))
-                amount = _safe_decimal(txn.get("amount")) or 0.0
-                if not txn.get("isDeleted", False):
+                # USALI Room Revenue: only "Room Revenue" debit transactions.
+                # Excludes OTA credits (Booking.com, Expedia, etc.), cash/CC payments,
+                # Items & Services, cancellation fees, and taxes — per USALI standards.
+                is_room_revenue = (
+                    txn.get("category") == "Room Revenue"
+                    and txn.get("transactionType") == "debit"
+                    and not txn.get("isDeleted", False)
+                )
+                if is_room_revenue:
+                    amount = _safe_decimal(txn.get("amount")) or 0.0
                     revenue_map[res_id] = revenue_map.get(res_id, 0.0) + amount
                 rt = txn.get("roomTypeName")
                 if rt and res_id not in room_type_map:
