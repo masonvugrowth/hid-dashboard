@@ -67,17 +67,13 @@ def _revenue_query(db: Session, branch_id: UUID, year: int, month: int):
 
 def get_actual_revenue(db: Session, branch_id: UUID, year: int, month: int) -> float:
     """
-    MTD revenue using daily_metrics (per-night prorated) — matches Cloudbeds Occupancy Report.
-    Each night's revenue = grand_total_native / nights, so a booking spanning two months
-    only contributes its nights in this month (e.g. 10-night stay starting Mar 28:
-    contributes 4/10 of its value to March, 6/10 to April).
-    For current month: sums up to today. For past/future months: sums all days.
+    Full-month revenue using daily_metrics (per-night prorated).
+    Covers all days in the month — including future days already in DB
+    from upcoming confirmed reservations — so current month shows the
+    full-month total, not just MTD.
     """
-    today = _today()
     first_day = date(year, month, 1)
     last_day = date(year, month, _days_in_month(year, month))
-    if today.year == year and today.month == month:
-        last_day = min(last_day, today)
 
     result = db.query(
         func.coalesce(func.sum(DailyMetrics.revenue_native), 0)
@@ -90,12 +86,9 @@ def get_actual_revenue(db: Session, branch_id: UUID, year: int, month: int) -> f
 
 
 def get_actual_revenue_vnd(db: Session, branch_id: UUID, year: int, month: int) -> float:
-    """MTD revenue in VND using daily_metrics (per-night prorated)."""
-    today = _today()
+    """Full-month revenue in VND using daily_metrics (per-night prorated)."""
     first_day = date(year, month, 1)
     last_day = date(year, month, _days_in_month(year, month))
-    if today.year == year and today.month == month:
-        last_day = min(last_day, today)
 
     result = db.query(
         func.coalesce(func.sum(DailyMetrics.revenue_vnd), 0)
