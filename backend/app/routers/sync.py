@@ -40,12 +40,21 @@ def _envelope(data):
 
 
 @router.post("/revenue")
-def trigger_revenue_sync(payload: SyncRequest = SyncRequest(), db: Session = Depends(get_db)):
+def trigger_revenue_sync(
+    payload: SyncRequest = SyncRequest(),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD, defaults to start of current month"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD, defaults to today + 60 days"),
+    db: Session = Depends(get_db),
+):
     """
     Sync accommodation revenue via getTransactions.
     Faster than getReservation singular — pulls bulk Accommodation transactions
     and updates grand_total_native for matching reservations.
     """
+    from datetime import date
+    df = date.fromisoformat(date_from) if date_from else None
+    dt = date.fromisoformat(date_to) if date_to else None
+
     branches = []
     if payload.branch_id:
         b = db.query(Branch).filter_by(id=payload.branch_id, is_active=True).first()
@@ -66,7 +75,8 @@ def trigger_revenue_sync(payload: SyncRequest = SyncRequest(), db: Session = Dep
             results.append({"branch": branch.name, "error": f"no api_key for property {pid}"})
             continue
         try:
-            result = sync_branch_revenue(str(branch.id), str(pid), branch.currency or "VND", api_key=api_key)
+            result = sync_branch_revenue(str(branch.id), str(pid), branch.currency or "VND",
+                                         api_key=api_key, date_from=df, date_to=dt)
             result["branch"] = branch.name
             results.append(result)
         except Exception as exc:
