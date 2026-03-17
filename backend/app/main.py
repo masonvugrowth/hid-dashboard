@@ -74,7 +74,11 @@ def _patch_branch_currencies():
     finally:
         db.close()
 
-_patch_branch_currencies()
+@app.on_event("startup")
+async def _startup():
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _patch_branch_currencies)
 
 
 @app.get("/health")
