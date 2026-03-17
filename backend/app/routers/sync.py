@@ -563,12 +563,16 @@ def _get_meta_creds(branch: Branch) -> tuple[str, str]:
 @router.post("/meta")
 def trigger_meta_sync(
     branch_id: UUID = Query(...),
-    date_preset: str = Query("last_30d"),
+    date_preset: str = Query("last_30d", description="Meta date preset (ignored if date_from/date_to set)"),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD custom range start"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD custom range end (default: today)"),
     classify_angles: bool = Query(True),
     db: Session = Depends(get_db),
 ):
     """Pull Meta Ads data for one branch. Upserts ads_performance rows.
 
+    Use date_from/date_to for a custom range (e.g. from March 1 onwards).
+    If omitted, falls back to date_preset (default: last_30d).
     If classify_angles=True and ANTHROPIC_API_KEY is set, Claude Haiku will
     classify hook_type + keypoints for each ad with a creative body.
     """
@@ -586,7 +590,8 @@ def trigger_meta_sync(
 
     # Pull from Meta API
     try:
-        ads = meta_service.sync_ads(token, account_id, date_preset)
+        ads = meta_service.sync_ads(token, account_id, date_preset,
+                                    date_from=date_from, date_to=date_to)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Meta API error: {exc}")
 

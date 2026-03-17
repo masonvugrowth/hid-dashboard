@@ -84,26 +84,43 @@ def parse_campaign_name(name: str) -> dict:
     return {"funnel": funnel, "ta": ta, "country": country, "pic": pic}
 
 
-def sync_ads(token: str, account_id: str, date_preset: str = "last_30d") -> list[dict]:
-    """Return list of ad-level dicts with insights (no ad copy — Meta API doesn't return revenue per ad)."""
+def sync_ads(
+    token: str,
+    account_id: str,
+    date_preset: str = "last_30d",
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict]:
+    """Return list of ad-level dicts with insights.
+    If date_from/date_to provided, uses time_range instead of date_preset.
+    """
+    import json
 
     # ── 1. Fetch all ads (name only — no creative body) ────────────────────
-    # Note: date_preset is not supported on /ads — fetch all ads, filter via insights
     ads_raw = _paginate(token, f"{account_id}/ads", {
         "fields": "id,name,campaign_id,adset_id,status",
         "limit": 200,
     })
     ad_map = {a["id"]: a for a in ads_raw}
 
-    # ── 2. Fetch ad-level insights ─────────────────────────────────────────
-    insights_raw = _paginate(token, f"{account_id}/insights", {
+    # ── 2. Build date filter ───────────────────────────────────────────────
+    insight_params: dict = {
         "fields": "ad_id,campaign_id,campaign_name,adset_name,spend,impressions,clicks,actions",
-        "date_preset": date_preset,
         "level": "ad",
         "limit": 200,
-    })
+    }
+    if date_from or date_to:
+        from datetime import date
+        since = date_from or date.today().replace(day=1).isoformat()
+        until = date_to or date.today().isoformat()
+        insight_params["time_range"] = json.dumps({"since": since, "until": until})
+    else:
+        insight_params["date_preset"] = date_preset
 
-    # ── 3. Merge ───────────────────────────────────────────────────────────
+    # ── 3. Fetch ad-level insights ─────────────────────────────────────────
+    insights_raw = _paginate(token, f"{account_id}/insights", insight_params)
+
+    # ── 4. Merge ───────────────────────────────────────────────────────────
     results = []
     for ins in insights_raw:
         ad_id = ins.get("ad_id", "")
