@@ -1,140 +1,276 @@
 /**
- * OTA Channel Mix — detailed OTA vs Direct + source breakdown
+ * OTA Channel Mix — Cancel Rate & Check-in Rate pivot table
+ * Same format as Channel Mix: channels × periods, two section blocks
  */
 import { useEffect, useState } from "react";
 import axios from "axios";
-import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
 import { useBranch } from "../context/BranchContext";
 
-const COLORS = ["#6366f1","#10b981","#f59e0b","#ef4444","#3b82f6","#8b5cf6","#ec4899"];
+// ── helpers ──────────────────────────────────────────────────────────────────
+function pct(v, decimals = 2) {
+  if (v === null || v === undefined) return null;
+  return `${(v * 100).toFixed(decimals)}%`;
+}
 
+// Cancel rate: >25% red, 10-25% amber, 0-10% green  (matches OTA ranking rule)
+function cancelBg(rate) {
+  if (rate === null) return {};
+  if (rate > 0.25) return { backgroundColor: "#fca5a5" };   // red-300
+  if (rate > 0.10) return { backgroundColor: "#fde68a" };   // amber-200
+  return { backgroundColor: "#bbf7d0" };                    // green-200
+}
+
+function cancelTextColor(rate) {
+  if (rate === null) return "text-gray-400";
+  if (rate > 0.25) return "text-red-800 font-semibold";
+  if (rate > 0.10) return "text-amber-800";
+  return "text-green-800";
+}
+
+// Check-in share: intensity gradient (higher share = greener)
+function checkinBg(rate) {
+  if (rate === null) return {};
+  const t = Math.min(Math.max(rate / 0.5, 0), 1); // cap at 50% share
+  const r = Math.round(220 - t * 85);
+  const g = Math.round(200 + t * 47);
+  const b = Math.round(220 - t * 75);
+  return { backgroundColor: `rgb(${r},${g},${b})` };
+}
+
+// ── main component ────────────────────────────────────────────────────────────
 export default function PerformanceOTA() {
   const { selected, isAll } = useBranch();
-  const today = new Date().toISOString().slice(0, 10);
-  const [dateFrom, setDateFrom] = useState(() => {
-    const d = new Date(); d.setDate(d.getDate() - 29);
-    return d.toISOString().slice(0, 10);
-  });
-  const [dateTo,   setDateTo]   = useState(today);
-  const [mix,      setMix]      = useState([]);
-  const [loading,  setLoading]  = useState(true);
+  const [mode,    setMode]    = useState("daily");
+  const [data,    setData]    = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
 
   useEffect(() => {
     setLoading(true);
-    const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
-    axios.get(`/api/metrics/ota-mix?date_from=${dateFrom}&date_to=${dateTo}${bParam}`)
-      .then((r) => setMix(r.data.data || []))
+    axios.get(`/api/metrics/rates-trend?mode=${mode}${bParam}`)
+      .then(r => setData(r.data.data))
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [dateFrom, dateTo, selected, isAll]);
-
-  const totalCount   = mix.reduce((s, m) => s + m.count, 0);
-  const totalRevenue = mix.reduce((s, m) => s + m.revenue_native, 0);
+  }, [mode, selected, isAll]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-800">OTA Channel Mix</h1>
-          <p className="text-sm text-gray-500">Booking source breakdown</p>
+          <p className="text-sm text-gray-500">Cancellation &amp; check-in rate by booking source</p>
         </div>
-        <div className="flex gap-2 items-center text-sm">
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
-            className="border border-gray-200 rounded-lg px-3 py-1.5" />
-          <span className="text-gray-400">→</span>
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
-            className="border border-gray-200 rounded-lg px-3 py-1.5" />
+
+        {/* Mode selector */}
+        <div className="flex gap-2">
+          {[
+            ["daily",   "Daily (7 days)"],
+            ["weekly",  "Weekly (7 weeks)"],
+            ["monthly", "Monthly (3 months)"],
+          ].map(([k, label]) => (
+            <button key={k} onClick={() => setMode(k)}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                mode === k
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "bg-white border border-gray-200 text-gray-600 hover:border-indigo-300"
+              }`}>
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {loading ? (
-        <div className="text-gray-400 animate-pulse">Loading…</div>
-      ) : mix.length === 0 ? (
+      {loading || !data ? (
+        <div className="text-gray-400 animate-pulse py-12 text-center">Loading…</div>
+      ) : data.channels.length === 0 ? (
         <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No data for this period.</div>
       ) : (
-        <>
-          {/* Summary cards */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm text-center">
-              <p className="text-xs text-gray-400 uppercase">Total Bookings</p>
-              <p className="text-2xl font-bold text-gray-800 mt-1">{totalCount.toLocaleString()}</p>
-            </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm text-center">
-              <p className="text-xs text-gray-400 uppercase">Total Revenue</p>
-              <p className="text-2xl font-bold text-gray-800 mt-1">
-                {new Intl.NumberFormat("vi-VN").format(Math.round(totalRevenue))}
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Pie by count */}
-            <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-              <p className="text-sm font-semibold text-gray-700 mb-3">By Booking Count</p>
-              <ResponsiveContainer width="100%" height={220}>
-                <PieChart>
-                  <Pie data={mix} dataKey="count" nameKey="category"
-                    cx="50%" cy="50%" outerRadius={80}
-                    label={({ category, count_pct }) => `${category} ${(count_pct*100).toFixed(0)}%`}
-                    labelLine={false}>
-                    {mix.map((_, i) => <Cell key={i} fill={COLORS[i%COLORS.length]} />)}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-
-            {/* Bar by revenue */}
-            <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-              <p className="text-sm font-semibold text-gray-700 mb-3">By Revenue</p>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={mix} layout="vertical" margin={{ left: 8, right: 16 }}>
-                  <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 11 }}
-                    tickFormatter={(v) => new Intl.NumberFormat("vi-VN", { notation: "compact" }).format(v)} />
-                  <YAxis type="category" dataKey="category" tick={{ fontSize: 12 }} width={60} />
-                  <Tooltip formatter={(v) => new Intl.NumberFormat("vi-VN").format(Math.round(v))} />
-                  <Bar dataKey="revenue_native" name="Revenue" radius={[0,4,4,0]}>
-                    {mix.map((_, i) => <Cell key={i} fill={COLORS[i%COLORS.length]} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Table */}
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">
-                  <th className="px-4 py-3 text-left">Category</th>
-                  <th className="px-4 py-3 text-right">Bookings</th>
-                  <th className="px-4 py-3 text-right">Count %</th>
-                  <th className="px-4 py-3 text-right">Revenue</th>
-                  <th className="px-4 py-3 text-right">Revenue %</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {mix.map((m, i) => (
-                  <tr key={m.category} className="hover:bg-gray-50">
-                    <td className="px-4 py-2.5 font-medium text-gray-700">
-                      <span className="inline-block w-2 h-2 rounded-full mr-2"
-                        style={{ background: COLORS[i%COLORS.length] }} />
-                      {m.category}
-                    </td>
-                    <td className="px-4 py-2.5 text-right text-gray-600">{m.count}</td>
-                    <td className="px-4 py-2.5 text-right text-gray-500">{(m.count_pct*100).toFixed(1)}%</td>
-                    <td className="px-4 py-2.5 text-right text-gray-700">
-                      {new Intl.NumberFormat("vi-VN").format(Math.round(m.revenue_native))}
-                    </td>
-                    <td className="px-4 py-2.5 text-right text-gray-500">{(m.revenue_pct*100).toFixed(1)}%</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+        <RatesPivotTable periods={data.periods} channels={data.channels} />
       )}
     </div>
+  );
+}
+
+// ── Pivot table with two sections ─────────────────────────────────────────────
+function RatesPivotTable({ periods, channels }) {
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+      <table className="w-full text-sm border-collapse">
+        <thead>
+          <tr className="bg-gray-800 text-white text-xs">
+            <th className="px-4 py-2.5 text-left font-medium uppercase tracking-wide w-52 sticky left-0 bg-gray-800 z-10">
+              Channel
+            </th>
+            {periods.map(p => (
+              <th key={p} className="px-3 py-2.5 text-center font-medium whitespace-nowrap">
+                {p}
+              </th>
+            ))}
+            <th className="px-3 py-2.5 text-center font-medium">Total</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {/* ── Cancel Rate section ── */}
+          <SectionHeader label="Cancellation Rate %" colSpan={periods.length + 2} color="bg-red-700" />
+          {channels.map((ch, i) => (
+            <DataRow key={`cancel-${ch.channel}`}
+              channel={ch.channel}
+              isDirect={ch.is_direct}
+              total={ch.total}
+              cells={ch.cancel_cells}
+              bgFn={cancelBg}
+              valueKey="rate"
+              altRow={i % 2 === 1}
+            />
+          ))}
+          <TotalRow label="Avg cancel rate" periods={periods} channels={channels} metric="cancel" />
+
+          {/* ── Check-in Rate section ── */}
+          <SectionHeader label="Check-in Rate %" colSpan={periods.length + 2} color="bg-green-700" />
+          {channels.map((ch, i) => (
+            <DataRow key={`checkin-${ch.channel}`}
+              channel={ch.channel}
+              isDirect={ch.is_direct}
+              total={ch.total}
+              cells={ch.checkin_cells}
+              bgFn={checkinBg}
+              valueKey="rate"
+              altRow={i % 2 === 1}
+            />
+          ))}
+          <CheckinTotalRow periods={periods} channels={channels} />
+        </tbody>
+      </table>
+
+      {/* Legend */}
+      <div className="px-4 py-2.5 border-t border-gray-100 flex flex-wrap gap-5 text-xs text-gray-500">
+        <span className="font-medium text-gray-400 uppercase tracking-wide">Cancel Rate:</span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-8 h-3 rounded" style={{ background: "#bbf7d0" }} />
+          0–10% (good)
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-8 h-3 rounded" style={{ background: "#fde68a" }} />
+          10–25% (warning)
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-8 h-3 rounded" style={{ background: "#fca5a5" }} />
+          &gt;25% (bad)
+        </span>
+        <span className="text-gray-300 mx-2">|</span>
+        <span className="font-medium text-gray-400 uppercase tracking-wide">Check-in %:</span>
+        <span className="text-gray-400">source check-ins ÷ total check-ins all sources (sums to 100% per period)</span>
+      </div>
+    </div>
+  );
+}
+
+function SectionHeader({ label, colSpan, color }) {
+  return (
+    <tr className={`${color} text-white`}>
+      <td className={`px-4 py-1.5 text-xs font-semibold uppercase tracking-wide sticky left-0 ${color} z-10`}
+        colSpan={colSpan}>
+        {label}
+      </td>
+    </tr>
+  );
+}
+
+function DataRow({ channel, isDirect, total, cells, bgFn, valueKey, altRow }) {
+  const rowBase = isDirect
+    ? "bg-green-50 text-green-900"
+    : altRow ? "bg-red-50/40 text-gray-800" : "bg-white text-gray-800";
+
+  return (
+    <tr className={`border-b border-gray-100 hover:brightness-95 transition-all ${rowBase}`}>
+      <td className={`px-4 py-2 text-xs font-medium sticky left-0 z-10 whitespace-nowrap ${
+        isDirect ? "bg-green-50" : altRow ? "bg-red-50/40" : "bg-white"
+      }`}>
+        {isDirect ? "Direct (Web/Walk-in/Email/Extension/FB/Phone)" : channel}
+      </td>
+
+      {cells.map((cell, ci) => {
+        const rate     = cell[valueKey];
+        const bg       = bgFn(rate);
+        const textCls  = bgFn === cancelBg ? cancelTextColor(rate) : "text-gray-800";
+        return (
+          <td key={ci} style={bg}
+            className={`px-3 py-2 text-center text-xs tabular-nums ${textCls}`}>
+            {rate !== null ? pct(rate) : <span className="text-gray-300">—</span>}
+          </td>
+        );
+      })}
+
+      {/* Total column: total bookings */}
+      <td className={`px-3 py-2 text-center text-xs font-semibold tabular-nums ${
+        isDirect ? "bg-green-50 text-green-700" : "bg-gray-50 text-gray-600"
+      }`}>
+        {total.toLocaleString()}
+      </td>
+    </tr>
+  );
+}
+
+function TotalRow({ label, periods, channels, metric }) {
+  // Weighted average cancel rate per period
+  const periodAvg = periods.map((_, pi) => {
+    let totalN = 0, totalD = 0;
+    channels.forEach(ch => {
+      const cell = ch.cancel_cells[pi];
+      if (!cell) return;
+      if (cell.total > 0) { totalN += cell.cancelled; totalD += cell.total; }
+    });
+    return totalD > 0 ? totalN / totalD : null;
+  });
+
+  const grandN = channels.reduce((s, ch) =>
+    s + ch.cancel_cells.reduce((ss, c) => ss + c.cancelled, 0), 0);
+  const grandD = channels.reduce((s, ch) =>
+    s + ch.cancel_cells.reduce((ss, c) => ss + c.total, 0), 0);
+
+  return (
+    <tr className="bg-gray-100 font-semibold text-gray-700 text-xs border-t border-gray-300">
+      <td className="px-4 py-2 sticky left-0 bg-gray-100 z-10 italic text-gray-500">{label}</td>
+      {periodAvg.map((avg, i) => (
+        <td key={i} className="px-3 py-2 text-center tabular-nums text-gray-600">
+          {avg !== null ? pct(avg) : <span className="text-gray-300">—</span>}
+        </td>
+      ))}
+      <td className="px-3 py-2 text-center tabular-nums">
+        {grandD > 0 ? pct(grandN / grandD) : "—"}
+      </td>
+    </tr>
+  );
+}
+
+// Check-in section total row: sum of all shares = 100% per period
+function CheckinTotalRow({ periods, channels }) {
+  const periodSum = periods.map((_, pi) => {
+    const sum = channels.reduce((s, ch) => {
+      const cell = ch.checkin_cells[pi];
+      return s + (cell?.rate ?? 0);
+    }, 0);
+    return sum > 0 ? sum : null;
+  });
+
+  const grandCheckin = channels.reduce((s, ch) =>
+    s + ch.checkin_cells.reduce((ss, c) => ss + c.checked_in, 0), 0);
+  const grandTotal = channels[0]?.checkin_cells.reduce((ss, c) => ss + c.total, 0) ?? 0;
+
+  return (
+    <tr className="bg-gray-100 font-semibold text-gray-700 text-xs border-t border-gray-300">
+      <td className="px-4 py-2 sticky left-0 bg-gray-100 z-10 italic text-gray-500">Total (all sources)</td>
+      {periodSum.map((s, i) => (
+        <td key={i} className="px-3 py-2 text-center tabular-nums text-gray-600">
+          {s !== null ? pct(s) : <span className="text-gray-300">—</span>}
+        </td>
+      ))}
+      <td className="px-3 py-2 text-center tabular-nums">
+        {grandTotal > 0 ? pct(grandCheckin / grandTotal) : "—"}
+      </td>
+    </tr>
   );
 }

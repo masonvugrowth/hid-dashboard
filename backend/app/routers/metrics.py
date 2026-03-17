@@ -13,6 +13,9 @@ from app.database import get_db
 from app.services.metrics_engine import (
     get_daily_metrics,
     get_ota_mix,
+    get_channel_rates,
+    get_ota_trend,
+    get_rates_trend,
     get_country_yoy,
 )
 
@@ -280,7 +283,7 @@ def get_ota_mix_endpoint(
     date_to: Optional[date] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """OTA vs Direct breakdown by booking count and revenue."""
+    """Channel mix — Direct aggregated, each OTA source shown individually."""
     today = datetime.now(timezone.utc).date()
     if date_to is None:
         date_to = today
@@ -292,15 +295,56 @@ def get_ota_mix_endpoint(
     total_revenue = sum(v["revenue_native"] for v in mix.values())
 
     result = []
-    for cat, vals in mix.items():
+    for channel, vals in sorted(mix.items(), key=lambda x: -x[1]["count"]):
         result.append({
-            "category": cat,
+            "category": vals["category"],
+            "channel": channel,
             "count": vals["count"],
             "revenue_native": vals["revenue_native"],
             "revenue_vnd": vals["revenue_vnd"],
             "count_pct": round(vals["count"] / total_count, 4) if total_count > 0 else 0,
             "revenue_pct": round(vals["revenue_native"] / total_revenue, 4) if total_revenue > 0 else 0,
         })
+    return _envelope(result)
+
+
+@router.get("/channel-rates")
+def get_channel_rates_endpoint(
+    branch_id: Optional[UUID] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Cancellation rate and check-in rate by channel (individual OTA or Direct)."""
+    today = datetime.now(timezone.utc).date()
+    if date_to is None:
+        date_to = today
+    if date_from is None:
+        date_from = date_to - timedelta(days=29)
+
+    result = get_channel_rates(db, branch_id, date_from, date_to)
+    return _envelope(result)
+
+
+@router.get("/ota-trend")
+def get_ota_trend_endpoint(
+    mode: str = Query("daily", pattern="^(daily|weekly|monthly)$"),
+    branch_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """OTA channel share pivot: % per period (daily/weekly/monthly)."""
+    result = get_ota_trend(db, branch_id, mode)
+    return _envelope(result)
+
+
+@router.get("/rates-trend")
+def get_rates_trend_endpoint(
+    mode: str = Query("daily", pattern="^(daily|weekly|monthly)$"),
+    branch_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Cancel rate & check-in rate pivot per channel × period."""
+    result = get_rates_trend(db, branch_id, mode)
     return _envelope(result)
 
 

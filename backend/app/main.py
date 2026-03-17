@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from app.routers import kpi, sync
 from app.routers import metrics, events, website_metrics, countries, branches
 from app.routers import marketing, ads, kol, angles, insights, report
+from app.routers import auth
 from app.scheduler import setup_scheduler
 from app.database import SessionLocal
 from app.models.branch import Branch
@@ -26,6 +27,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Auth
+app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 
 # Phase 1
 app.include_router(kpi.router, prefix="/api/kpi", tags=["KPI"])

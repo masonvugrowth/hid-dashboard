@@ -345,7 +345,9 @@ def get_ota_mix(
     date_from: date,
     date_to: date,
 ) -> dict:
+    """Channel mix by individual OTA source (Direct aggregated, OTA broken out by name)."""
     q = db.query(
+        Reservation.source,
         Reservation.source_category,
         func.count(Reservation.id).label("count"),
         func.coalesce(func.sum(Reservation.grand_total_native), 0).label("revenue_native"),
@@ -354,19 +356,327 @@ def get_ota_mix(
         Reservation.check_in_date >= date_from,
         Reservation.check_in_date <= date_to,
         Reservation.status.notin_(list(EXCLUDED_STATUSES)),
+        func.lower(Reservation.source).notin_(list(EXCLUDED_SOURCES)),
     )
     if branch_id:
         q = q.filter(Reservation.branch_id == branch_id)
 
-    rows = q.group_by(Reservation.source_category).all()
-    return {
-        (row.source_category or "Unknown"): {
-            "count": row.count,
-            "revenue_native": float(row.revenue_native),
-            "revenue_vnd": float(row.revenue_vnd),
-        }
-        for row in rows
-    }
+    rows = q.group_by(Reservation.source, Reservation.source_category).all()
+
+    channels: dict = {}
+    for row in rows:
+        cat = row.source_category or "OTA"
+        key = "Direct" if cat == "Direct" else (row.source or "Unknown")
+        if key not in channels:
+            channels[key] = {"count": 0, "revenue_native": 0.0, "revenue_vnd": 0.0, "category": cat}
+        channels[key]["count"] += row.count
+        channels[key]["revenue_native"] += float(row.revenue_native)
+        channels[key]["revenue_vnd"] += float(row.revenue_vnd)
+    return channels
+
+
+def get_channel_rates(
+    db: Session,
+    branch_id: Optional[UUID],
+    date_from: date,
+    date_to: date,
+) -> list[dict]:
+    """Cancellation rate and check-in rate by channel (individual OTA source or Direct).
+    Includes ALL statuses so cancelled bookings count toward the totals.
+    """
+    from sqlalchemy import case as sa_case
+
+    q = db.query(
+        Reservation.source,
+        Reservation.source_category,
+        func.count(Reservation.id).label("total"),
+        func.sum(sa_case((Reservation.status.in_(["cancelled", "canceled"]), 1), else_=0)).label("cancelled"),
+        func.sum(sa_case((Reservation.status.in_(["no_show", "noshow"]), 1), else_=0)).label("no_show"),
+        func.sum(sa_case((Reservation.status.in_(["checked_in", "checked_out"]), 1), else_=0)).label("checked_in"),
+    ).filter(
+        Reservation.check_in_date >= date_from,
+        Reservation.check_in_date <= date_to,
+        func.lower(Reservation.source).notin_(list(EXCLUDED_SOURCES)),
+    )
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+
+    rows = q.group_by(Reservation.source, Reservation.source_category).all()
+
+    channels: dict = {}
+    for row in rows:
+        cat = row.source_category or "OTA"
+        key = "Direct" if cat == "Direct" else (row.source or "Unknown")
+        if key not in channels:
+            channels[key] = {"total": 0, "cancelled": 0, "no_show": 0, "checked_in": 0, "category": cat}
+        channels[key]["total"]      += row.total
+        channels[key]["cancelled"]  += int(row.cancelled or 0)
+        channels[key]["no_show"]    += int(row.no_show or 0)
+        channels[key]["checked_in"] += int(row.checked_in or 0)
+
+    result = []
+    for channel, v in sorted(channels.items(), key=lambda x: -x[1]["total"]):
+        total        = v["total"]
+        cancelled    = v["cancelled"]
+        no_show      = v["no_show"]
+        checked_in   = v["checked_in"]
+        non_cancelled = total - cancelled
+        result.append({
+            "channel":      channel,
+            "category":     v["category"],
+            "total":        total,
+            "cancelled":    cancelled,
+            "no_show":      no_show,
+            "checked_in":   checked_in,
+            "confirmed":    max(0, non_cancelled - no_show - checked_in),
+            "cancel_rate":  round(cancelled / total, 4) if total > 0 else 0,
+            "checkin_rate": round(checked_in / non_cancelled, 4) if non_cancelled > 0 else 0,
+            "noshow_rate":  round(no_show / non_cancelled, 4) if non_cancelled > 0 else 0,
+        })
+    return result
+
+
+def get_ota_trend(
+    db: Session,
+    branch_id: Optional[UUID],
+    mode: str = "daily",
+) -> dict:
+    """OTA channel share pivot table.
+    mode: daily (last 7 days) | weekly (last 7 weeks) | monthly (last 3 months)
+    Returns: periods (labels) × channels (rows) with count + pct per cell.
+    """
+    from collections import defaultdict
+
+    today = date.today()
+
+    if mode == "daily":
+        date_from = today - timedelta(days=6)
+    elif mode == "weekly":
+        start_of_this_week = today - timedelta(days=today.weekday())
+        date_from = start_of_this_week - timedelta(weeks=6)
+    else:  # monthly
+        m, y = today.month - 2, today.year
+        while m <= 0:
+            m += 12; y -= 1
+        date_from = date(y, m, 1)
+
+    # Choose period expression
+    if mode == "daily":
+        period_expr = Reservation.check_in_date
+    elif mode == "weekly":
+        period_expr = func.date_trunc("week", Reservation.check_in_date)
+    else:
+        period_expr = func.date_trunc("month", Reservation.check_in_date)
+
+    q = db.query(
+        period_expr.label("period"),
+        Reservation.source,
+        Reservation.source_category,
+        func.count(Reservation.id).label("count"),
+    ).filter(
+        Reservation.check_in_date >= date_from,
+        Reservation.check_in_date <= today,
+        Reservation.status.notin_(list(EXCLUDED_STATUSES)),
+        func.lower(Reservation.source).notin_(list(EXCLUDED_SOURCES)),
+    )
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+    q = q.group_by(period_expr, Reservation.source, Reservation.source_category)
+    rows = q.all()
+
+    # Normalize period keys → date objects
+    period_channel: dict = defaultdict(lambda: defaultdict(int))
+    all_channels: set = set()
+    for row in rows:
+        cat = row.source_category or "OTA"
+        channel = "Direct" if cat == "Direct" else (row.source or "Unknown")
+        p = row.period
+        if hasattr(p, "date"):
+            p = p.date()
+        elif not isinstance(p, date):
+            p = date.fromisoformat(str(p)[:10])
+        period_channel[p][channel] += row.count
+        all_channels.add(channel)
+
+    # Build canonical period list
+    if mode == "daily":
+        periods = [today - timedelta(days=i) for i in range(6, -1, -1)]
+        labels  = [d.strftime("%b %d") for d in periods]
+    elif mode == "weekly":
+        start_of_this_week = today - timedelta(days=today.weekday())
+        periods = [start_of_this_week - timedelta(weeks=i) for i in range(6, -1, -1)]
+        labels  = [f"W{d.isocalendar()[1]:02d} ({d.strftime('%m/%d')})" for d in periods]
+    else:
+        periods = []
+        for i in range(2, -1, -1):
+            m, y = today.month - i, today.year
+            while m <= 0:
+                m += 12; y -= 1
+            periods.append(date(y, m, 1))
+        labels = [d.strftime("%b %Y") for d in periods]
+
+    # Sort: OTAs by total desc, Direct always last
+    channel_totals: dict = defaultdict(int)
+    for pc in period_channel.values():
+        for ch, cnt in pc.items():
+            channel_totals[ch] += cnt
+
+    sorted_channels = sorted(all_channels - {"Direct"}, key=lambda c: -channel_totals[c])
+    if "Direct" in all_channels:
+        sorted_channels.append("Direct")
+
+    # Build result
+    result_channels = []
+    for channel in sorted_channels:
+        cells = []
+        for p in periods:
+            cnt = period_channel.get(p, {}).get(channel, 0)
+            period_total = sum(period_channel.get(p, {}).values())
+            pct = cnt / period_total if period_total > 0 else 0
+            cells.append({"count": cnt, "pct": round(pct, 4)})
+        result_channels.append({
+            "channel":   channel,
+            "is_direct": channel == "Direct",
+            "total":     channel_totals[channel],
+            "cells":     cells,
+        })
+
+    return {"mode": mode, "periods": labels, "channels": result_channels}
+
+
+def get_rates_trend(
+    db: Session,
+    branch_id: Optional[UUID],
+    mode: str = "daily",
+) -> dict:
+    """Cancel rate & check-in rate pivot: per channel × per time period.
+    mode: daily (last 7 days) | weekly (last 7 weeks) | monthly (last 3 months)
+    """
+    from collections import defaultdict
+    from sqlalchemy import case as sa_case
+
+    today = date.today()
+
+    if mode == "daily":
+        date_from = today - timedelta(days=6)
+    elif mode == "weekly":
+        start_of_this_week = today - timedelta(days=today.weekday())
+        date_from = start_of_this_week - timedelta(weeks=6)
+    else:
+        m, y = today.month - 2, today.year
+        while m <= 0:
+            m += 12; y -= 1
+        date_from = date(y, m, 1)
+
+    if mode == "daily":
+        period_expr = Reservation.check_in_date
+    elif mode == "weekly":
+        period_expr = func.date_trunc("week", Reservation.check_in_date)
+    else:
+        period_expr = func.date_trunc("month", Reservation.check_in_date)
+
+    q = db.query(
+        period_expr.label("period"),
+        Reservation.source,
+        Reservation.source_category,
+        func.count(Reservation.id).label("total"),
+        func.sum(sa_case((Reservation.status.in_(["cancelled", "canceled"]), 1), else_=0)).label("cancelled"),
+        func.sum(sa_case((Reservation.status.in_(["no_show", "noshow"]), 1), else_=0)).label("no_show"),
+        func.sum(sa_case((Reservation.status.in_(["checked_in", "checked_out"]), 1), else_=0)).label("checked_in"),
+    ).filter(
+        Reservation.check_in_date >= date_from,
+        Reservation.check_in_date <= today,
+        func.lower(Reservation.source).notin_(list(EXCLUDED_SOURCES)),
+    )
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+    q = q.group_by(period_expr, Reservation.source, Reservation.source_category)
+    rows = q.all()
+
+    # Aggregate into period × channel buckets
+    _empty = lambda: {"total": 0, "cancelled": 0, "no_show": 0, "checked_in": 0}
+    period_channel: dict = defaultdict(lambda: defaultdict(_empty))
+    all_channels: set = set()
+
+    for row in rows:
+        cat = row.source_category or "OTA"
+        channel = "Direct" if cat == "Direct" else (row.source or "Unknown")
+        p = row.period
+        if hasattr(p, "date"):
+            p = p.date()
+        elif not isinstance(p, date):
+            p = date.fromisoformat(str(p)[:10])
+        d = period_channel[p][channel]
+        d["total"]      += row.total
+        d["cancelled"]  += int(row.cancelled or 0)
+        d["no_show"]    += int(row.no_show or 0)
+        d["checked_in"] += int(row.checked_in or 0)
+        all_channels.add(channel)
+
+    # Build canonical period list
+    if mode == "daily":
+        periods = [today - timedelta(days=i) for i in range(6, -1, -1)]
+        labels  = [d.strftime("%b %d") for d in periods]
+    elif mode == "weekly":
+        start_of_this_week = today - timedelta(days=today.weekday())
+        periods = [start_of_this_week - timedelta(weeks=i) for i in range(6, -1, -1)]
+        labels  = [f"W{d.isocalendar()[1]:02d} ({d.strftime('%m/%d')})" for d in periods]
+    else:
+        periods = []
+        for i in range(2, -1, -1):
+            m, y = today.month - i, today.year
+            while m <= 0:
+                m += 12; y -= 1
+            periods.append(date(y, m, 1))
+        labels = [d.strftime("%b %Y") for d in periods]
+
+    # Sort: OTAs by total desc, Direct always last
+    channel_totals: dict = defaultdict(int)
+    for pc in period_channel.values():
+        for ch, v in pc.items():
+            channel_totals[ch] += v["total"]
+
+    sorted_channels = sorted(all_channels - {"Direct"}, key=lambda c: -channel_totals[c])
+    if "Direct" in all_channels:
+        sorted_channels.append("Direct")
+
+    # Pre-compute total checked_in across ALL channels per period
+    period_total_checkin: dict = {}
+    for p in periods:
+        period_total_checkin[p] = sum(
+            (period_channel.get(p, {}).get(ch) or _empty())["checked_in"]
+            for ch in all_channels
+        )
+
+    result_channels = []
+    for channel in sorted_channels:
+        cancel_cells  = []
+        checkin_cells = []
+        for p in periods:
+            v = period_channel.get(p, {}).get(channel) or _empty()
+            total         = v["total"]
+            cancelled     = v["cancelled"]
+            total_ckin    = period_total_checkin.get(p, 0)
+            cancel_cells.append({
+                "total":     total,
+                "cancelled": cancelled,
+                "rate":      round(cancelled / total, 4) if total > 0 else None,
+            })
+            # Check-in rate = channel checked_in / ALL channels checked_in (this period)
+            checkin_cells.append({
+                "total":      total_ckin,
+                "checked_in": v["checked_in"],
+                "rate":       round(v["checked_in"] / total_ckin, 4) if total_ckin > 0 else None,
+            })
+        result_channels.append({
+            "channel":       channel,
+            "is_direct":     channel == "Direct",
+            "total":         channel_totals[channel],
+            "cancel_cells":  cancel_cells,
+            "checkin_cells": checkin_cells,
+        })
+
+    return {"mode": mode, "periods": labels, "channels": result_channels}
 
 
 def get_country_yoy(

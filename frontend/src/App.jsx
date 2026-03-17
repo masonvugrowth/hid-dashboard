@@ -1,7 +1,9 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { BranchProvider } from "./context/BranchContext";
+import { AuthProvider, useAuth } from "./context/AuthContext";
 import Sidebar from "./components/Sidebar";
 import BranchSelector from "./components/BranchSelector";
+import Login from "./pages/Login";
 
 // Phase 1 pages
 import Dashboard      from "./pages/Dashboard";
@@ -28,61 +30,79 @@ import Angles   from "./pages/Angles";
 import Insights from "./pages/Insights";
 import Report    from "./pages/Report";
 import Settings  from "./pages/Settings";
+import Users     from "./pages/Users";
 
 export default function App() {
   return (
-    <BranchProvider>
-      <div className="flex h-screen bg-gray-50">
-        <Sidebar />
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Global sticky branch selector */}
-          <BranchSelector />
-          {/* Page content */}
-          <main className="flex-1 overflow-auto p-6">
-            <Routes>
-              <Route path="/" element={<Navigate to="/home" replace />} />
-
-              {/* Phase 2 */}
-              <Route path="/home"                  element={<Home />} />
-              <Route path="/kpi"                   element={<KPI />} />
-              <Route path="/performance"           element={<Performance />} />
-              <Route path="/performance/daily"     element={<PerformanceDaily />} />
-              <Route path="/performance/weekly"    element={<PerformanceWeekly />} />
-              <Route path="/performance/monthly"   element={<PerformanceMonthly />} />
-              <Route path="/performance/ota"       element={<PerformanceOTA />} />
-              <Route path="/countries"             element={<Countries />} />
-              <Route path="/countries/:code"       element={<CountryDetail />} />
-
-              {/* Phase 3 — Marketing */}
-              <Route path="/country-intel" element={<CountryIntel />} />
-              <Route path="/marketing" element={<Marketing />} />
-              <Route path="/ads"       element={<Ads />} />
-              <Route path="/kol"       element={<KOL />} />
-              <Route path="/angles"    element={<Angles />} />
-              <Route path="/insights"  element={<Insights />} />
-              <Route path="/report"    element={<Report />} />
-
-              {/* Settings */}
-              <Route path="/settings" element={<Settings />} />
-
-              {/* Phase 1 legacy */}
-              <Route path="/dashboard"    element={<Dashboard />} />
-              <Route path="/reservations" element={<Reservations />} />
-              <Route path="/kpi-targets"  element={<KPITargets />} />
-            </Routes>
-          </main>
-        </div>
-      </div>
-    </BranchProvider>
+    <AuthProvider>
+      <BranchProvider>
+        <AppRoutes />
+      </BranchProvider>
+    </AuthProvider>
   );
 }
 
-function ComingSoon({ title }) {
+function AppRoutes() {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <div className="text-gray-500 text-sm animate-pulse">Loading…</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="*"      element={<Navigate to="/login" replace />} />
+      </Routes>
+    );
+  }
+
   return (
-    <div className="flex flex-col items-center justify-center h-64 text-gray-400">
-      <div className="text-4xl mb-3">🚧</div>
-      <p className="text-lg font-medium">{title}</p>
-      <p className="text-sm mt-1">Coming in Phase 3</p>
+    <div className="flex h-screen bg-gray-50">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <BranchSelector />
+        <main className="flex-1 overflow-auto p-6">
+          <Routes>
+            <Route path="/" element={<Navigate to="/home" replace />} />
+            <Route path="/login" element={<Navigate to="/home" replace />} />
+
+            {/* Phase 2 */}
+            <Route path="/home"                  element={<Home />} />
+            <Route path="/kpi"                   element={<KPI />} />
+            <Route path="/performance"           element={<Performance />} />
+            <Route path="/performance/daily"     element={<PerformanceDaily />} />
+            <Route path="/performance/weekly"    element={<PerformanceWeekly />} />
+            <Route path="/performance/monthly"   element={<PerformanceMonthly />} />
+            <Route path="/performance/ota"       element={<PerformanceOTA />} />
+            <Route path="/countries"             element={<Countries />} />
+            <Route path="/countries/:code"       element={<CountryDetail />} />
+
+            {/* Phase 3 — Marketing */}
+            <Route path="/country-intel" element={<CountryIntel />} />
+            <Route path="/marketing" element={<Marketing />} />
+            <Route path="/ads"       element={<Ads />} />
+            <Route path="/kol"       element={<KOL />} />
+            <Route path="/angles"    element={<Angles />} />
+            <Route path="/insights"  element={<Insights />} />
+            <Route path="/report"    element={<Report />} />
+
+            {/* Settings & Admin */}
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/users"    element={<Users />} />
+
+            {/* Phase 1 legacy */}
+            <Route path="/dashboard"    element={<Dashboard />} />
+            <Route path="/reservations" element={<Reservations />} />
+            <Route path="/kpi-targets"  element={<KPITargets />} />
+          </Routes>
+        </main>
+      </div>
     </div>
   );
 }
