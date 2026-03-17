@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -85,8 +85,35 @@ def trigger_revenue_sync(
     return _envelope({"synced_branches": results})
 
 
+def _run_backfill_bg(branch_configs: list, df, dt, do_recompute: bool):
+    """Background worker: runs backfill + optional recompute for each branch config."""
+    import logging
+    from app.database import SessionLocal
+    log = logging.getLogger(__name__)
+    db = SessionLocal()
+    try:
+        for cfg in branch_configs:
+            try:
+                result = backfill_accommodation_total(
+                    cfg["branch_id"], cfg["property_id"], cfg["currency"],
+                    api_key=cfg["api_key"], checkin_from=df, checkin_to=dt, limit=cfg.get("limit")
+                )
+                log.info("Backfill %s: fetched=%s updated=%s skipped=%s",
+                         cfg["name"], result.get("fetched"), result.get("updated"), result.get("skipped"))
+                if do_recompute and result.get("updated", 0) > 0:
+                    branch = db.query(Branch).filter_by(id=cfg["branch_id"]).first()
+                    if branch:
+                        days = recompute_branch_range(db, branch, df, dt)
+                        log.info("Recompute %s: %d days", cfg["name"], days)
+            except Exception as exc:
+                log.error("Backfill failed for %s: %s", cfg["name"], exc)
+    finally:
+        db.close()
+
+
 @router.post("/backfill")
 def trigger_backfill(
+    background_tasks: BackgroundTasks,
     branch_id: Optional[UUID] = Query(None),
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD check-in from (default: 2 years ago)"),
     date_to: Optional[str] = Query(None, description="YYYY-MM-DD check-in to (default: today)"),
@@ -99,7 +126,7 @@ def trigger_backfill(
     Calls Cloudbeds getReservation (singular) for each NULL-revenue reservation
     and extracts balanceDetailed.subTotal - additionalItems.
     This fixes OTA bookings that don't appear in Room Revenue transactions.
-    After backfill, optionally recomputes daily_metrics so KPIs reflect correct revenue.
+    Returns immediately — backfill runs in background. Check Railway logs for progress.
     """
     from datetime import date, timedelta
 
@@ -112,32 +139,34 @@ def trigger_backfill(
         branches_q = branches_q.filter(Branch.id == branch_id)
     branches = branches_q.all()
 
-    results = []
+    branch_configs = []
+    skipped = []
     for branch in branches:
         pid = branch.cloudbeds_property_id
         if not pid:
-            results.append({"branch": branch.name, "error": "no property_id"})
+            skipped.append({"branch": branch.name, "reason": "no property_id"})
             continue
         api_key = settings.get_api_key_for_property(str(pid))
         if not api_key:
-            results.append({"branch": branch.name, "error": f"no api_key for property {pid}"})
+            skipped.append({"branch": branch.name, "reason": f"no api_key for property {pid}"})
             continue
-        try:
-            result = backfill_accommodation_total(
-                str(branch.id), str(pid), branch.currency or "VND",
-                api_key=api_key, checkin_from=df, checkin_to=dt, limit=limit
-            )
-            result["branch"] = branch.name
-            if recompute and result.get("updated", 0) > 0:
-                days = recompute_branch_range(db, branch, df, dt)
-                result["days_recomputed"] = days
-            results.append(result)
-        except Exception as exc:
-            results.append({"branch": branch.name, "error": str(exc)})
+        branch_configs.append({
+            "branch_id": str(branch.id),
+            "property_id": str(pid),
+            "currency": branch.currency or "VND",
+            "api_key": api_key,
+            "name": branch.name,
+            "limit": limit,
+        })
+
+    background_tasks.add_task(_run_backfill_bg, branch_configs, df, dt, recompute)
 
     return _envelope({
+        "status": "started",
+        "message": "Backfill running in background. Check Railway logs for progress.",
         "window": {"from": df.isoformat(), "to": dt.isoformat()},
-        "branches": results,
+        "branches_queued": [c["name"] for c in branch_configs],
+        "skipped": skipped,
     })
 
 
