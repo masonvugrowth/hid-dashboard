@@ -52,6 +52,7 @@ export default function Ads() {
   const [syncing, setSyncing] = useState(false);
   const [recomputing, setRecomputing] = useState(false);
   const [tab, setTab] = useState("summary");
+  const [datePreset, setDatePreset] = useState("30d");
 
   const getDateRange = (preset) => {
     const today = new Date();
@@ -196,11 +197,18 @@ export default function Ads() {
         ))}
       </div>
 
-      <div className="flex gap-2">
-        <button onClick={() => setFilterChannel("")} className={"px-3 py-1 rounded text-xs font-medium border " + (!filterChannel ? "bg-gray-800 text-white border-gray-800" : "text-gray-500 border-gray-200")}>All</button>
-        {CHANNELS.map(c => (
-          <button key={c} onClick={() => setFilterChannel(filterChannel === c ? "" : c)} className={"px-3 py-1 rounded text-xs font-medium border " + (filterChannel === c ? "bg-gray-800 text-white border-gray-800" : "text-gray-500 border-gray-200")}>{c}</button>
-        ))}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex gap-2">
+          <button onClick={() => setFilterChannel("")} className={"px-3 py-1 rounded text-xs font-medium border " + (!filterChannel ? "bg-gray-800 text-white border-gray-800" : "text-gray-500 border-gray-200")}>All</button>
+          {CHANNELS.map(c => (
+            <button key={c} onClick={() => setFilterChannel(filterChannel === c ? "" : c)} className={"px-3 py-1 rounded text-xs font-medium border " + (filterChannel === c ? "bg-gray-800 text-white border-gray-800" : "text-gray-500 border-gray-200")}>{c}</button>
+          ))}
+        </div>
+        <div className="flex gap-1">
+          {[{ v: "7d", l: "7 days" }, { v: "30d", l: "30 days" }, { v: "month", l: "This month" }, { v: "all", l: "All time" }].map(({ v, l }) => (
+            <button key={v} onClick={() => setDatePreset(v)} className={"px-3 py-1 rounded text-xs font-medium border " + (datePreset === v ? "bg-indigo-600 text-white border-indigo-600" : "text-gray-500 border-gray-200 hover:border-gray-400")}>{l}</button>
+          ))}
+        </div>
       </div>
 
       <div className="flex gap-1 border-b border-gray-200">
