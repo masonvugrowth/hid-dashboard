@@ -401,6 +401,7 @@ export default function CountryIntel() {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [channel, setChannel] = useState("");
 
   useEffect(() => {
     setLoading(true);
@@ -415,7 +416,7 @@ export default function CountryIntel() {
       })
       .catch(() => setError("Network error"))
       .finally(() => setLoading(false));
-  }, [selected, isAll]);
+  }, [selected, isAll, channel]);
 
   const allItems = data.flatMap((b) => [
     ...(b.top_volume || []),
@@ -433,6 +434,16 @@ export default function CountryIntel() {
         <p className="text-sm text-gray-500 mt-0.5">
           Top guest countries × KOL coverage × Paid Ads coverage
         </p>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-gray-500">Ads channel:</span>
+        {["", "Meta", "Google", "TikTok"].map(c => (
+          <button key={c} onClick={() => setChannel(c)}
+            className={"px-3 py-1 rounded text-xs font-medium border " + (channel===c ? "bg-gray-800 text-white border-gray-800" : "text-gray-500 border-gray-200")}>
+            {c || "All"}
+          </button>
+        ))}
       </div>
 
       {!loading && data.length > 0 && (

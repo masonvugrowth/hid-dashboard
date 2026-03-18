@@ -140,6 +140,7 @@ def list_insights(
 @router.get("/country-intel")
 def country_intelligence(
     branch_id: Optional[UUID] = Query(None),
+    channel: Optional[str] = Query(None, description="Filter ads by channel: Meta, Google, TikTok"),
     db: Session = Depends(get_db),
 ):
     """
@@ -281,6 +282,10 @@ def country_intelligence(
 
     # ── 4. Ads coverage per (branch_id, target_country) ──────────────────────
     a_filter = "AND a.branch_id = :bid" if branch_id else ""
+    a_ch_filter = "AND a.channel = :ch" if channel else ""
+    a_params = dict(b_params)
+    if channel:
+        a_params["ch"] = channel
     ads_rows = db.execute(text(f"""
         SELECT
             a.branch_id,
@@ -293,9 +298,9 @@ def country_intelligence(
             STRING_AGG(DISTINCT a.funnel_stage, ', ')    AS funnel_stages
         FROM ads_performance a
         WHERE a.target_country IS NOT NULL AND a.target_country != ''
-          {a_filter}
+          {a_filter} {a_ch_filter}
         GROUP BY a.branch_id, a.target_country
-    """), b_params).fetchall()
+    """), a_params).fetchall()
 
     # ads_map: branch_id -> list of {country_lower, ...metrics}
     ads_map: dict[str, list] = {}
