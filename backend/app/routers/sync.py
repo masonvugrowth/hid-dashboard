@@ -974,3 +974,118 @@ def trigger_google_ads_sync(
             results.append({"branch": branch.name, "error": str(exc)})
 
     return _envelope({"synced": results})
+
+
+# ── Revenue from Reservation Google Sheets ─────────────────────────────────
+
+RES_SHEET_MAP = {
+    "11111111-1111-1111-1111-111111111101": "GOOGLE_RES_SHEET_TAIPEI",
+    "11111111-1111-1111-1111-111111111102": "GOOGLE_RES_SHEET_SAIGON",
+    "11111111-1111-1111-1111-111111111103": "GOOGLE_RES_SHEET_1948",
+    "11111111-1111-1111-1111-111111111104": "GOOGLE_RES_SHEET_OANI",
+    "11111111-1111-1111-1111-111111111105": "GOOGLE_RES_SHEET_OSAKA",
+}
+
+
+@router.post("/sheets-revenue")
+def trigger_sheets_revenue(
+    background_tasks: BackgroundTasks,
+    branch_id: Optional[UUID] = Query(None),
+    recompute: bool = Query(True),
+    db: Session = Depends(get_db),
+):
+    """
+    Pull Grand Total from each branch's Cloudbeds reservation Google Sheet (Raw_data tab),
+    update grand_total_native in the reservations table, then recompute daily_metrics.
+    Runs in background — returns immediately.
+    """
+    from app.services.sheets_revenue import read_revenue_from_sheet
+
+    client_id     = settings.GOOGLE_CLIENT_ID
+    client_secret = settings.GOOGLE_CLIENT_SECRET
+    refresh_token = settings.GOOGLE_REFRESH_TOKEN
+
+    if not client_id or not refresh_token:
+        raise HTTPException(status_code=400, detail="Google credentials not configured")
+
+    branches_q = db.query(Branch).filter_by(is_active=True)
+    if branch_id:
+        branches_q = branches_q.filter(Branch.id == branch_id)
+    branches = branches_q.all()
+
+    configs = []
+    skipped = []
+    for branch in branches:
+        attr = RES_SHEET_MAP.get(str(branch.id))
+        if not attr:
+            skipped.append({"branch": branch.name, "reason": "no sheet configured"})
+            continue
+        sheet_id = getattr(settings, attr, "")
+        if not sheet_id:
+            skipped.append({"branch": branch.name, "reason": "sheet ID empty"})
+            continue
+        configs.append({
+            "branch_id": str(branch.id),
+            "branch_name": branch.name,
+            "sheet_id": sheet_id,
+            "currency": branch.currency or "VND",
+        })
+
+    def _run(configs, recompute):
+        import logging
+        from sqlalchemy import text
+        from app.database import SessionLocal
+        log = logging.getLogger(__name__)
+        db2 = SessionLocal()
+        try:
+            for cfg in configs:
+                try:
+                    rows = read_revenue_from_sheet(
+                        cfg["sheet_id"], client_id, client_secret, refresh_token
+                    )
+                    updated = 0
+                    for row in rows:
+                        res = db2.execute(text("""
+                            UPDATE reservations
+                            SET grand_total_native = :gt
+                            WHERE branch_id = :bid
+                              AND cloudbeds_reservation_id = :res_num
+                              AND (grand_total_native IS NULL
+                                   OR ABS(grand_total_native - :gt) / GREATEST(:gt, 1) > 0.01)
+                            RETURNING id
+                        """), {
+                            "gt": row["grand_total"],
+                            "bid": cfg["branch_id"],
+                            "res_num": row["reservation_number"],
+                        }).fetchall()
+                        updated += len(res)
+                    db2.commit()
+                    log.info("Sheets revenue %s: %d rows from sheet, %d updated",
+                             cfg["branch_name"], len(rows), updated)
+
+                    if recompute and updated > 0:
+                        branch_obj = db2.query(Branch).filter_by(id=cfg["branch_id"]).first()
+                        if branch_obj:
+                            from datetime import date, timedelta
+                            df = date.today() - timedelta(days=365 * 2)
+                            dt = date(date.today().year, date.today().month, 1).replace(day=1)
+                            # recompute full range
+                            import calendar
+                            last_day = calendar.monthrange(date.today().year, date.today().month)[1]
+                            dt = date(date.today().year, date.today().month, last_day)
+                            days = recompute_branch_range(db2, branch_obj, df, dt)
+                            log.info("Recompute %s: %d days", cfg["branch_name"], days)
+                except Exception as exc:
+                    db2.rollback()
+                    log.error("Sheets revenue failed %s: %s", cfg["branch_name"], exc)
+        finally:
+            db2.close()
+
+    background_tasks.add_task(_run, configs, recompute)
+
+    return _envelope({
+        "status": "started",
+        "message": "Reading reservation sheets and updating revenue in background. Check Railway logs.",
+        "branches_queued": [c["branch_name"] for c in configs],
+        "skipped": skipped,
+    })
