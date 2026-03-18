@@ -53,21 +53,35 @@ export default function Ads() {
   const [recomputing, setRecomputing] = useState(false);
   const [tab, setTab] = useState("summary");
 
+  const getDateRange = (preset) => {
+    const today = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const fmt = d => d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate());
+    const to = fmt(today);
+    if (preset === '7d') { const d = new Date(today); d.setDate(d.getDate()-6); return { from: fmt(d), to }; }
+    if (preset === '30d') { const d = new Date(today); d.setDate(d.getDate()-29); return { from: fmt(d), to }; }
+    if (preset === 'month') { return { from: fmt(new Date(today.getFullYear(), today.getMonth(), 1)), to }; }
+    return { from: null, to: null };
+  };
+
   const load = () => {
     setLoading(true);
     const params = new URLSearchParams();
-    if (!isAll && selected) params.set("branch_id", selected);
-    if (filterChannel) params.set("channel", filterChannel);
+    if (!isAll && selected) params.set('branch_id', selected);
+    if (filterChannel) params.set('channel', filterChannel);
+    const { from, to } = getDateRange(datePreset);
+    if (from) params.set('date_from', from);
+    if (to) params.set('date_to', to);
     Promise.all([
-      axios.get("/api/ads/summary?" + params),
-      axios.get("/api/ads?" + params),
+      axios.get('/api/ads/summary?' + params),
+      axios.get('/api/ads?' + params),
     ])
       .then(([sRes, rRes]) => { setSummary(sRes.data.data || []); setRows(rRes.data.data || []); })
       .catch(() => { setSummary([]); setRows([]); })
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, [selected, filterChannel]);
+  useEffect(() => { load(); }, [selected, filterChannel, datePreset]);
 
   const openNew = () => { setForm({ ...EMPTY_FORM, branch_id: currentBranch?.id || "" }); setEditId(null); setShowForm(true); };
   const openEdit = (row) => {

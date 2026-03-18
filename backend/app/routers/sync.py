@@ -620,6 +620,8 @@ def trigger_meta_sync(
             existing.impressions = ad["impressions"]
             existing.clicks = ad["clicks"]
             existing.leads = ad["leads"]
+            existing.bookings = ad.get("bookings", 0) or 0
+            existing.revenue_native = ad.get("revenue", 0.0) or 0.0
             if ad["date_start"]:
                 from datetime import date
                 existing.date_from = date.fromisoformat(ad["date_start"])
@@ -648,6 +650,8 @@ def trigger_meta_sync(
                 impressions=ad["impressions"],
                 clicks=ad["clicks"],
                 leads=ad["leads"],
+                bookings=ad.get("bookings", 0) or 0,
+                revenue_native=ad.get("revenue", 0.0) or 0.0,
                 date_from=_date.fromisoformat(ad["date_start"]) if ad["date_start"] else None,
                 date_to=_date.fromisoformat(ad["date_stop"]) if ad["date_stop"] else None,
             )

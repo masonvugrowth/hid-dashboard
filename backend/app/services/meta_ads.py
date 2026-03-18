@@ -105,7 +105,7 @@ def sync_ads(
 
     # ── 2. Build date filter ───────────────────────────────────────────────
     insight_params: dict = {
-        "fields": "ad_id,campaign_id,campaign_name,adset_name,spend,impressions,clicks,actions",
+        "fields": "ad_id,campaign_id,campaign_name,adset_name,spend,impressions,clicks,actions,action_values",
         "level": "ad",
         "limit": 200,
     }
@@ -129,16 +129,12 @@ def sync_ads(
         parsed = parse_campaign_name(campaign_name)
 
         actions = ins.get("actions", [])
-        leads = next(
-            (int(a["value"]) for a in actions
-             if a.get("action_type") in ("lead", "onsite_conversion.lead_grouped")),
-            0,
-        )
-        lp_views = next(
-            (int(a["value"]) for a in actions
-             if a.get("action_type") in ("landing_page_view", "omni_landing_page_view")),
-            0,
-        )
+        action_values = ins.get("action_values", [])
+        PURCHASE_TYPES = ("purchase", "offsite_conversion.fb_pixel_purchase", "omni_purchase", "onsite_conversion.purchase")
+        leads = next((int(float(a["value"])) for a in actions if a.get("action_type") in ("lead", "onsite_conversion.lead_grouped")), 0)
+        lp_views = next((int(float(a["value"])) for a in actions if a.get("action_type") in ("landing_page_view", "omni_landing_page_view")), 0)
+        bookings = next((int(float(a["value"])) for a in actions if a.get("action_type") in PURCHASE_TYPES), 0)
+        revenue = next((float(a["value"]) for a in action_values if a.get("action_type") in PURCHASE_TYPES), 0.0)
 
         results.append({
             "meta_ad_id": ad_id,
@@ -156,6 +152,8 @@ def sync_ads(
             "clicks": int(ins.get("clicks", 0)),
             "leads": leads,
             "lp_views": lp_views,
+            "bookings": bookings,
+            "revenue": revenue,
             "date_start": ins.get("date_start"),
             "date_stop": ins.get("date_stop"),
         })
