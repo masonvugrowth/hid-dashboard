@@ -1,9 +1,11 @@
 """
-Metrics Engine — v1.3
+Metrics Engine — v1.4
 OCC computed via room-night expansion from raw reservations.
+Revenue attributed to CHECK-IN DATE (full grand_total on check-in night),
+matching Cloudbeds / Google Sheet monthly revenue totals.
 Business exclusion filters applied permanently (not configurable):
-  - status: cancelled, canceled, no_show
-  - source: house use, blogger, kol, day use, maintain
+  - status: cancelled, canceled, no_show, no show, no-show
+  - source: house use, blogger, kol, day use, maintenance
 """
 from __future__ import annotations
 
@@ -64,13 +66,15 @@ def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
     """
     Aggregate reservations for one branch on one date → DailyMetrics row.
     Uses room-night expansion per v2 spec, with source/status exclusion filters.
+    Revenue attributed to check-in date (full grand_total on check-in night),
+    matching how the Google Sheet / Cloudbeds reports count revenue.
     Upserts into daily_metrics table.
     """
     total_rooms: int = branch.total_rooms or 0
     total_room_count: int = branch.total_room_count or 0
     total_dorm_count: int = branch.total_dorm_count or 0
 
-    # All reservations spanning target_date (check_in <= date < check_out)
+    # All reservations spanning target_date (check_in <= date < check_out) — for OCC
     all_res = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
         Reservation.check_in_date <= target_date,
@@ -97,17 +101,11 @@ def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
     room_occ_pct  = round(rooms_sold / total_room_count, 4) if total_room_count > 0 else None
     dorm_occ_pct  = round(dorms_sold / total_dorm_count, 4) if total_dorm_count > 0 else None
 
-    # Revenue — spread nightly across stay
-    def _nightly_revenue(res_list, col_native=True) -> float:
-        total = 0.0
-        for r in res_list:
-            nights = max(int(r.nights or 1), 1)
-            val = float(r.grand_total_native or 0) if col_native else float(r.grand_total_vnd or 0)
-            total += val / nights
-        return round(total, 2)
-
-    revenue_native = _nightly_revenue(valid_res, col_native=True)
-    revenue_vnd    = _nightly_revenue(valid_res, col_native=False)
+    # Revenue — attributed to check-in date (full grand_total on check-in night)
+    # This matches Cloudbeds / Google Sheet revenue totals by month.
+    checkin_res = [r for r in valid_res if r.check_in_date == target_date]
+    revenue_native = round(sum(float(r.grand_total_native or 0) for r in checkin_res), 2)
+    revenue_vnd    = round(sum(float(r.grand_total_vnd or 0) for r in checkin_res), 2)
 
     # ADR and RevPAR (in native currency)
     adr_native    = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
@@ -242,8 +240,15 @@ def recompute_branch_range(
         ).all()
     }
 
+    # Pre-index valid reservations by check-in date for O(1) revenue lookup
+    from collections import defaultdict as _defaultdict
+    checkin_map: dict = _defaultdict(list)
+    for r in valid_res:
+        if r.check_in_date is not None:
+            checkin_map[r.check_in_date].append(r)
+
     while current <= date_to:
-        # Reservations spanning this date
+        # Reservations spanning this date (for OCC)
         day_res = [
             r for r in valid_res
             if r.check_in_date <= current < r.check_out_date
@@ -263,16 +268,10 @@ def recompute_branch_range(
         room_occ_pct = round(rooms_sold / total_room_count, 4) if total_room_count > 0 else None
         dorm_occ_pct = round(dorms_sold / total_dorm_count, 4) if total_dorm_count > 0 else None
 
-        def _nightly(res_list, col_native=True) -> float:
-            total = 0.0
-            for r in res_list:
-                nights = max(int(r.nights or 1), 1)
-                val = float(r.grand_total_native or 0) if col_native else float(r.grand_total_vnd or 0)
-                total += val / nights
-            return round(total, 2)
-
-        revenue_native = _nightly(day_res, col_native=True)
-        revenue_vnd    = _nightly(day_res, col_native=False)
+        # Revenue — attributed to check-in date only (matches Google Sheet / Cloudbeds totals)
+        checkin_res    = checkin_map.get(current, [])
+        revenue_native = round(sum(float(r.grand_total_native or 0) for r in checkin_res), 2)
+        revenue_vnd    = round(sum(float(r.grand_total_vnd or 0) for r in checkin_res), 2)
         adr_native     = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
         revpar_native  = round(revenue_native / total_rooms, 2) if total_rooms > 0 else 0.0
 
