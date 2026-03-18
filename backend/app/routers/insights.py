@@ -140,7 +140,6 @@ def list_insights(
 @router.get("/country-intel")
 def country_intelligence(
     branch_id: Optional[UUID] = Query(None),
-    channel: Optional[str] = Query(None, description="Filter ads by channel: Meta, Google, TikTok"),
     db: Session = Depends(get_db),
 ):
     """
@@ -280,43 +279,51 @@ def country_intelligence(
         kol_metric_map[key]["organic_bookings"] += 1
         kol_metric_map[key]["organic_revenue_vnd"] += float(row[2] or 0)
 
-    # ── 4. Ads coverage per (branch_id, target_country) ──────────────────────
+    # ── 4. Ads coverage per (branch_id, target_country, channel) ────────────
     a_filter = "AND a.branch_id = :bid" if branch_id else ""
-    a_ch_filter = "AND a.channel = :ch" if channel else ""
-    a_params = dict(b_params)
-    if channel:
-        a_params["ch"] = channel
     ads_rows = db.execute(text(f"""
         SELECT
             a.branch_id,
             a.target_country,
-            SUM(a.cost_vnd)       AS total_cost_vnd,
-            SUM(a.impressions)    AS total_impressions,
-            SUM(a.clicks)         AS total_clicks,
-            SUM(a.leads)          AS total_leads,
-            STRING_AGG(DISTINCT a.target_audience, ', ') AS target_audiences,
-            STRING_AGG(DISTINCT a.funnel_stage, ', ')    AS funnel_stages
+            a.channel,
+            SUM(a.cost_native)      AS total_cost_native,
+            SUM(a.revenue_native)   AS total_revenue_native,
+            SUM(a.impressions)      AS total_impressions,
+            SUM(a.clicks)           AS total_clicks,
+            SUM(a.leads)            AS total_leads,
+            SUM(a.bookings)         AS total_bookings
         FROM ads_performance a
         WHERE a.target_country IS NOT NULL AND a.target_country != ''
-          {a_filter} {a_ch_filter}
-        GROUP BY a.branch_id, a.target_country
-    """), a_params).fetchall()
+          {a_filter}
+        GROUP BY a.branch_id, a.target_country, a.channel
+        ORDER BY a.branch_id, a.target_country, a.channel
+    """), b_params).fetchall()
 
-    # ads_map: branch_id -> list of {country_lower, ...metrics}
-    ads_map: dict[str, list] = {}
+    # ads_map: branch_id -> { country_lower -> [channel_row, ...] }
+    ads_map: dict[str, dict] = {}
     for a in ads_rows:
         bid_str = str(a[0])
+        country = a[1] or ""
+        ckey = country.lower()
+        cost = float(a[3] or 0)
+        rev  = float(a[4] or 0)
         if bid_str not in ads_map:
-            ads_map[bid_str] = []
-        ads_map[bid_str].append({
-            "target_country": a[1],
-            "country_lower": (a[1] or "").lower(),
-            "total_cost_vnd": float(a[2]) if a[2] else 0,
-            "total_impressions": int(a[3] or 0),
-            "total_clicks": int(a[4] or 0),
-            "total_leads": int(a[5] or 0),
-            "target_audiences": a[6],
-            "funnel_stages": a[7],
+            ads_map[bid_str] = {}
+        if ckey not in ads_map[bid_str]:
+            ads_map[bid_str][ckey] = {
+                "target_country": country,
+                "country_lower": ckey,
+                "channels": [],
+            }
+        ads_map[bid_str][ckey]["channels"].append({
+            "channel": a[2] or "Unknown",
+            "total_cost_native": cost,
+            "total_revenue_native": rev,
+            "roas": round(rev / cost, 2) if cost > 0 else None,
+            "total_impressions": int(a[5] or 0),
+            "total_clicks": int(a[6] or 0),
+            "total_leads": int(a[7] or 0),
+            "total_bookings": int(a[8] or 0),
         })
 
     # ── 5. Helper: build a country entry with KOL/Ads coverage ──────────────
@@ -341,9 +348,9 @@ def country_intelligence(
                     "organic_revenue_vnd": metrics.get("organic_revenue_vnd", 0.0),
                 })
         matched_ads = []
-        for ad in ads_map.get(bid_str, []):
-            ac = ad["country_lower"]
-            if ac in cty_lower or cty_lower in ac:
+        country_ads_dict = ads_map.get(bid_str, {})
+        for ckey, ad in country_ads_dict.items():
+            if ckey in cty_lower or cty_lower in ckey:
                 matched_ads.append({k: v for k, v in ad.items() if k != "country_lower"})
         action_items = []
         if not matched_kols:

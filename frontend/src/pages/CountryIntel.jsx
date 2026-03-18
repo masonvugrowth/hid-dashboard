@@ -116,18 +116,29 @@ function KolBadge({ kol }) {
   );
 }
 
+const CHANNEL_COLORS = {
+  Meta: "bg-blue-50 border-blue-200 text-blue-800",
+  Google: "bg-green-50 border-green-200 text-green-800",
+  TikTok: "bg-pink-50 border-pink-200 text-pink-800",
+};
+
 function AdsBadge({ ad }) {
+  const channels = ad.channels || [];
   return (
-    <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs">
-      <div className="text-blue-800 space-y-0.5">
-        {ad.target_country && <div className="font-semibold">{ad.target_country}</div>}
-        {ad.target_audiences && <div>Audience: {ad.target_audiences}</div>}
-        <div>Spend: {fmt(ad.total_cost_vnd)} VND</div>
-        {ad.total_impressions > 0 && (
-          <div>{fmt(ad.total_impressions)} impressions · {fmt(ad.total_clicks)} clicks</div>
-        )}
-        {ad.total_leads > 0 && <div>{ad.total_leads} leads</div>}
-      </div>
+    <div className="space-y-2">
+      {channels.map((ch, i) => {
+        const cls = CHANNEL_COLORS[ch.channel] || "bg-gray-50 border-gray-200 text-gray-800";
+        return (
+          <div key={i} className={"border rounded p-2 text-xs " + cls}>
+            <div className="font-semibold mb-1">{ch.channel}</div>
+            <div className="grid grid-cols-3 gap-x-3 gap-y-0.5">
+              <div><span className="opacity-60">Cost</span><br/><span className="font-mono font-medium">{fmt(ch.total_cost_native)}</span></div>
+              <div><span className="opacity-60">Revenue</span><br/><span className="font-mono font-medium">{fmt(ch.total_revenue_native)}</span></div>
+              <div><span className="opacity-60">ROAS</span><br/><span className="font-mono font-medium">{ch.roas != null ? ch.roas + "x" : "—"}</span></div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -416,7 +427,7 @@ export default function CountryIntel() {
       })
       .catch(() => setError("Network error"))
       .finally(() => setLoading(false));
-  }, [selected, isAll, channel]);
+  }, [selected, isAll]);
 
   const allItems = data.flatMap((b) => [
     ...(b.top_volume || []),
@@ -434,16 +445,6 @@ export default function CountryIntel() {
         <p className="text-sm text-gray-500 mt-0.5">
           Top guest countries × KOL coverage × Paid Ads coverage
         </p>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-gray-500">Ads channel:</span>
-        {["", "Meta", "Google", "TikTok"].map(c => (
-          <button key={c} onClick={() => setChannel(c)}
-            className={"px-3 py-1 rounded text-xs font-medium border " + (channel===c ? "bg-gray-800 text-white border-gray-800" : "text-gray-500 border-gray-200")}>
-            {c || "All"}
-          </button>
-        ))}
       </div>
 
       {!loading && data.length > 0 && (
