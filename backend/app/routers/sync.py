@@ -1035,6 +1035,7 @@ def trigger_sheets_revenue(
         import logging
         from sqlalchemy import text
         from app.database import SessionLocal
+        from app.services.cloudbeds import get_cached_rate
         log = logging.getLogger(__name__)
         db2 = SessionLocal()
         try:
@@ -1043,18 +1044,26 @@ def trigger_sheets_revenue(
                     rows = read_revenue_from_sheet(
                         cfg["sheet_id"], client_id, client_secret, refresh_token
                     )
+                    # Pre-fetch exchange rate once per branch (native → VND)
+                    currency = cfg.get("currency", "VND")
+                    fx_rate = get_cached_rate(currency, "VND") if currency != "VND" else 1.0
+
                     updated = 0
                     for row in rows:
+                        gt_native = row["grand_total"]
+                        gt_vnd = round(gt_native * fx_rate, 2) if fx_rate else None
                         res = db2.execute(text("""
                             UPDATE reservations
-                            SET grand_total_native = :gt
+                            SET grand_total_native = :gt,
+                                grand_total_vnd    = :gt_vnd
                             WHERE branch_id = :bid
                               AND cloudbeds_reservation_id = :res_num
                               AND (grand_total_native IS NULL
                                    OR ABS(grand_total_native - :gt) / GREATEST(:gt, 1) > 0.01)
                             RETURNING id
                         """), {
-                            "gt": row["grand_total"],
+                            "gt": gt_native,
+                            "gt_vnd": gt_vnd,
                             "bid": cfg["branch_id"],
                             "res_num": row["reservation_number"],
                         }).fetchall()

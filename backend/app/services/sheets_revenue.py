@@ -68,21 +68,27 @@ def _safe(row: list, idx: int) -> str:
 def _parse_float(val: str) -> Optional[float]:
     if not val: return None
     try:
+        import re
         # Handle European format (1.234,56) or standard (1234.56 or 1,234.56)
         v = val.replace(" ", "")
         if "," in v and "." in v:
-            # Determine which is thousands vs decimal
+            # Determine which is thousands vs decimal separator
             if v.rindex(",") > v.rindex("."):
+                # European: 1.234,56 → 1234.56
                 v = v.replace(".", "").replace(",", ".")
             else:
+                # Standard: 1,234.56 → 1234.56
                 v = v.replace(",", "")
         elif "," in v:
-            # Could be thousands sep or decimal
+            # Could be thousands sep or decimal comma
             parts = v.split(",")
             if len(parts) == 2 and len(parts[1]) <= 2:
-                v = v.replace(",", ".")   # decimal comma
+                v = v.replace(",", ".")   # decimal comma: 1234,56 → 1234.56
             else:
-                v = v.replace(",", "")    # thousands comma
+                v = v.replace(",", "")    # thousands comma: 1,200,000 → 1200000
+        elif re.search(r"\.\d{3}$", v):
+            # European thousands with period: 10.800 → 10800, 1.234.567 → 1234567
+            v = v.replace(".", "")
         return float(v)
     except (ValueError, AttributeError):
         return None
