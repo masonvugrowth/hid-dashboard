@@ -248,36 +248,26 @@ def compute_kpi_summary(
     )
     nights_booked = int(nights_row or 0)
 
-    # True ADR = SUM(revenue) / SUM(rooms_sold) — weighted, not simple average
-    adr_row = (
-        db.query(
-            func.sum(DailyMetrics.revenue_native) /
-            func.nullif(func.sum(DailyMetrics.total_sold), 0)
+    # True ADR = SUM(grand_total_native) / SUM(nights) — nightly rate (industry standard)
+    # Must use reservations directly, NOT daily_metrics, because daily_metrics.revenue_native
+    # is now check-in attributed (full stay value on check-in night), so
+    # revenue/rooms_sold would give full-stay ADR, not nightly rate.
+    adr_res = (
+        _revenue_query(db, branch_id, year, month)
+        .with_entities(
+            func.coalesce(func.sum(Reservation.grand_total_native), 0),
+            func.coalesce(func.sum(Reservation.nights), 0),
         )
-        .filter(
-            DailyMetrics.branch_id == branch_id,
-            func.extract("year", DailyMetrics.date) == year,
-            func.extract("month", DailyMetrics.date) == month,
-            DailyMetrics.total_sold > 0,
-        )
-        .scalar()
+        .one()
     )
-    avg_adr = float(adr_row) if adr_row else None
+    adr_total_rev   = float(adr_res[0] or 0)
+    adr_total_nights = int(adr_res[1] or 0)
+    avg_adr = round(adr_total_rev / adr_total_nights, 2) if adr_total_nights > 0 else None
 
-    # True OCC = SUM(rooms_sold) / (days_with_data * total_rooms)
-    occ_row = (
-        db.query(
-            func.sum(DailyMetrics.total_sold) /
-            func.nullif(func.count(DailyMetrics.date) * total_rooms, 0)
-        )
-        .filter(
-            DailyMetrics.branch_id == branch_id,
-            func.extract("year", DailyMetrics.date) == year,
-            func.extract("month", DailyMetrics.date) == month,
-        )
-        .scalar()
-    )
-    avg_occ = float(occ_row) if occ_row else None
+    # Actual OCC: use KPI target's predicted_occ as the best available estimate
+    # (check-in based OCC from daily_metrics is much lower than traditional OCC
+    #  and would produce wrong fallback ADR estimates)
+    avg_occ = predicted_occ_pct
 
     # Forecasts
     occ_forecast = calculate_occ_forecast(
