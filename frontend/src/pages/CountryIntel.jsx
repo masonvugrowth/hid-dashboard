@@ -371,7 +371,7 @@ function BranchSection({ branch }) {
           <div>
             <div className="px-5 py-2 bg-emerald-50 border-b border-emerald-100">
               <span className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">
-                Top 5 · Fastest Growing (last 90 days vs prior 90 days)
+                Top 5 · Fastest Growing (last 30 days vs prior 30 days)
               </span>
             </div>
             {branch.top_growth?.length > 0 ? (
@@ -380,8 +380,8 @@ function BranchSection({ branch }) {
                   <tr className="text-xs text-gray-500 bg-gray-50 border-b">
                     <th className="px-3 py-2 text-left w-8">#</th>
                     <th className="px-3 py-2 text-left">Country</th>
-                    <th className="px-3 py-2 text-right">Recent (90d)</th>
-                    <th className="px-3 py-2 text-right">Prior (90d)</th>
+                    <th className="px-3 py-2 text-right">Recent (30d)</th>
+                    <th className="px-3 py-2 text-right">Prior (30d)</th>
                     <th className="px-3 py-2 text-right">Growth</th>
                     <th className="px-3 py-2 text-left">KOL</th>
                     <th className="px-3 py-2 text-left">Paid Ads</th>
@@ -396,7 +396,7 @@ function BranchSection({ branch }) {
               </table>
             ) : (
               <div className="px-5 py-3 text-xs text-gray-400">
-                No clear growth trends in the last 90 days.
+                No clear growth trends in the last 30 days.
               </div>
             )}
           </div>

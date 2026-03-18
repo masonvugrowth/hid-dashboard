@@ -131,20 +131,8 @@ function SingleBranchView({ branch }) {
   if (loading) return <div className="p-8 text-gray-400 animate-pulse">Loading…</div>;
   if (error)   return <div className="p-8 text-red-500">Error: {error}</div>;
 
-  const hotCountries = countries.filter(c => c.tier === "Hot");
   return (
     <div className="space-y-6">
-      {hotCountries.length > 0 && (
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs text-gray-500 font-medium">Hot markets:</span>
-          {hotCountries.map(c => (
-            <span key={c.country_code} className="flex items-center gap-1">
-              <CountryBadge tier="Hot" />
-              <span className="text-xs font-medium text-gray-700">{c.country}</span>
-            </span>
-          ))}
-        </div>
-      )}
       {kpi && (
         <KPICard
           label={branch.name + " — Revenue"}

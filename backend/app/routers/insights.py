@@ -186,7 +186,7 @@ def country_intelligence(
         ORDER BY branch_name, rank
     """), b_params).fetchall()
 
-    # ── 2. Top 5 by growth (recent 90d vs prior 90d) ─────────────────────────
+    # ── 2. Top 5 by growth (recent 30d vs prior 30d) ─────────────────────────
     growth_rows = db.execute(text(f"""
         WITH recent AS (
             SELECT r.branch_id, r.guest_country, r.guest_country_code, COUNT(*) AS cnt
@@ -196,7 +196,7 @@ def country_intelligence(
               AND r.guest_country != '0'
               AND length(r.guest_country) > 1
               AND r.status NOT IN ('canceled','cancelled','no_show','no-show','cancelled_by_guest')
-              AND r.check_in_date >= CURRENT_DATE - INTERVAL '90 days'
+              AND r.check_in_date >= CURRENT_DATE - INTERVAL '30 days'
               AND r.guest_country NOT ILIKE '%unknown%'
               {b_filter}
             GROUP BY r.branch_id, r.guest_country, r.guest_country_code
@@ -209,8 +209,8 @@ def country_intelligence(
               AND r.guest_country != '0'
               AND length(r.guest_country) > 1
               AND r.status NOT IN ('canceled','cancelled','no_show','no-show','cancelled_by_guest')
-              AND r.check_in_date >= CURRENT_DATE - INTERVAL '180 days'
-              AND r.check_in_date < CURRENT_DATE - INTERVAL '90 days'
+              AND r.check_in_date >= CURRENT_DATE - INTERVAL '60 days'
+              AND r.check_in_date < CURRENT_DATE - INTERVAL '30 days'
               AND r.guest_country NOT ILIKE '%unknown%'
               {b_filter}
             GROUP BY r.branch_id, r.guest_country
@@ -235,7 +235,8 @@ def country_intelligence(
             FROM recent rec
             LEFT JOIN prev prv
                    ON rec.branch_id = prv.branch_id AND rec.guest_country = prv.guest_country
-            WHERE rec.cnt >= 2
+            WHERE rec.cnt >= 5      -- require ≥5 bookings in recent 30d to qualify as a trend
+              AND COALESCE(prv.cnt, 0) >= 2  -- and ≥2 in prior 30d (genuine growth, not noise)
         )
         SELECT g.branch_id, b.name AS branch_name, b.currency,
                g.guest_country, g.guest_country_code,
