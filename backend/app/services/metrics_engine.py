@@ -1,9 +1,11 @@
 """
-Metrics Engine — v1.5
-Both OCC and Revenue attributed to CHECK-IN DATE:
-  - OCC     = rooms checking in on date / total_rooms
-  - Revenue = sum(grand_total_native) for check-ins on date
-Monthly aggregates therefore match Cloudbeds / Google Sheet totals exactly.
+Metrics Engine — v1.6
+Split OCC and Revenue attribution:
+  - OCC     = traditional in-house (spanning): rooms occupied on date / total_rooms
+              (reservations where check_in_date <= date < check_out_date)
+  - Revenue = check-in date attribution: sum(grand_total_native) for check-ins on date
+              (matches Cloudbeds / Google Sheet monthly totals)
+  - total_sold / rooms_sold / dorms_sold = check-in units (for ADR denominator)
 Business exclusion filters applied permanently (not configurable):
   - status: cancelled, canceled, no_show, no show, no-show
   - source: house use, blogger, kol, day use, maintenance
@@ -66,46 +68,48 @@ def _room_night_expand(reservations) -> set[str]:
 def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
     """
     Aggregate reservations for one branch on one date → DailyMetrics row.
-    Both OCC and Revenue attributed to CHECK-IN DATE:
-      - Only reservations checking in on target_date are counted
-      - OCC  = rooms checking in / total_rooms
-      - Revenue = sum(grand_total_native) for check-ins on target_date
-    This matches Cloudbeds / Google Sheet monthly totals.
+    OCC  = traditional in-house: distinct rooms occupied (check_in <= date < check_out)
+    Revenue = check-in date attribution: sum(grand_total_native) for check-ins on target_date
+    total_sold / rooms_sold / dorms_sold = check-in units (ADR denominator)
     Upserts into daily_metrics table.
     """
     total_rooms: int = branch.total_rooms or 0
     total_room_count: int = branch.total_room_count or 0
     total_dorm_count: int = branch.total_dorm_count or 0
 
-    # Only reservations checking IN on target_date (check-in date attribution)
-    all_res = db.query(Reservation).filter(
+    # ── Revenue / total_sold: check-in date attribution ────────────────────────
+    checkin_raw = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
         Reservation.check_in_date == target_date,
     ).all()
+    checkin_res = [r for r in checkin_raw if not _is_excluded(r)]
 
-    # Apply exclusion filters (v2 business rules — permanent, not configurable)
-    checkin_res = [r for r in all_res if not _is_excluded(r)]
-
-    # Split by room type for separate room/dorm OCC
-    room_res = [r for r in checkin_res if (r.room_type_category or "").lower() == "room"]
-    dorm_res = [r for r in checkin_res if (r.room_type_category or "").lower() == "dorm"]
-
-    # Room-night expansion → distinct room counts checking in today
-    rooms_occupied = _room_night_expand(room_res)
-    dorms_occupied = _room_night_expand(dorm_res)
-
-    rooms_sold = len(rooms_occupied)
-    dorms_sold = len(dorms_occupied)
+    room_ci = [r for r in checkin_res if (r.room_type_category or "").lower() == "room"]
+    dorm_ci = [r for r in checkin_res if (r.room_type_category or "").lower() == "dorm"]
+    rooms_sold = len(_room_night_expand(room_ci))
+    dorms_sold = len(_room_night_expand(dorm_ci))
     total_sold = rooms_sold + dorms_sold
 
-    # OCC% — based on check-ins today (consistent with revenue attribution)
-    occ_pct       = round(total_sold / total_rooms, 4) if total_rooms > 0 else 0.0
-    room_occ_pct  = round(rooms_sold / total_room_count, 4) if total_room_count > 0 else None
-    dorm_occ_pct  = round(dorms_sold / total_dorm_count, 4) if total_dorm_count > 0 else None
-
-    # Revenue — full grand_total for check-ins on target_date
     revenue_native = round(sum(float(r.grand_total_native or 0) for r in checkin_res), 2)
     revenue_vnd    = round(sum(float(r.grand_total_vnd or 0) for r in checkin_res), 2)
+
+    # ── OCC: traditional in-house (spanning) ──────────────────────────────────
+    inhouse_raw = db.query(Reservation).filter(
+        Reservation.branch_id == branch.id,
+        Reservation.check_in_date <= target_date,
+        Reservation.check_out_date > target_date,
+    ).all()
+    inhouse_res = [r for r in inhouse_raw if not _is_excluded(r)]
+
+    room_ih = [r for r in inhouse_res if (r.room_type_category or "").lower() == "room"]
+    dorm_ih = [r for r in inhouse_res if (r.room_type_category or "").lower() == "dorm"]
+    rooms_inhouse = len(_room_night_expand(room_ih))
+    dorms_inhouse = len(_room_night_expand(dorm_ih))
+    total_inhouse = rooms_inhouse + dorms_inhouse
+
+    occ_pct      = round(total_inhouse / total_rooms, 4) if total_rooms > 0 else 0.0
+    room_occ_pct = round(rooms_inhouse / total_room_count, 4) if total_room_count > 0 else None
+    dorm_occ_pct = round(dorms_inhouse / total_dorm_count, 4) if total_dorm_count > 0 else None
 
     # ADR and RevPAR (in native currency)
     adr_native    = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
@@ -168,7 +172,7 @@ def recompute_branch_range(
     total_room_count: int = branch.total_room_count or 0
     total_dorm_count: int = branch.total_dorm_count or 0
 
-    # ── Fetch all data in 3 queries, then detach from session ─────────────────
+    # ── Fetch all data in 4 queries, then detach from session ─────────────────
 
     class _ResProxy:
         """Lightweight plain-Python copy of a Reservation row — session-independent."""
@@ -188,7 +192,7 @@ def recompute_branch_range(
             self.grand_total_native = r.grand_total_native
             self.grand_total_vnd   = r.grand_total_vnd
 
-    # 1. All reservations with check_in_date in the date range (check-in date attribution)
+    # 1. Check-in date reservations (for revenue / total_sold / ADR)
     raw_res = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
         Reservation.check_in_date >= date_from,
@@ -196,7 +200,16 @@ def recompute_branch_range(
     ).all()
     all_res = [_ResProxy(r) for r in raw_res]
 
-    # 2. All reservation_dates / cancellation_dates in range
+    # 2. Spanning reservations (for traditional in-house OCC)
+    #    check_in_date <= date_to AND check_out_date > date_from → overlaps the range
+    spanning_raw = db.query(Reservation).filter(
+        Reservation.branch_id == branch.id,
+        Reservation.check_in_date <= date_to,
+        Reservation.check_out_date > date_from,
+    ).all()
+    spanning_res = [_ResProxy(r) for r in spanning_raw]
+
+    # 3. All reservation_dates / cancellation_dates in range
     booking_res = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
         Reservation.reservation_date >= date_from,
@@ -221,13 +234,12 @@ def recompute_branch_range(
         if cd:
             cancellations_map[cd] += 1
 
-    valid_res = [r for r in all_res if not _is_excluded(r)]
+    valid_res    = [r for r in all_res if not _is_excluded(r)]
+    spanning_valid = [r for r in spanning_res if not _is_excluded(r)]
 
     # ── Iterate days in Python (no more DB queries) ───────────────────────────
 
     current = date_from
-    new_dms: list[DailyMetrics] = []
-    update_dms: list[DailyMetrics] = []
     count = 0
 
     # Load existing daily_metrics for this range to decide insert vs update
@@ -240,7 +252,7 @@ def recompute_branch_range(
         ).all()
     }
 
-    # Pre-index valid reservations by check-in date for O(1) revenue lookup
+    # Pre-index check-in reservations by check-in date for O(1) revenue lookup
     from collections import defaultdict as _defaultdict
     checkin_map: dict = _defaultdict(list)
     for r in valid_res:
@@ -248,27 +260,35 @@ def recompute_branch_range(
             checkin_map[r.check_in_date].append(r)
 
     while current <= date_to:
-        # Both OCC and Revenue use check-in date attribution
+        # ── Revenue / total_sold: check-in date attribution ────────────────────
         checkin_res = checkin_map.get(current, [])
 
-        room_res = [r for r in checkin_res if (r.room_type_category or "").lower() == "room"]
-        dorm_res = [r for r in checkin_res if (r.room_type_category or "").lower() == "dorm"]
-
-        rooms_occupied = _room_night_expand(room_res)
-        dorms_occupied = _room_night_expand(dorm_res)
-
-        rooms_sold = len(rooms_occupied)
-        dorms_sold = len(dorms_occupied)
+        room_ci = [r for r in checkin_res if (r.room_type_category or "").lower() == "room"]
+        dorm_ci = [r for r in checkin_res if (r.room_type_category or "").lower() == "dorm"]
+        rooms_sold = len(_room_night_expand(room_ci))
+        dorms_sold = len(_room_night_expand(dorm_ci))
         total_sold = rooms_sold + dorms_sold
-
-        occ_pct      = round(total_sold / total_rooms, 4) if total_rooms > 0 else 0.0
-        room_occ_pct = round(rooms_sold / total_room_count, 4) if total_room_count > 0 else None
-        dorm_occ_pct = round(dorms_sold / total_dorm_count, 4) if total_dorm_count > 0 else None
 
         revenue_native = round(sum(float(r.grand_total_native or 0) for r in checkin_res), 2)
         revenue_vnd    = round(sum(float(r.grand_total_vnd or 0) for r in checkin_res), 2)
         adr_native     = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
         revpar_native  = round(revenue_native / total_rooms, 2) if total_rooms > 0 else 0.0
+
+        # ── OCC: traditional in-house (spanning) ──────────────────────────────
+        inhouse_res = [
+            r for r in spanning_valid
+            if r.check_in_date <= current
+            and (r.check_out_date or current + timedelta(days=1)) > current
+        ]
+        room_ih = [r for r in inhouse_res if (r.room_type_category or "").lower() == "room"]
+        dorm_ih = [r for r in inhouse_res if (r.room_type_category or "").lower() == "dorm"]
+        rooms_inhouse = len(_room_night_expand(room_ih))
+        dorms_inhouse = len(_room_night_expand(dorm_ih))
+        total_inhouse = rooms_inhouse + dorms_inhouse
+
+        occ_pct      = round(total_inhouse / total_rooms, 4) if total_rooms > 0 else 0.0
+        room_occ_pct = round(rooms_inhouse / total_room_count, 4) if total_room_count > 0 else None
+        dorm_occ_pct = round(dorms_inhouse / total_dorm_count, 4) if total_dorm_count > 0 else None
 
         new_bookings  = new_bookings_map.get(current, 0)
         cancellations = cancellations_map.get(current, 0)
