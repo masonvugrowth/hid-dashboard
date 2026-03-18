@@ -22,14 +22,20 @@ from app.models.reservation import Reservation
 logger = logging.getLogger(__name__)
 
 # ── Exclusion filter constants ─────────────────────────────────────────────────
-EXCLUDED_STATUSES = {"cancelled", "canceled", "no_show", "noshow"}
+EXCLUDED_STATUSES = {"cancelled", "canceled", "no_show", "noshow", "no show", "no-show"}
 EXCLUDED_SOURCES  = {"house use", "blogger", "kol", "day use", "maintain", "maintenance", "houseuse", "dayuse"}
 
 
 def _is_excluded(reservation: Reservation) -> bool:
-    status = (reservation.status or "").lower().replace("-", "_")
+    status = (reservation.status or "").lower().strip()
     source = (reservation.source or "").lower().strip()
-    return status in EXCLUDED_STATUSES or source in EXCLUDED_SOURCES
+    # Normalise both hyphen and underscore variants so all forms match
+    status_norm = status.replace("-", "_").replace(" ", "_")
+    return (
+        status in EXCLUDED_STATUSES
+        or status_norm in EXCLUDED_STATUSES
+        or source in EXCLUDED_SOURCES
+    )
 
 
 def _room_night_expand(reservations) -> set[str]:
@@ -355,7 +361,7 @@ def get_ota_mix(
     ).filter(
         Reservation.check_in_date >= date_from,
         Reservation.check_in_date <= date_to,
-        Reservation.status.notin_(list(EXCLUDED_STATUSES)),
+        func.lower(Reservation.status).notin_(list(EXCLUDED_STATUSES)),
         func.lower(Reservation.source).notin_(list(EXCLUDED_SOURCES)),
     )
     if branch_id:

@@ -43,6 +43,9 @@ function AllBranchesTable({ data, loading }) {
       <div className="px-5 py-4 border-b border-gray-100">
         <h2 className="font-semibold text-gray-800">Group Summary — {MONTH_NAME}</h2>
         <p className="text-xs text-gray-400 mt-0.5">Native currency per branch · No cross-branch aggregation</p>
+        <p className="text-xs text-gray-400 mt-0.5">
+          Excludes: Cancelled · No-show · KOL · Blogger · Maintenance · House Use · Day Use
+        </p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">

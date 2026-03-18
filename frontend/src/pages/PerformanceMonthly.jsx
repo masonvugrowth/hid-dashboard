@@ -169,7 +169,7 @@ export default function PerformanceMonthly() {
               <div key={branchId} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
                 <div className="px-4 pt-4 pb-2">
                   <p className="text-sm font-semibold text-gray-800">{branch?.name || branchId}</p>
-                  <p className="text-xs text-gray-400">{branch?.city} · {cur}</p>
+                  <p className="text-xs text-gray-400">{branch?.city} · {cur} · Excludes: Cancelled · No-show · KOL · Blogger · Maintenance · House Use · Day Use</p>
                 </div>
                 <table className="w-full text-sm">
                   <thead>

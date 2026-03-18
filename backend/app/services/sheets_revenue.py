@@ -13,6 +13,7 @@ Column indices (0-based, same across all 5 branches):
   39 → Country
 
 Excluded statuses: Cancelled, Canceled, No-Show, No Show
+Excluded sources:  KOL, Blogger, Maintenance, House Use, Day Use
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
 TOKEN_URL  = "https://oauth2.googleapis.com/token"
 
 EXCLUDED_STATUSES = {"cancelled", "canceled", "no-show", "no show", "noshow"}
+EXCLUDED_SOURCES  = {"kol", "blogger", "maintenance", "house use", "day use", "houseuse", "dayuse", "maintain"}
 
 # Column indices
 COL_RES_NUM   = 9
@@ -35,6 +37,7 @@ COL_ACCOM     = 24
 COL_CHECKIN   = 26
 COL_NIGHTS    = 28
 COL_GRAND     = 30
+COL_SOURCE    = 36
 COL_STATUS    = 38
 COL_COUNTRY   = 39
 
@@ -112,8 +115,13 @@ def read_revenue_from_sheet(
             skipped += 1
             continue
 
-        status = _safe(row, COL_STATUS).lower()
+        status = _safe(row, COL_STATUS).lower().replace("-", " ")
         if status in EXCLUDED_STATUSES:
+            skipped += 1
+            continue
+
+        source = _safe(row, COL_SOURCE).lower().strip()
+        if source in EXCLUDED_SOURCES:
             skipped += 1
             continue
 
