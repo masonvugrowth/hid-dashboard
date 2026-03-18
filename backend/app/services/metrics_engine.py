@@ -1,8 +1,9 @@
 """
-Metrics Engine — v1.4
-OCC computed via room-night expansion from raw reservations.
-Revenue attributed to CHECK-IN DATE (full grand_total on check-in night),
-matching Cloudbeds / Google Sheet monthly revenue totals.
+Metrics Engine — v1.5
+Both OCC and Revenue attributed to CHECK-IN DATE:
+  - OCC     = rooms checking in on date / total_rooms
+  - Revenue = sum(grand_total_native) for check-ins on date
+Monthly aggregates therefore match Cloudbeds / Google Sheet totals exactly.
 Business exclusion filters applied permanently (not configurable):
   - status: cancelled, canceled, no_show, no show, no-show
   - source: house use, blogger, kol, day use, maintenance
@@ -65,30 +66,31 @@ def _room_night_expand(reservations) -> set[str]:
 def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
     """
     Aggregate reservations for one branch on one date → DailyMetrics row.
-    Uses room-night expansion per v2 spec, with source/status exclusion filters.
-    Revenue attributed to check-in date (full grand_total on check-in night),
-    matching how the Google Sheet / Cloudbeds reports count revenue.
+    Both OCC and Revenue attributed to CHECK-IN DATE:
+      - Only reservations checking in on target_date are counted
+      - OCC  = rooms checking in / total_rooms
+      - Revenue = sum(grand_total_native) for check-ins on target_date
+    This matches Cloudbeds / Google Sheet monthly totals.
     Upserts into daily_metrics table.
     """
     total_rooms: int = branch.total_rooms or 0
     total_room_count: int = branch.total_room_count or 0
     total_dorm_count: int = branch.total_dorm_count or 0
 
-    # All reservations spanning target_date (check_in <= date < check_out) — for OCC
+    # Only reservations checking IN on target_date (check-in date attribution)
     all_res = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
-        Reservation.check_in_date <= target_date,
-        Reservation.check_out_date > target_date,
+        Reservation.check_in_date == target_date,
     ).all()
 
     # Apply exclusion filters (v2 business rules — permanent, not configurable)
-    valid_res = [r for r in all_res if not _is_excluded(r)]
+    checkin_res = [r for r in all_res if not _is_excluded(r)]
 
     # Split by room type for separate room/dorm OCC
-    room_res = [r for r in valid_res if (r.room_type_category or "").lower() == "room"]
-    dorm_res = [r for r in valid_res if (r.room_type_category or "").lower() == "dorm"]
+    room_res = [r for r in checkin_res if (r.room_type_category or "").lower() == "room"]
+    dorm_res = [r for r in checkin_res if (r.room_type_category or "").lower() == "dorm"]
 
-    # Room-night expansion → distinct room counts
+    # Room-night expansion → distinct room counts checking in today
     rooms_occupied = _room_night_expand(room_res)
     dorms_occupied = _room_night_expand(dorm_res)
 
@@ -96,14 +98,12 @@ def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
     dorms_sold = len(dorms_occupied)
     total_sold = rooms_sold + dorms_sold
 
-    # OCC%
+    # OCC% — based on check-ins today (consistent with revenue attribution)
     occ_pct       = round(total_sold / total_rooms, 4) if total_rooms > 0 else 0.0
     room_occ_pct  = round(rooms_sold / total_room_count, 4) if total_room_count > 0 else None
     dorm_occ_pct  = round(dorms_sold / total_dorm_count, 4) if total_dorm_count > 0 else None
 
-    # Revenue — attributed to check-in date (full grand_total on check-in night)
-    # This matches Cloudbeds / Google Sheet revenue totals by month.
-    checkin_res = [r for r in valid_res if r.check_in_date == target_date]
+    # Revenue — full grand_total for check-ins on target_date
     revenue_native = round(sum(float(r.grand_total_native or 0) for r in checkin_res), 2)
     revenue_vnd    = round(sum(float(r.grand_total_vnd or 0) for r in checkin_res), 2)
 
@@ -188,11 +188,11 @@ def recompute_branch_range(
             self.grand_total_native = r.grand_total_native
             self.grand_total_vnd   = r.grand_total_vnd
 
-    # 1. All reservations that overlap the date range (copy to proxies immediately)
+    # 1. All reservations with check_in_date in the date range (check-in date attribution)
     raw_res = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
+        Reservation.check_in_date >= date_from,
         Reservation.check_in_date <= date_to,
-        Reservation.check_out_date > date_from,
     ).all()
     all_res = [_ResProxy(r) for r in raw_res]
 
@@ -248,14 +248,11 @@ def recompute_branch_range(
             checkin_map[r.check_in_date].append(r)
 
     while current <= date_to:
-        # Reservations spanning this date (for OCC)
-        day_res = [
-            r for r in valid_res
-            if r.check_in_date <= current < r.check_out_date
-        ]
+        # Both OCC and Revenue use check-in date attribution
+        checkin_res = checkin_map.get(current, [])
 
-        room_res = [r for r in day_res if (r.room_type_category or "").lower() == "room"]
-        dorm_res = [r for r in day_res if (r.room_type_category or "").lower() == "dorm"]
+        room_res = [r for r in checkin_res if (r.room_type_category or "").lower() == "room"]
+        dorm_res = [r for r in checkin_res if (r.room_type_category or "").lower() == "dorm"]
 
         rooms_occupied = _room_night_expand(room_res)
         dorms_occupied = _room_night_expand(dorm_res)
@@ -268,8 +265,6 @@ def recompute_branch_range(
         room_occ_pct = round(rooms_sold / total_room_count, 4) if total_room_count > 0 else None
         dorm_occ_pct = round(dorms_sold / total_dorm_count, 4) if total_dorm_count > 0 else None
 
-        # Revenue — attributed to check-in date only (matches Google Sheet / Cloudbeds totals)
-        checkin_res    = checkin_map.get(current, [])
         revenue_native = round(sum(float(r.grand_total_native or 0) for r in checkin_res), 2)
         revenue_vnd    = round(sum(float(r.grand_total_vnd or 0) for r in checkin_res), 2)
         adr_native     = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
