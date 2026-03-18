@@ -843,3 +843,130 @@ def sync_room_counts(db: Session = Depends(get_db)):
 
     db.commit()
     return _envelope({"results": results})
+
+
+# ── Google Ads (via Google Sheets) sync ────────────────────────────────────
+
+GOOGLE_SHEET_MAP = {
+    "11111111-1111-1111-1111-111111111101": "GOOGLE_SHEET_TAIPEI",
+    "11111111-1111-1111-1111-111111111102": "GOOGLE_SHEET_SAIGON",
+    "11111111-1111-1111-1111-111111111103": "GOOGLE_SHEET_1948",
+    "11111111-1111-1111-1111-111111111104": "GOOGLE_SHEET_OANI",
+    "11111111-1111-1111-1111-111111111105": "GOOGLE_SHEET_OSAKA",
+}
+
+
+@router.post("/google-ads")
+def trigger_google_ads_sync(
+    branch_id: Optional[UUID] = Query(None, description="Sync one branch; omit for all"),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    db: Session = Depends(get_db),
+):
+    """
+    Pull Google Ads data from each branch's Google Sheet and upsert into ads_performance.
+    Upsert key: branch_id + channel='Google' + campaign_name + date_from.
+    """
+    from datetime import date as _date
+    from app.services.google_sheets_ads import sync_google_ads_sheet
+    from app.models.ads import AdsPerformance
+
+    client_id     = settings.GOOGLE_CLIENT_ID
+    client_secret = settings.GOOGLE_CLIENT_SECRET
+    refresh_token = settings.GOOGLE_REFRESH_TOKEN
+
+    if not client_id or not refresh_token:
+        raise HTTPException(status_code=400, detail="GOOGLE_CLIENT_ID / GOOGLE_REFRESH_TOKEN not configured")
+
+    df = _date.fromisoformat(date_from) if date_from else None
+    dt = _date.fromisoformat(date_to) if date_to else None
+
+    branches_q = db.query(Branch).filter_by(is_active=True)
+    if branch_id:
+        branches_q = branches_q.filter(Branch.id == branch_id)
+    branches = branches_q.all()
+
+    results = []
+    for branch in branches:
+        sheet_attr = GOOGLE_SHEET_MAP.get(str(branch.id))
+        if not sheet_attr:
+            results.append({"branch": branch.name, "skipped": "no sheet configured"})
+            continue
+        spreadsheet_id = getattr(settings, sheet_attr, "")
+        if not spreadsheet_id:
+            results.append({"branch": branch.name, "skipped": "sheet ID empty"})
+            continue
+
+        try:
+            data = sync_google_ads_sheet(
+                branch_id=str(branch.id),
+                branch_name=branch.name,
+                spreadsheet_id=spreadsheet_id,
+                currency=branch.currency or "VND",
+                client_id=client_id,
+                client_secret=client_secret,
+                refresh_token=refresh_token,
+                date_from=df,
+                date_to=dt,
+            )
+
+            created = updated = 0
+            for row in data["rows"]:
+                # Upsert key: branch + channel + campaign_name + date
+                existing = (
+                    db.query(AdsPerformance)
+                    .filter_by(
+                        branch_id=branch.id,
+                        channel="Google",
+                        campaign_name=row["campaign_name"],
+                        date_from=row["date_from"],
+                    )
+                    .first()
+                )
+                if existing:
+                    existing.funnel_stage      = row["funnel_stage"]
+                    existing.campaign_category = row["campaign_category"]
+                    existing.target_country    = row["target_country"]
+                    existing.cost_native       = row["cost_native"]
+                    existing.impressions       = row["impressions"]
+                    existing.clicks            = row["clicks"]
+                    existing.leads             = row["leads"]
+                    existing.bookings          = row["bookings"]
+                    existing.revenue_native    = row["revenue_native"]
+                    existing.date_to           = row["date_to"]
+                    updated += 1
+                else:
+                    from datetime import date as _d
+                    ap = AdsPerformance(
+                        branch_id=branch.id,
+                        channel="Google",
+                        campaign_name=row["campaign_name"],
+                        campaign_category=row["campaign_category"],
+                        funnel_stage=row["funnel_stage"],
+                        target_country=row["target_country"],
+                        cost_native=row["cost_native"],
+                        cost_vnd=row["cost_vnd"],
+                        impressions=row["impressions"],
+                        clicks=row["clicks"],
+                        leads=row["leads"],
+                        bookings=row["bookings"],
+                        revenue_native=row["revenue_native"],
+                        date_from=row["date_from"],
+                        date_to=row["date_to"],
+                    )
+                    db.add(ap)
+                    created += 1
+
+            db.commit()
+            results.append({
+                "branch":   branch.name,
+                "fetched":  data["fetched"],
+                "filtered": data["filtered"],
+                "created":  created,
+                "updated":  updated,
+            })
+        except Exception as exc:
+            db.rollback()
+            results.append({"branch": branch.name, "error": str(exc)})
+
+    return _envelope({"synced": results})

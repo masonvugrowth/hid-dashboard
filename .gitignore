@@ -33,3 +33,9 @@ Thumbs.db
 
 # Claude
 .claude/
+
+# Google OAuth secrets
+backend/google_tokens.txt
+backend/oauth_output.txt
+backend/google_client_secret.json
+backend/get_google_refresh_token.py
