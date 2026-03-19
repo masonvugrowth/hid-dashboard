@@ -46,6 +46,8 @@ def _combo_dict(cb: AdCombo, include_detail=False) -> dict:
         "roas": float(cb.roas) if cb.roas else None,
         "impressions": cb.impressions,
         "clicks": cb.clicks,
+        "leads": cb.leads,
+        "purchases": cb.purchases,
         "date_first_run": cb.date_first_run.isoformat() if cb.date_first_run else None,
         "date_last_run": cb.date_last_run.isoformat() if cb.date_last_run else None,
         "run_status": cb.run_status,

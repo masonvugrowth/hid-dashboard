@@ -31,6 +31,8 @@ class AdCombo(Base):
     roas = Column(Numeric(8, 4), nullable=True)
     impressions = Column(Integer, nullable=True)
     clicks = Column(Integer, nullable=True)
+    leads = Column(Integer, nullable=True)
+    purchases = Column(Integer, nullable=True)
     date_first_run = Column(Date, nullable=True)
     date_last_run = Column(Date, nullable=True)
     run_status = Column(String(20), nullable=True)  # Active / Paused / Ended

@@ -51,6 +51,8 @@ def sync_combo_performance(db: Session) -> int:
                       if combo.spend_vnd and float(combo.spend_vnd) > 0 else None)
         combo.impressions = perf.impressions
         combo.clicks = perf.clicks
+        combo.leads = getattr(perf, 'leads', None) or 0
+        combo.purchases = getattr(perf, 'bookings', None) or 0
         combo.last_synced_at = datetime.now(timezone.utc)
 
         # Auto-update verdict only if not manually set
