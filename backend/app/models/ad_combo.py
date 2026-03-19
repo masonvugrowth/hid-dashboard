@@ -38,6 +38,18 @@ class AdCombo(Base):
     run_status = Column(String(20), nullable=True)  # Active / Paused / Ended
     last_synced_at = Column(DateTime(timezone=True), nullable=True)
     added_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    # KOL link (optional — for KOL video ads)
+    kol_id = Column(UUID(as_uuid=True), ForeignKey("kol_records.id", ondelete="SET NULL"), nullable=True)
+
+    # Approval workflow
+    approval_status = Column(String(30), nullable=True)  # Pending / Approved / Rejected / Needs Revision
+    submitted_by = Column(String(100), nullable=True)
+    reviewer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    approval_deadline = Column(Date, nullable=True)
+    approval_feedback = Column(Text, nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+
     is_active = Column(Boolean, default=True, server_default="true")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
@@ -46,3 +58,5 @@ class AdCombo(Base):
     copy = relationship("CreativeCopy", back_populates="combos")
     material = relationship("CreativeMaterial", back_populates="combos")
     angle = relationship("CreativeAngle", back_populates="combos")
+    kol = relationship("KOLRecord", foreign_keys=[kol_id])
+    reviewer = relationship("User", foreign_keys=[reviewer_id])

@@ -6,9 +6,10 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useBranch } from "../context/BranchContext";
 import { useAuth } from "../context/AuthContext";
-import { listCombos, getCombo, createCombo, updateCombo, triggerSync, comboInsights, importFromMeta } from "../api/combos";
+import { listCombos, getCombo, createCombo, updateCombo, triggerSync, comboInsights, importFromMeta, submitForApproval, reviewCombo, listUsers } from "../api/combos";
 import { listCopies } from "../api/copies";
 import { listMaterials } from "../api/materials";
+import { listKolRecords } from "../api/kol";
 import ComboCard from "../components/ComboCard";
 import VerdictBadge from "../components/VerdictBadge";
 
@@ -20,7 +21,7 @@ const RUN_STATUSES = ["Active", "Paused", "Ended"];
 
 export default function AdCombos() {
   const { selected, isAll } = useBranch();
-  const { isAdmin } = useAuth();
+  const { user, isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [combos, setCombos] = useState([]);
@@ -274,6 +275,71 @@ export default function AdCombos() {
                 )}
               </div>
 
+              {/* Approval Status */}
+              {detail.approval_status && (
+                <div className="border-t pt-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-xs font-medium text-gray-500">Approval</label>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                      detail.approval_status === "Approved" ? "bg-green-100 text-green-700" :
+                      detail.approval_status === "Rejected" ? "bg-red-100 text-red-700" :
+                      detail.approval_status === "Needs Revision" ? "bg-amber-100 text-amber-700" :
+                      "bg-yellow-100 text-yellow-700"
+                    }`}>{detail.approval_status}</span>
+                  </div>
+                  <div className="text-xs text-gray-500 space-y-1">
+                    {detail.submitted_by && <div>Submitted by: {detail.submitted_by}</div>}
+                    {detail.reviewer_name && <div>Reviewer: {detail.reviewer_name}</div>}
+                    {detail.approval_deadline && <div>Deadline: {detail.approval_deadline}</div>}
+                    {detail.approval_feedback && (
+                      <div className="bg-gray-50 rounded p-2 mt-1">Feedback: {detail.approval_feedback}</div>
+                    )}
+                  </div>
+
+                  {/* Review buttons — show if current user is reviewer and status is Pending */}
+                  {detail.approval_status === "Pending" && user?.id === detail.reviewer_id && (
+                    <div className="mt-3 space-y-2">
+                      <textarea placeholder="Feedback (optional)" id="review-feedback"
+                        className="w-full border rounded px-2 py-1 text-xs" rows={2} />
+                      <div className="flex gap-2">
+                        <button onClick={() => {
+                          const fb = document.getElementById("review-feedback")?.value;
+                          reviewCombo(detail.id, { approval_status: "Approved", feedback: fb || null })
+                            .then(d => { setDetail(d); load(); });
+                        }} className="flex-1 px-3 py-1.5 bg-green-600 text-white text-xs rounded hover:bg-green-700">
+                          Approve
+                        </button>
+                        <button onClick={() => {
+                          const fb = document.getElementById("review-feedback")?.value;
+                          reviewCombo(detail.id, { approval_status: "Needs Revision", feedback: fb || null })
+                            .then(d => { setDetail(d); load(); });
+                        }} className="flex-1 px-3 py-1.5 bg-amber-500 text-white text-xs rounded hover:bg-amber-600">
+                          Needs Revision
+                        </button>
+                        <button onClick={() => {
+                          const fb = document.getElementById("review-feedback")?.value;
+                          reviewCombo(detail.id, { approval_status: "Rejected", feedback: fb || null })
+                            .then(d => { setDetail(d); load(); });
+                        }} className="flex-1 px-3 py-1.5 bg-red-600 text-white text-xs rounded hover:bg-red-700">
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* KOL info */}
+              {detail.kol && (
+                <div className="border-t pt-3">
+                  <label className="text-xs font-medium text-gray-500">KOL</label>
+                  <div className="text-xs mt-1 bg-purple-50 rounded p-2">
+                    <span className="text-purple-700 font-medium">{detail.kol.kol_name}</span>
+                    {detail.kol.kol_nationality && <span className="text-purple-500 ml-1">({detail.kol.kol_nationality})</span>}
+                  </div>
+                </div>
+              )}
+
               {/* Meta ad name + run status */}
               <div className="border-t pt-3 space-y-2">
                 <div>
@@ -299,25 +365,72 @@ export default function AdCombos() {
       )}
 
       {/* Add Combo Modal */}
-      {showAdd && <AddComboModal branchId={!isAll ? selected : null} onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); load(); }} />}
+      {showAdd && <AddComboModal branchId={!isAll ? selected : null} userName={user?.name} onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); load(); }} />}
     </div>
   );
 }
 
-function AddComboModal({ branchId, onClose, onCreated }) {
+function SearchSelect({ label, items, value, onChange, renderItem, placeholder, required }) {
+  const [search, setSearch] = useState("");
+  const filtered = items.filter(item => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return renderItem(item).toLowerCase().includes(s);
+  });
+  return (
+    <div>
+      <label className="text-xs text-gray-500">{label}{required ? " *" : ""}</label>
+      <input placeholder={`Search ${label.toLowerCase()}...`} value={search}
+        onChange={e => setSearch(e.target.value)}
+        className="w-full border rounded px-3 py-1.5 text-xs mt-1 mb-1" />
+      <select value={value} onChange={e => onChange(e.target.value)}
+        className="w-full border rounded px-3 py-2 text-sm" size={Math.min(filtered.length + 1, 6)}>
+        <option value="">{placeholder || `Select ${label.toLowerCase()}...`}</option>
+        {filtered.map(item => (
+          <option key={item.id} value={item.id}>{renderItem(item)}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function AddComboModal({ branchId, onClose, onCreated, userName }) {
   const [copies, setCopies] = useState([]);
   const [materials, setMaterials] = useState([]);
+  const [kols, setKols] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [mode, setMode] = useState("custom"); // "custom" | "kol"
   const [copyId, setCopyId] = useState("");
   const [materialId, setMaterialId] = useState("");
+  const [kolId, setKolId] = useState("");
   const [metaAdName, setMetaAdName] = useState("");
   const [runStatus, setRunStatus] = useState("");
+  // Approval
+  const [submitApproval, setSubmitApproval] = useState(false);
+  const [reviewerId, setReviewerId] = useState("");
+  const [deadline, setDeadline] = useState("");
+
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     const p = branchId ? { branch_id: branchId } : {};
-    Promise.all([listCopies(p), listMaterials(p)]).then(([c, m]) => { setCopies(c); setMaterials(m); });
+    Promise.all([
+      listCopies(p),
+      listMaterials(p),
+      listKolRecords({ ...p, paid_ads_eligible: true }),
+      listUsers().catch(() => []),
+    ]).then(([c, m, k, u]) => {
+      setCopies(c);
+      setMaterials(m);
+      setKols(Array.isArray(k) ? k : []);
+      setUsers(Array.isArray(u) ? u : []);
+    });
   }, [branchId]);
+
+  const filteredMaterials = mode === "kol"
+    ? materials.filter(m => m.material_type === "kol_video")
+    : materials;
 
   const save = () => {
     setSaving(true);
@@ -325,8 +438,13 @@ function AddComboModal({ branchId, onClose, onCreated }) {
     createCombo({
       copy_id: copyId,
       material_id: materialId,
+      kol_id: kolId || undefined,
       meta_ad_name: metaAdName || undefined,
       run_status: runStatus || undefined,
+      submit_approval: submitApproval,
+      reviewer_id: submitApproval ? reviewerId : undefined,
+      approval_deadline: submitApproval ? deadline : undefined,
+      submitted_by: userName || "Unknown",
     }).then(onCreated).catch(err => {
       setError(err.response?.data?.detail || "Failed to create combo");
       setSaving(false);
@@ -335,49 +453,98 @@ function AddComboModal({ branchId, onClose, onCreated }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-lg p-6">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-xl p-6 max-h-[90vh] overflow-y-auto">
         <h2 className="text-lg font-semibold mb-4">Add Combo</h2>
         {error && <div className="mb-3 p-2 bg-red-50 text-red-700 text-sm rounded">{error}</div>}
+
+        {/* Step 1: Content Type */}
+        <div className="flex gap-2 mb-4">
+          <button onClick={() => { setMode("custom"); setKolId(""); }}
+            className={`flex-1 px-3 py-2 text-sm rounded border ${mode === "custom" ? "bg-indigo-600 text-white border-indigo-600" : "text-gray-600 hover:bg-gray-50"}`}>
+            Custom Copy + Material
+          </button>
+          <button onClick={() => setMode("kol")}
+            className={`flex-1 px-3 py-2 text-sm rounded border ${mode === "kol" ? "bg-purple-600 text-white border-purple-600" : "text-gray-600 hover:bg-gray-50"}`}>
+            KOL Video Ads
+          </button>
+        </div>
+
         <div className="space-y-3">
-          <div>
-            <label className="text-xs text-gray-500">Copy *</label>
-            <select value={copyId} onChange={e => setCopyId(e.target.value)}
-              className="w-full border rounded px-3 py-2 text-sm mt-1">
-              <option value="">Select copy...</option>
-              {copies.map(c => (
-                <option key={c.id} value={c.id}>{c.copy_code} — {c.headline?.substring(0, 50) || c.primary_text?.substring(0, 50) || "No text"}</option>
-              ))}
-            </select>
+          {/* KOL selector (only in KOL mode) */}
+          {mode === "kol" && (
+            <div>
+              <label className="text-xs text-gray-500">KOL (paid ads eligible)</label>
+              <select value={kolId} onChange={e => setKolId(e.target.value)}
+                className="w-full border rounded px-3 py-2 text-sm mt-1">
+                <option value="">Select KOL...</option>
+                {kols.map(k => (
+                  <option key={k.id} value={k.id}>{k.kol_name} — {k.kol_nationality || "N/A"} {k.paid_ads_channel ? `(${k.paid_ads_channel})` : ""}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Copy selector with search */}
+          <SearchSelect label="Copy" items={copies} value={copyId} onChange={setCopyId} required
+            renderItem={c => `${c.copy_code} — ${c.headline?.substring(0, 50) || c.primary_text?.substring(0, 50) || "No text"}`}
+            placeholder="Select copy..." />
+
+          {/* Material selector with search */}
+          <SearchSelect label="Material" items={filteredMaterials} value={materialId} onChange={setMaterialId} required
+            renderItem={m => `${m.material_code} — ${m.material_type} ${m.kol_name ? `(KOL: ${m.kol_name})` : ""}`}
+            placeholder="Select material..." />
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-500">Meta Ad Name</label>
+              <input value={metaAdName} onChange={e => setMetaAdName(e.target.value)}
+                className="w-full border rounded px-3 py-2 text-sm mt-1 font-mono" placeholder="Paste from Meta" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">Run Status</label>
+              <select value={runStatus} onChange={e => setRunStatus(e.target.value)}
+                className="w-full border rounded px-3 py-2 text-sm mt-1">
+                <option value="">Not set</option>
+                <option>Active</option><option>Paused</option><option>Ended</option>
+              </select>
+            </div>
           </div>
-          <div>
-            <label className="text-xs text-gray-500">Material *</label>
-            <select value={materialId} onChange={e => setMaterialId(e.target.value)}
-              className="w-full border rounded px-3 py-2 text-sm mt-1">
-              <option value="">Select material...</option>
-              {materials.map(m => (
-                <option key={m.id} value={m.id}>{m.material_code} — {m.material_type} {m.kol_name ? `(KOL: ${m.kol_name})` : ""}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-gray-500">Meta Ad Name (optional)</label>
-            <input value={metaAdName} onChange={e => setMetaAdName(e.target.value)}
-              className="w-full border rounded px-3 py-2 text-sm mt-1 font-mono" placeholder="Paste from Meta" />
-          </div>
-          <div>
-            <label className="text-xs text-gray-500">Run Status</label>
-            <select value={runStatus} onChange={e => setRunStatus(e.target.value)}
-              className="w-full border rounded px-3 py-2 text-sm mt-1">
-              <option value="">Not set</option>
-              <option>Active</option><option>Paused</option><option>Ended</option>
-            </select>
+
+          {/* Approval section */}
+          <div className="border-t pt-3 mt-2">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" checked={submitApproval} onChange={e => setSubmitApproval(e.target.checked)}
+                className="rounded border-gray-300" />
+              Submit for approval
+            </label>
+            {submitApproval && (
+              <div className="mt-2 space-y-2 bg-yellow-50 rounded p-3">
+                <div>
+                  <label className="text-xs text-gray-500">Reviewer *</label>
+                  <select value={reviewerId} onChange={e => setReviewerId(e.target.value)}
+                    className="w-full border rounded px-3 py-2 text-sm mt-1">
+                    <option value="">Select reviewer...</option>
+                    {users.filter(u => u.role === "admin" || u.role === "editor").map(u => (
+                      <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500">Approval Deadline</label>
+                  <input type="date" value={deadline} onChange={e => setDeadline(e.target.value)}
+                    className="w-full border rounded px-3 py-2 text-sm mt-1" />
+                </div>
+              </div>
+            )}
           </div>
         </div>
+
         <div className="flex justify-end gap-2 mt-4">
           <button onClick={onClose} className="px-3 py-1.5 text-sm text-gray-600">Cancel</button>
-          <button onClick={save} disabled={!copyId || !materialId || saving}
+          <button onClick={save}
+            disabled={!copyId || !materialId || saving || (submitApproval && !reviewerId)}
             className="px-4 py-1.5 bg-indigo-600 text-white text-sm rounded disabled:opacity-50">
-            {saving ? "Creating..." : "Create Combo"}
+            {saving ? "Creating..." : submitApproval ? "Create & Submit for Approval" : "Create Combo"}
           </button>
         </div>
       </div>

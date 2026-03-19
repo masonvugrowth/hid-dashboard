@@ -16,6 +16,8 @@ from app.models.creative_material import CreativeMaterial
 from app.services.id_generator import generate_code
 from app.services.verdict_sync import sync_combo_performance, compute_derived_verdicts
 from app.services.creative_sync import import_meta_creatives, import_all_branches
+from app.services.email_service import send_approval_email
+from app.models.user import User
 
 router = APIRouter()
 
@@ -52,9 +54,23 @@ def _combo_dict(cb: AdCombo, include_detail=False) -> dict:
         "date_last_run": cb.date_last_run.isoformat() if cb.date_last_run else None,
         "run_status": cb.run_status,
         "last_synced_at": cb.last_synced_at.isoformat() if cb.last_synced_at else None,
+        "kol_id": str(cb.kol_id) if cb.kol_id else None,
+        "approval_status": cb.approval_status,
+        "submitted_by": cb.submitted_by,
+        "reviewer_id": str(cb.reviewer_id) if cb.reviewer_id else None,
+        "reviewer_name": cb.reviewer.name if cb.reviewer else None,
+        "approval_deadline": cb.approval_deadline.isoformat() if cb.approval_deadline else None,
+        "approval_feedback": cb.approval_feedback,
+        "approved_at": cb.approved_at.isoformat() if cb.approved_at else None,
         "is_active": cb.is_active,
         "created_at": cb.created_at.isoformat() if cb.created_at else None,
     }
+    if cb.kol:
+        result["kol"] = {
+            "kol_name": cb.kol.kol_name,
+            "kol_nationality": cb.kol.kol_nationality,
+            "paid_ads_eligible": cb.kol.paid_ads_eligible,
+        }
     # Always include copy + material summary for card display
     if cb.copy:
         result["copy"] = {
@@ -84,11 +100,16 @@ def _combo_dict(cb: AdCombo, include_detail=False) -> dict:
 class ComboIn(BaseModel):
     copy_id: UUID
     material_id: UUID
+    kol_id: Optional[UUID] = None
     meta_ad_name: Optional[str] = None
     run_status: Optional[str] = None
     verdict: Optional[str] = None
     verdict_notes: Optional[str] = None
     date_first_run: Optional[str] = None
+    # Approval fields (optional — submit for approval after creation)
+    submit_approval: Optional[bool] = False
+    reviewer_id: Optional[UUID] = None
+    approval_deadline: Optional[str] = None
 
 
 class ComboUpdate(BaseModel):
@@ -173,6 +194,7 @@ def create_combo(body: ComboIn, db: Session = Depends(get_db)):
             language=copy.language,
             country_target=copy.country_target,
             angle_id=copy.angle_id,
+            kol_id=body.kol_id,
             meta_ad_name=data.get("meta_ad_name"),
             verdict=data.get("verdict"),
             verdict_source=verdict_source,
@@ -186,6 +208,36 @@ def create_combo(body: ComboIn, db: Session = Depends(get_db)):
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "This copy + material combination already exists")
+
+    # Handle approval submission
+    if body.submit_approval and body.reviewer_id:
+        reviewer = db.query(User).filter(User.id == body.reviewer_id).first()
+        if reviewer:
+            from app.models.branch import Branch
+            branch = db.query(Branch).filter(Branch.id == copy.branch_id).first()
+            deadline = body.approval_deadline
+            obj.approval_status = "Pending"
+            obj.submitted_by = data.get("submitted_by") or "Unknown"
+            obj.reviewer_id = body.reviewer_id
+            if deadline:
+                from datetime import date as dt
+                obj.approval_deadline = dt.fromisoformat(deadline)
+            db.commit()
+            db.refresh(obj)
+
+            # Send email
+            send_approval_email(
+                reviewer_email=reviewer.email,
+                reviewer_name=reviewer.name,
+                combo_code=combo_code,
+                combo_id=str(obj.id),
+                branch_name=branch.name if branch else "Unknown",
+                material_type=material.material_type,
+                submitted_by=obj.submitted_by,
+                approval_deadline=deadline,
+                material_link=material.file_link,
+                kol_name=material.kol_name,
+            )
 
     return _envelope(_combo_dict(obj))
 
@@ -213,6 +265,92 @@ def combo_insights(
             for cb in top_roas
         ],
     })
+
+
+@router.get("/pending")
+def list_pending(
+    reviewer_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """List combos pending approval, optionally filtered by reviewer."""
+    q = db.query(AdCombo).filter(
+        AdCombo.is_active == True,
+        AdCombo.approval_status == "Pending",
+    )
+    if reviewer_id:
+        q = q.filter(AdCombo.reviewer_id == reviewer_id)
+    combos = q.order_by(AdCombo.created_at.desc()).all()
+    return _envelope([_combo_dict(cb) for cb in combos])
+
+
+class SubmitApprovalBody(BaseModel):
+    reviewer_id: UUID
+    submitted_by: str
+    approval_deadline: Optional[str] = None
+
+
+@router.post("/{combo_id}/submit-approval")
+def submit_for_approval(combo_id: UUID, body: SubmitApprovalBody, db: Session = Depends(get_db)):
+    """Submit a combo for approval — sends email to reviewer."""
+    obj = db.query(AdCombo).filter(AdCombo.id == combo_id, AdCombo.is_active == True).first()
+    if not obj:
+        raise HTTPException(404, "Combo not found")
+
+    reviewer = db.query(User).filter(User.id == body.reviewer_id).first()
+    if not reviewer:
+        raise HTTPException(404, "Reviewer not found")
+
+    from app.models.branch import Branch
+    branch = db.query(Branch).filter(Branch.id == obj.branch_id).first()
+
+    obj.approval_status = "Pending"
+    obj.submitted_by = body.submitted_by
+    obj.reviewer_id = body.reviewer_id
+    if body.approval_deadline:
+        from datetime import date as dt
+        obj.approval_deadline = dt.fromisoformat(body.approval_deadline)
+    obj.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(obj)
+
+    # Send email
+    mat = obj.material
+    send_approval_email(
+        reviewer_email=reviewer.email,
+        reviewer_name=reviewer.name,
+        combo_code=obj.combo_code,
+        combo_id=str(obj.id),
+        branch_name=branch.name if branch else "Unknown",
+        material_type=mat.material_type if mat else "Unknown",
+        submitted_by=body.submitted_by,
+        approval_deadline=body.approval_deadline,
+        material_link=mat.file_link if mat else None,
+        kol_name=mat.kol_name if mat else None,
+    )
+    return _envelope(_combo_dict(obj, include_detail=True))
+
+
+class ReviewBody(BaseModel):
+    approval_status: str  # Approved / Rejected / Needs Revision
+    feedback: Optional[str] = None
+
+
+@router.patch("/{combo_id}/review")
+def review_combo(combo_id: UUID, body: ReviewBody, db: Session = Depends(get_db)):
+    """Approve or reject a combo."""
+    obj = db.query(AdCombo).filter(AdCombo.id == combo_id, AdCombo.is_active == True).first()
+    if not obj:
+        raise HTTPException(404, "Combo not found")
+    if body.approval_status not in ("Approved", "Rejected", "Needs Revision"):
+        raise HTTPException(422, "Invalid approval_status")
+
+    obj.approval_status = body.approval_status
+    obj.approval_feedback = body.feedback
+    obj.approved_at = datetime.now(timezone.utc)
+    obj.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(obj)
+    return _envelope(_combo_dict(obj, include_detail=True))
 
 
 @router.get("/{combo_id}")
