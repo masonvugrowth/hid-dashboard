@@ -45,12 +45,13 @@ def sync_combo_performance(db: Session) -> int:
         if not perf:
             continue
 
-        combo.spend_vnd = perf.cost_vnd if hasattr(perf, 'cost_vnd') else perf.cost_native
-        combo.revenue_vnd = getattr(perf, 'revenue_vnd', None) or getattr(perf, 'revenue_native', 0)
-        combo.roas = (float(combo.revenue_vnd) / float(combo.spend_vnd)
-                      if combo.spend_vnd and float(combo.spend_vnd) > 0 else None)
-        combo.impressions = perf.impressions
-        combo.clicks = perf.clicks
+        combo.spend_vnd = getattr(perf, 'cost_vnd', None) or getattr(perf, 'cost_native', None) or 0
+        combo.revenue_vnd = getattr(perf, 'revenue_vnd', None) or getattr(perf, 'revenue_native', None) or 0
+        spend = float(combo.spend_vnd) if combo.spend_vnd else 0
+        rev = float(combo.revenue_vnd) if combo.revenue_vnd else 0
+        combo.roas = rev / spend if spend > 0 else None
+        combo.impressions = perf.impressions or 0
+        combo.clicks = perf.clicks or 0
         combo.leads = getattr(perf, 'leads', None) or 0
         combo.purchases = getattr(perf, 'bookings', None) or 0
         combo.last_synced_at = datetime.now(timezone.utc)
