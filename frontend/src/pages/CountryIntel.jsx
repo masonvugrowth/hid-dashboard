@@ -122,20 +122,34 @@ const CHANNEL_COLORS = {
   TikTok: "bg-pink-50 border-pink-200 text-pink-800",
 };
 
+const STATUS_BADGE = {
+  running: "bg-green-100 text-green-700 border-green-300",
+  stopped: "bg-amber-100 text-amber-700 border-amber-300",
+};
+
 function AdsBadge({ ad }) {
   const channels = ad.channels || [];
   return (
     <div className="space-y-2">
       {channels.map((ch, i) => {
         const cls = CHANNEL_COLORS[ch.channel] || "bg-gray-50 border-gray-200 text-gray-800";
+        const isRunning = ch.status === "running";
         return (
           <div key={i} className={"border rounded p-2 text-xs " + cls}>
-            <div className="font-semibold mb-1">{ch.channel}</div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-semibold">{ch.channel}</span>
+              <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${STATUS_BADGE[ch.status] || "bg-gray-100 text-gray-500"}`}>
+                {isRunning ? "● Running" : "○ Stopped"}
+              </span>
+            </div>
             <div className="grid grid-cols-3 gap-x-3 gap-y-0.5">
               <div><span className="opacity-60">Cost</span><br/><span className="font-mono font-medium">{fmt(ch.total_cost_native)}</span></div>
               <div><span className="opacity-60">Revenue</span><br/><span className="font-mono font-medium">{fmt(ch.total_revenue_native)}</span></div>
               <div><span className="opacity-60">ROAS</span><br/><span className="font-mono font-medium">{ch.roas != null ? ch.roas + "x" : "—"}</span></div>
             </div>
+            {ch.last_active_date && !isRunning && (
+              <div className="text-[10px] opacity-50 mt-1">Last active: {ch.last_active_date}</div>
+            )}
           </div>
         );
       })}
@@ -211,9 +225,13 @@ function VolumeRow({ item }) {
           )}
         </td>
         <td className="px-3 py-2">
-          {!item.ads_gap ? (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-xs font-medium">
-              ✓ Running
+          {item.ads_status === "running" ? (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs font-medium">
+              ● Running
+            </span>
+          ) : item.ads_status === "stopped" ? (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-600 text-xs font-medium">
+              ○ Stopped
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-600 text-xs font-medium">
@@ -282,9 +300,13 @@ function GrowthRow({ item }) {
           )}
         </td>
         <td className="px-3 py-2">
-          {!item.ads_gap ? (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-xs font-medium">
-              ✓ Running
+          {item.ads_status === "running" ? (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs font-medium">
+              ● Running
+            </span>
+          ) : item.ads_status === "stopped" ? (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-600 text-xs font-medium">
+              ○ Stopped
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-600 text-xs font-medium">

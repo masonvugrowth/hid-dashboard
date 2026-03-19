@@ -281,6 +281,8 @@ def country_intelligence(
         kol_metric_map[key]["organic_revenue_vnd"] += float(row[2] or 0)
 
     # ── 4. Ads coverage per (branch_id, target_country, channel) ────────────
+    #   Also fetch MAX(date_to) to determine Running vs Stopped.
+    #   "Running" = MAX(date_to) within last 7 days.  "Stopped" = older.
     a_filter = "AND a.branch_id = :bid" if branch_id else ""
     ads_rows = db.execute(text(f"""
         SELECT
@@ -292,7 +294,8 @@ def country_intelligence(
             SUM(a.impressions)      AS total_impressions,
             SUM(a.clicks)           AS total_clicks,
             SUM(a.leads)            AS total_leads,
-            SUM(a.bookings)         AS total_bookings
+            SUM(a.bookings)         AS total_bookings,
+            MAX(a.date_to)          AS last_active_date
         FROM ads_performance a
         WHERE a.target_country IS NOT NULL AND a.target_country != ''
           {a_filter}
@@ -300,7 +303,10 @@ def country_intelligence(
         ORDER BY a.branch_id, a.target_country, a.channel
     """), b_params).fetchall()
 
-    # ads_map: branch_id -> { country_lower -> [channel_row, ...] }
+    from datetime import date, timedelta
+    running_cutoff = date.today() - timedelta(days=7)
+
+    # ads_map: branch_id -> { country_lower -> { target_country, channels, has_running } }
     ads_map: dict[str, dict] = {}
     for a in ads_rows:
         bid_str = str(a[0])
@@ -308,6 +314,8 @@ def country_intelligence(
         ckey = country.lower()
         cost = float(a[3] or 0)
         rev  = float(a[4] or 0)
+        last_date = a[9]  # MAX(date_to) — could be date or None
+        is_running = bool(last_date and last_date >= running_cutoff)
         if bid_str not in ads_map:
             ads_map[bid_str] = {}
         if ckey not in ads_map[bid_str]:
@@ -315,7 +323,10 @@ def country_intelligence(
                 "target_country": country,
                 "country_lower": ckey,
                 "channels": [],
+                "has_running": False,
             }
+        if is_running:
+            ads_map[bid_str][ckey]["has_running"] = True
         ads_map[bid_str][ckey]["channels"].append({
             "channel": a[2] or "Unknown",
             "total_cost_native": cost,
@@ -325,6 +336,8 @@ def country_intelligence(
             "total_clicks": int(a[6] or 0),
             "total_leads": int(a[7] or 0),
             "total_bookings": int(a[8] or 0),
+            "status": "running" if is_running else "stopped",
+            "last_active_date": str(last_date) if last_date else None,
         })
 
     # ── 5. Helper: build a country entry with KOL/Ads coverage ──────────────
@@ -349,22 +362,41 @@ def country_intelligence(
                     "organic_revenue_vnd": metrics.get("organic_revenue_vnd", 0.0),
                 })
         matched_ads = []
+        any_running = False
         country_ads_dict = ads_map.get(bid_str, {})
         for ckey, ad in country_ads_dict.items():
             if ckey in cty_lower or cty_lower in ckey:
-                matched_ads.append({k: v for k, v in ad.items() if k != "country_lower"})
+                matched_ads.append({k: v for k, v in ad.items() if k not in ("country_lower", "has_running")})
+                if ad.get("has_running"):
+                    any_running = True
+
+        # Ads status: "running" | "stopped" | "none"
+        #   running  = at least 1 channel active in last 7 days → Covered
+        #   stopped  = had ads but all stopped → NOT covered (gap)
+        #   none     = never had ads → NOT covered (gap)
+        if matched_ads and any_running:
+            ads_status = "running"
+        elif matched_ads:
+            ads_status = "stopped"
+        else:
+            ads_status = "none"
+
         action_items = []
         if not matched_kols:
             action_items.append(f"No KOL from {country} — identify & recruit")
-        if not matched_ads:
+        if ads_status == "none":
             action_items.append(f"No Paid Ads targeting {country} — create campaign")
+        elif ads_status == "stopped":
+            action_items.append(f"Paid Ads targeting {country} stopped — consider restarting")
+
         return {
             "country": country,
             "country_code": country_code,
             "kol_coverage": matched_kols,
             "ads_coverage": matched_ads,
+            "ads_status": ads_status,
             "kol_gap": len(matched_kols) == 0,
-            "ads_gap": len(matched_ads) == 0,
+            "ads_gap": ads_status != "running",  # Only "running" = covered
             "action_items": action_items,
         }
 
