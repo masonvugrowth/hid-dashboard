@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useBranch } from "../context/BranchContext";
 import { useAuth } from "../context/AuthContext";
-import { listCombos, getCombo, createCombo, updateCombo, triggerSync, comboInsights, importFromMeta, submitForApproval, reviewCombo, listUsers } from "../api/combos";
+import { listCombos, getCombo, createCombo, updateCombo, deleteCombo, triggerSync, comboInsights, importFromMeta, submitForApproval, reviewCombo, listPending, listUsers } from "../api/combos";
 import { listCopies } from "../api/copies";
 import { listMaterials } from "../api/materials";
 import { listKolRecords } from "../api/kol";
@@ -31,6 +31,9 @@ export default function AdCombos() {
   const [showAdd, setShowAdd] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
+  const [tab, setTab] = useState("all"); // "all" | "pending"
+  const [pendingCombos, setPendingCombos] = useState([]);
+  const [pendingLoading, setPendingLoading] = useState(false);
 
   // Filters from URL params
   const f = {
@@ -60,10 +63,23 @@ export default function AdCombos() {
       setInsights(ins);
     }).finally(() => setLoading(false));
   };
-  useEffect(load, [selected, searchParams.toString()]);
+  const loadPending = () => {
+    setPendingLoading(true);
+    listPending({ reviewer_id: user?.id })
+      .then(setPendingCombos)
+      .catch(() => setPendingCombos([]))
+      .finally(() => setPendingLoading(false));
+  };
+
+  useEffect(() => { load(); loadPending(); }, [selected, searchParams.toString()]);
 
   const openDetail = (id) => {
     getCombo(id).then(setDetail);
+  };
+
+  const handleDelete = (id, code) => {
+    if (!confirm(`Delete combo ${code}? This cannot be undone.`)) return;
+    deleteCombo(id).then(() => { load(); loadPending(); });
   };
 
   const saveVerdict = (id, verdict, notes) => {
@@ -126,6 +142,73 @@ export default function AdCombos() {
         </div>
       )}
 
+      {/* Tabs: All Combos | Pending Review */}
+      <div className="flex gap-1 mb-4 border-b">
+        <button onClick={() => setTab("all")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${tab === "all" ? "border-indigo-600 text-indigo-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
+          All Combos
+        </button>
+        <button onClick={() => { setTab("pending"); loadPending(); }}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px flex items-center gap-1.5 ${tab === "pending" ? "border-amber-500 text-amber-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
+          Pending Review
+          {pendingCombos.length > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold">{pendingCombos.length}</span>
+          )}
+        </button>
+      </div>
+
+      {/* ── PENDING REVIEW TAB ── */}
+      {tab === "pending" && (
+        <div>
+          {pendingLoading ? (
+            <div className="text-gray-400 text-sm animate-pulse">Loading...</div>
+          ) : pendingCombos.length === 0 ? (
+            <div className="text-center py-12 text-gray-400">
+              <div className="text-3xl mb-2">✓</div>
+              <div className="text-sm">No combos pending review</div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {pendingCombos.map(cb => (
+                <div key={cb.id} className="border rounded-lg p-4 bg-white hover:shadow-md transition-shadow">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-indigo-600 text-xs font-medium">{cb.combo_code}</span>
+                      <span className="px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 text-[10px] font-medium">Pending</span>
+                      {cb.approval_deadline && (
+                        <span className="text-[10px] text-gray-400">Deadline: {cb.approval_deadline}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => openDetail(cb.id)}
+                        className="px-2 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700">Review</button>
+                      {cb.approval_status !== "Approved" && (
+                        <button onClick={() => handleDelete(cb.id, cb.combo_code)}
+                          className="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50">Delete</button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-xs text-gray-600">
+                    <div>
+                      <span className="text-gray-400">Copy:</span> {cb.copy?.copy_code} — {cb.copy?.headline?.substring(0, 40) || "No headline"}
+                    </div>
+                    <div>
+                      <span className="text-gray-400">Material:</span> {cb.material?.material_code} — {cb.material?.material_type}
+                      {cb.material?.kol_name && <span className="text-purple-600 ml-1">(KOL: {cb.material.kol_name})</span>}
+                    </div>
+                  </div>
+                  {cb.submitted_by && (
+                    <div className="text-[10px] text-gray-400 mt-1">Submitted by: {cb.submitted_by}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── ALL COMBOS TAB ── */}
+      {tab === "all" && <>
       {insights && (
         <div className="flex gap-3 mb-4 text-xs">
           <span className="px-2 py-1 bg-gray-100 rounded">Total: {insights.total_combos}</span>
@@ -167,6 +250,7 @@ export default function AdCombos() {
           ))}
         </div>
       )}
+      </>}
 
       {/* Detail Drawer */}
       {detail && (
@@ -176,8 +260,24 @@ export default function AdCombos() {
             <div className="sticky top-0 bg-white border-b px-4 py-3 flex items-center justify-between">
               <h3 className="font-semibold text-sm">
                 <span className="font-mono text-indigo-600">{detail.combo_code}</span>
+                {detail.approval_status && (
+                  <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full ${
+                    detail.approval_status === "Approved" ? "bg-green-100 text-green-700" :
+                    detail.approval_status === "Rejected" ? "bg-red-100 text-red-700" :
+                    detail.approval_status === "Needs Revision" ? "bg-amber-100 text-amber-700" :
+                    "bg-yellow-100 text-yellow-700"
+                  }`}>{detail.approval_status}</span>
+                )}
               </h3>
-              <button onClick={() => setDetail(null)} className="text-gray-400 hover:text-gray-600 text-lg">&times;</button>
+              <div className="flex items-center gap-2">
+                {detail.approval_status !== "Approved" && (
+                  <button onClick={() => {
+                    handleDelete(detail.id, detail.combo_code);
+                    setDetail(null);
+                  }} className="text-xs text-red-500 hover:text-red-700">Delete</button>
+                )}
+                <button onClick={() => setDetail(null)} className="text-gray-400 hover:text-gray-600 text-lg">&times;</button>
+              </div>
             </div>
             <div className="p-4 space-y-4">
               {/* Verdict */}
