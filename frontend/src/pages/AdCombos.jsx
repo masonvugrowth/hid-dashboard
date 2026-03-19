@@ -521,7 +521,7 @@ function AddComboModal({ branchId, onClose, onCreated, userName }) {
     Promise.all([
       listCopies(p),
       listMaterials(p),
-      listKolRecords({ ...p, paid_ads_eligible: true }),
+      listKolRecords({ ...p, ads_usage_status: "Available" }),
       listUsers().catch(() => []),
     ]).then(([c, m, k, u]) => {
       setCopies(c);
@@ -576,14 +576,17 @@ function AddComboModal({ branchId, onClose, onCreated, userName }) {
           {/* KOL selector (only in KOL mode) */}
           {mode === "kol" && (
             <div>
-              <label className="text-xs text-gray-500">KOL (paid ads eligible)</label>
+              <label className="text-xs text-gray-500">KOL (Available for Ads)</label>
               <select value={kolId} onChange={e => setKolId(e.target.value)}
                 className="w-full border rounded px-3 py-2 text-sm mt-1">
                 <option value="">Select KOL...</option>
                 {kols.map(k => (
-                  <option key={k.id} value={k.id}>{k.kol_name} — {k.kol_nationality || "N/A"} {k.paid_ads_channel ? `(${k.paid_ads_channel})` : ""}</option>
+                  <option key={k.id} value={k.id}>{k.kol_name} — {k.kol_nationality || "N/A"} {k.language ? `[${k.language}]` : ""}</option>
                 ))}
               </select>
+              {kols.length === 0 && (
+                <p className="text-[10px] text-amber-600 mt-1">No KOLs with ads_usage_status = "Available". Set it in KOL management first.</p>
+              )}
             </div>
           )}
 

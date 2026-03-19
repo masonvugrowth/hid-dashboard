@@ -173,6 +173,7 @@ class KOLIn(BaseModel):
     paid_ads_usage_fee_vnd: Optional[float] = None
     paid_ads_channel: Optional[str] = None
     usage_rights_expiry_date: Optional[str] = None
+    ads_usage_status: Optional[str] = None  # Available / In Use / Expired / Not Allowed
     contract_status: Optional[str] = None     # Draft, Negotiating, Signed, Cancelled
     notes: Optional[str] = None
 
@@ -182,6 +183,7 @@ def list_kol(
     branch_id: Optional[UUID] = Query(None),
     contract_status: Optional[str] = Query(None),
     paid_ads_eligible: Optional[bool] = Query(None),
+    ads_usage_status: Optional[str] = Query(None),
     expiry_within_days: Optional[int] = Query(None, description="Filter KOLs with usage rights expiring within N days"),
     db: Session = Depends(get_db),
 ):
@@ -192,6 +194,8 @@ def list_kol(
         q = q.filter(KOLRecord.contract_status == contract_status)
     if paid_ads_eligible is not None:
         q = q.filter(KOLRecord.paid_ads_eligible == paid_ads_eligible)
+    if ads_usage_status:
+        q = q.filter(KOLRecord.ads_usage_status == ads_usage_status)
     rows = q.order_by(KOLRecord.created_at.desc()).all()
 
     today = date.today()
@@ -289,6 +293,7 @@ def _row(r: KOLRecord):
         "paid_ads_usage_fee_vnd": float(r.paid_ads_usage_fee_vnd) if r.paid_ads_usage_fee_vnd else None,
         "paid_ads_channel": r.paid_ads_channel,
         "usage_rights_expiry_date": r.usage_rights_expiry_date.isoformat() if r.usage_rights_expiry_date else None,
+        "ads_usage_status": r.ads_usage_status,
         "contract_status": r.contract_status,
         "notes": r.notes,
         "created_at": r.created_at.isoformat() if r.created_at else None,

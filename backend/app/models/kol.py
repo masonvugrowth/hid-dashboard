@@ -29,6 +29,7 @@ class KOLRecord(Base):
     paid_ads_usage_fee_vnd = Column(Numeric(15, 2), nullable=True)
     paid_ads_channel = Column(String(100), nullable=True)
     usage_rights_expiry_date = Column(Date, nullable=True)
+    ads_usage_status = Column(String(30), nullable=True)    # Available / In Use / Expired / Not Allowed
     contract_status = Column(String(50), nullable=True)     # Draft, Negotiating, Signed, Cancelled
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
