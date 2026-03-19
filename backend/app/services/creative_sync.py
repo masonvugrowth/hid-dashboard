@@ -154,18 +154,38 @@ def _find_or_create_material(
     ad: dict,
 ) -> CreativeMaterial | None:
     """Find existing material by URL match or create new one."""
-    file_url = ad.get("image_url") or ad.get("video_thumb_url") or ""
+    # Prefer preview_link (full-size shareable ad preview) over tiny thumbnail
+    preview_link = ad.get("preview_link", "")
+    thumb_url = ad.get("image_url") or ad.get("video_thumb_url") or ""
+    file_url = preview_link or thumb_url
     if not file_url:
         return None
 
-    # Dedup: match on branch + file URL
+    # Dedup: match on branch + preview_link or thumb_url
     existing = db.query(CreativeMaterial).filter(
         CreativeMaterial.branch_id == branch_id,
         CreativeMaterial.file_link == file_url,
         CreativeMaterial.is_active == True,
     ).first()
     if existing:
+        # Upgrade old thumbnail to preview_link if available
+        if preview_link and existing.file_link != preview_link and not existing.file_link.startswith("https://www.facebook.com"):
+            existing.file_link = preview_link
+            existing.updated_at = datetime.now(timezone.utc)
         return existing
+
+    # Also check if we already have this ad via thumbnail (prevent duplicates when upgrading)
+    if preview_link and thumb_url:
+        existing_by_thumb = db.query(CreativeMaterial).filter(
+            CreativeMaterial.branch_id == branch_id,
+            CreativeMaterial.file_link == thumb_url,
+            CreativeMaterial.is_active == True,
+        ).first()
+        if existing_by_thumb:
+            # Upgrade to preview link
+            existing_by_thumb.file_link = preview_link
+            existing_by_thumb.updated_at = datetime.now(timezone.utc)
+            return existing_by_thumb
 
     code = generate_code(db, "MAT", "creative_materials", "material_code")
     mat_type = _detect_material_type(ad)

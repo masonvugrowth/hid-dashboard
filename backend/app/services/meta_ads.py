@@ -175,10 +175,11 @@ def fetch_ad_creatives(
       headline, primary_text, image_url, video_thumb_url,
       call_to_action_type, link_url, target_audience, country, funnel
     """
-    # 1. Fetch ads with creative fields
+    # 1. Fetch ads with creative fields + preview link
     ads_raw = _paginate(token, f"{account_id}/ads", {
         "fields": ",".join([
             "id", "name", "status",
+            "preview_shareable_link",
             "campaign{id,name}",
             "adset{id,name,targeting}",
             "creative{id,name,title,body,image_url,thumbnail_url,"
@@ -242,6 +243,9 @@ def fetch_ad_creatives(
         if not body and not headline and not image_url and not video_thumb:
             continue
 
+        # Preview link: shareable ad preview URL (full-size, not thumbnail)
+        preview_link = ad.get("preview_shareable_link", "")
+
         results.append({
             "ad_id": ad_id,
             "ad_name": ad_name,
@@ -252,6 +256,7 @@ def fetch_ad_creatives(
             "primary_text": body,
             "image_url": image_url,
             "video_thumb_url": video_thumb,
+            "preview_link": preview_link,
             "has_video": has_video,
             "call_to_action_type": cta_type,
             "link_url": link_url,
