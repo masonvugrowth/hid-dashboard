@@ -127,6 +127,7 @@ def list_combos(
     target_audience: Optional[str] = Query(None),
     channel: Optional[str] = Query(None),
     language: Optional[str] = Query(None),
+    country_target: Optional[str] = Query(None),
     verdict: Optional[str] = Query(None),
     angle_id: Optional[UUID] = Query(None),
     run_status: Optional[str] = Query(None),
@@ -143,6 +144,8 @@ def list_combos(
         q = q.filter(AdCombo.channel == channel)
     if language:
         q = q.filter(AdCombo.language == language)
+    if country_target:
+        q = q.filter(AdCombo.country_target == country_target)
     if verdict:
         q = q.filter(AdCombo.verdict == verdict)
     if angle_id:

@@ -13,9 +13,10 @@ import { listKolRecords } from "../api/kol";
 import ComboCard from "../components/ComboCard";
 import VerdictBadge from "../components/VerdictBadge";
 
-const AUDIENCES = ["Solo", "Couple", "Friend Group", "Family", "Business", "High Intent", "Generic"];
+const AUDIENCES = ["Solo", "Couple", "Friend", "Friend Group", "Family", "Business", "High Intent", "High Intent Audience", "Generic"];
 const CHANNELS = ["Facebook", "Instagram", "TikTok", "YouTube", "Meta", "Google"];
 const LANGUAGES = ["Vietnamese", "English", "Japanese", "Korean", "Thai", "Indonesian", "Malay"];
+const COUNTRIES = ["Vietnam", "Philippines", "Indonesia", "Australia", "Taiwan", "South Korea", "Japan", "Thailand", "Malaysia", "Singapore", "United Kingdom", "United States", "India", "China"];
 const VERDICTS = ["winning", "good", "neutral", "underperformer", "kill"];
 const RUN_STATUSES = ["Active", "Paused", "Ended"];
 
@@ -40,6 +41,7 @@ export default function AdCombos() {
     target_audience: searchParams.get("target_audience") || "",
     channel: searchParams.get("channel") || "",
     language: searchParams.get("language") || "",
+    country_target: searchParams.get("country_target") || "",
     verdict: searchParams.get("verdict") || "",
     run_status: searchParams.get("run_status") || "",
   };
@@ -224,9 +226,10 @@ export default function AdCombos() {
       {/* Filters */}
       <div className="flex gap-2 mb-4 flex-wrap">
         {[
+          ["country_target", "Country", COUNTRIES],
           ["target_audience", "Audience", AUDIENCES],
-          ["channel", "Channel", CHANNELS],
           ["language", "Language", LANGUAGES],
+          ["channel", "Channel", CHANNELS],
           ["verdict", "Verdict", VERDICTS],
           ["run_status", "Status", RUN_STATUSES],
         ].map(([key, label, opts]) => (

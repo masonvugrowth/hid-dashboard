@@ -57,6 +57,9 @@ export default function ComboCard({ combo, onClick }) {
 
       {/* Chips */}
       <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+        {combo.country_target && (
+          <span className="text-[10px] px-1.5 py-0.5 bg-orange-50 text-orange-600 rounded">{combo.country_target}</span>
+        )}
         {combo.target_audience && (
           <span className="text-[10px] px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded">{combo.target_audience}</span>
         )}
