@@ -1098,3 +1098,129 @@ def trigger_sheets_revenue(
         "branches_queued": [c["branch_name"] for c in configs],
         "skipped": skipped,
     })
+
+
+# ---------------------------------------------------------------------------
+# KOL sheet sync
+# ---------------------------------------------------------------------------
+
+@router.post("/sheets-kol")
+def trigger_sheets_kol(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    Sync KOL bookings from the combined 'KOL Combine All Branch (VND)' Google Sheet.
+    For each row: upsert KOLRecord by (branch, kol_name), then upsert KOLBooking
+    linking the KOL to the Cloudbeds reservation with attributed_revenue_vnd.
+    Runs in background.
+    """
+    client_id     = settings.GOOGLE_CLIENT_ID
+    client_secret = settings.GOOGLE_CLIENT_SECRET
+    refresh_token = settings.GOOGLE_REFRESH_TOKEN
+
+    if not client_id or not refresh_token:
+        raise HTTPException(status_code=400, detail="Google credentials not configured")
+
+    def _run():
+        import logging
+        from sqlalchemy import text
+        from app.database import SessionLocal
+        from app.models.kol import KOLRecord, KOLBooking
+        from app.services.sheets_kol import read_kol_bookings
+        log = logging.getLogger(__name__)
+        db2 = SessionLocal()
+        try:
+            # Build branch lookup: last word of branch name (lower) → Branch object
+            # e.g. "MEANDER Saigon" → "saigon", "MEANDER 1948" → "1948"
+            branch_by_key: dict = {}
+            for b in db2.query(Branch).filter_by(is_active=True).all():
+                for word in b.name.lower().split():
+                    branch_by_key[word] = b
+
+            rows = read_kol_bookings(client_id, client_secret, refresh_token)
+
+            kol_created = 0
+            booking_upserted = 0
+            skipped = 0
+
+            for row in rows:
+                # Match branch by any word in sheet branch name
+                branch = None
+                for word in row["branch_name"].lower().split():
+                    branch = branch_by_key.get(word)
+                    if branch:
+                        break
+                if not branch:
+                    log.debug("No branch match for: %s", row["branch_name"])
+                    skipped += 1
+                    continue
+
+                # Upsert KOLRecord
+                kol = db2.query(KOLRecord).filter_by(
+                    branch_id=branch.id, kol_name=row["kol_name"]
+                ).first()
+                if not kol:
+                    kol = KOLRecord(
+                        branch_id=branch.id,
+                        kol_name=row["kol_name"],
+                        kol_nationality=row["kol_nationality"],
+                        published_date=row["published_date"],
+                        invitation_date=row["invitation_date"],
+                    )
+                    db2.add(kol)
+                    db2.flush()
+                    kol_created += 1
+                else:
+                    # Fill in missing fields
+                    if not kol.kol_nationality and row["kol_nationality"]:
+                        kol.kol_nationality = row["kol_nationality"]
+                    if not kol.published_date and row["published_date"]:
+                        kol.published_date = row["published_date"]
+                    if not kol.invitation_date and row["invitation_date"]:
+                        kol.invitation_date = row["invitation_date"]
+
+                # Find reservation
+                res = db2.execute(text("""
+                    SELECT id FROM reservations
+                    WHERE branch_id = :bid
+                      AND cloudbeds_reservation_id = :res_num
+                    LIMIT 1
+                """), {"bid": str(branch.id), "res_num": row["res_num"]}).fetchone()
+
+                if not res:
+                    skipped += 1
+                    continue
+
+                # Upsert KOLBooking
+                booking = db2.query(KOLBooking).filter_by(
+                    kol_id=kol.id, reservation_id=res[0]
+                ).first()
+                if not booking:
+                    booking = KOLBooking(
+                        kol_id=kol.id,
+                        reservation_id=res[0],
+                        attributed_revenue_vnd=row["revenue_vnd"],
+                    )
+                    db2.add(booking)
+                else:
+                    booking.attributed_revenue_vnd = row["revenue_vnd"]
+                booking_upserted += 1
+
+            db2.commit()
+            log.info(
+                "KOL sync done: %d KOLs created, %d bookings upserted, %d skipped",
+                kol_created, booking_upserted, skipped,
+            )
+        except Exception as exc:
+            db2.rollback()
+            log.error("KOL sheet sync failed: %s", exc, exc_info=True)
+        finally:
+            db2.close()
+
+    background_tasks.add_task(_run)
+    return _envelope({
+        "status": "started",
+        "message": "KOL sync running in background. Check Railway logs.",
+        "sheet": "KOL Combine All Branch (VND)",
+    })
