@@ -1,0 +1,10 @@
+import axios from "axios";
+const BASE = "/api/combos";
+export const listCombos = (params = {}) => axios.get(BASE, { params }).then(r => r.data.data);
+export const getCombo = (id) => axios.get(`${BASE}/${id}`).then(r => r.data.data);
+export const createCombo = (data) => axios.post(BASE, data).then(r => r.data.data);
+export const updateCombo = (id, data) => axios.patch(`${BASE}/${id}`, data).then(r => r.data.data);
+export const deleteCombo = (id) => axios.delete(`${BASE}/${id}`).then(r => r.data.data);
+export const comboInsights = (params = {}) => axios.get(`${BASE}/insights`, { params }).then(r => r.data.data);
+export const triggerSync = () => axios.post(`${BASE}/sync`).then(r => r.data.data);
+export const importFromMeta = (data = {}) => axios.post(`${BASE}/import-meta`, data).then(r => r.data.data);

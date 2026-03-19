@@ -160,3 +160,106 @@ def sync_ads(
 
     logger.info("Meta sync: %d ads fetched for account %s", len(results), account_id)
     return results
+
+
+# ── Ad Creative fetcher ─────────────────────────────────────────────────
+def fetch_ad_creatives(
+    token: str,
+    account_id: str,
+    status_filter: str = "ACTIVE",
+) -> list[dict]:
+    """Fetch all ads with their creative content (headline, body, image/video URL).
+
+    Returns list of dicts, each representing one ad with its creative:
+      ad_id, ad_name, campaign_name, adset_name, status,
+      headline, primary_text, image_url, video_thumb_url,
+      call_to_action_type, link_url, target_audience, country, funnel
+    """
+    # 1. Fetch ads with creative fields
+    ads_raw = _paginate(token, f"{account_id}/ads", {
+        "fields": ",".join([
+            "id", "name", "status",
+            "campaign{id,name}",
+            "adset{id,name,targeting}",
+            "creative{id,name,title,body,image_url,thumbnail_url,"
+            "object_story_spec,asset_feed_spec,effective_object_story_id}",
+        ]),
+        "filtering": f'[{{"field":"effective_status","operator":"IN","value":["{status_filter}"]}}]',
+        "limit": 200,
+    })
+
+    results = []
+    for ad in ads_raw:
+        ad_id = ad.get("id", "")
+        ad_name = ad.get("name", "")
+        campaign = ad.get("campaign", {})
+        campaign_name = campaign.get("name", "")
+        adset = ad.get("adset", {})
+        adset_name = adset.get("name", "")
+        creative = ad.get("creative", {})
+        parsed = parse_campaign_name(campaign_name)
+
+        # Extract creative content
+        headline = creative.get("title", "")
+        body = creative.get("body", "")
+        image_url = creative.get("image_url", "")
+        video_thumb = creative.get("thumbnail_url", "")
+
+        # Try deeper: object_story_spec has the real creative data
+        oss = creative.get("object_story_spec", {})
+        link_data = oss.get("link_data", {})
+        video_data = oss.get("video_data", {})
+
+        if not headline and link_data:
+            headline = link_data.get("name", "") or link_data.get("title", "")
+        if not body and link_data:
+            body = link_data.get("message", "")
+        if not body and video_data:
+            body = video_data.get("message", "")
+        if not image_url and link_data:
+            image_url = link_data.get("image_hash", "") or link_data.get("picture", "")
+        if not video_thumb and video_data:
+            video_thumb = video_data.get("image_url", "")
+
+        link_url = link_data.get("link", "") or video_data.get("call_to_action", {}).get("value", {}).get("link", "")
+        cta_type = link_data.get("call_to_action", {}).get("type", "")
+
+        # Determine if this is video or image
+        has_video = bool(video_data or video_thumb)
+
+        # Try asset_feed_spec for dynamic creatives
+        afs = creative.get("asset_feed_spec", {})
+        if afs and not body:
+            bodies = afs.get("bodies", [])
+            if bodies:
+                body = bodies[0].get("text", "")
+        if afs and not headline:
+            titles = afs.get("titles", [])
+            if titles:
+                headline = titles[0].get("text", "")
+
+        # Skip ads with no creative content
+        if not body and not headline and not image_url and not video_thumb:
+            continue
+
+        results.append({
+            "ad_id": ad_id,
+            "ad_name": ad_name,
+            "campaign_name": campaign_name,
+            "adset_name": adset_name,
+            "status": ad.get("status", ""),
+            "headline": headline,
+            "primary_text": body,
+            "image_url": image_url,
+            "video_thumb_url": video_thumb,
+            "has_video": has_video,
+            "call_to_action_type": cta_type,
+            "link_url": link_url,
+            "target_audience": parsed["ta"],
+            "country": parsed["country"],
+            "funnel": parsed["funnel"],
+            "pic": parsed["pic"],
+        })
+
+    logger.info("Meta creatives: %d ads with content for account %s", len(results), account_id)
+    return results

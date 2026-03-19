@@ -32,6 +32,11 @@ import Report    from "./pages/Report";
 import Settings  from "./pages/Settings";
 import Users     from "./pages/Users";
 
+// Phase 4 — Creative Intelligence Library
+import AdCombos          from "./pages/AdCombos";
+import CreativeCopies    from "./pages/CreativeCopies";
+import CreativeMaterials from "./pages/CreativeMaterials";
+
 export default function App() {
   return (
     <AuthProvider>
@@ -48,7 +53,7 @@ function AppRoutes() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-        <div className="text-gray-500 text-sm animate-pulse">Loading…</div>
+        <div className="text-gray-500 text-sm animate-pulse">Loading...</div>
       </div>
     );
   }
@@ -91,6 +96,11 @@ function AppRoutes() {
             <Route path="/angles"    element={<Angles />} />
             <Route path="/insights"  element={<Insights />} />
             <Route path="/report"    element={<Report />} />
+
+            {/* Phase 4 — Creative Intelligence Library */}
+            <Route path="/combos"    element={<AdCombos />} />
+            <Route path="/copies"    element={<CreativeCopies />} />
+            <Route path="/materials" element={<CreativeMaterials />} />
 
             {/* Settings & Admin */}
             <Route path="/settings" element={<Settings />} />

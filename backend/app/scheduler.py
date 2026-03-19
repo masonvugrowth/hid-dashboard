@@ -13,6 +13,7 @@ def setup_scheduler(app):
     async def start_scheduler():
         from app.services.cloudbeds import sync_all_branches
         from app.services.metrics_engine import nightly_metrics_job
+        from app.services.verdict_sync import sync_combo_performance, compute_derived_verdicts
         from app.database import SessionLocal
 
         # Nightly Cloudbeds sync at 2:00am Vietnam time
@@ -32,11 +33,31 @@ def setup_scheduler(app):
             replace_existing=True,
         )
 
+        # Nightly combo performance sync at 3:30am (after metrics)
+        def _verdict_sync_job():
+            db = SessionLocal()
+            try:
+                synced = sync_combo_performance(db)
+                derived = compute_derived_verdicts(db)
+                logger.info("Verdict sync complete — %d combos synced, %d components updated", synced, derived)
+            except Exception:
+                logger.exception("Verdict sync job failed")
+            finally:
+                db.close()
+
+        scheduler.add_job(
+            _verdict_sync_job,
+            trigger=CronTrigger(hour=3, minute=30),
+            id="nightly_verdict_sync",
+            replace_existing=True,
+        )
+
         scheduler.start()
         logger.info(
             "Scheduler started — "
             "Cloudbeds sync at 02:00 ICT, "
-            "metrics compute at 03:00 ICT"
+            "metrics compute at 03:00 ICT, "
+            "verdict sync at 03:30 ICT"
         )
 
     @app.on_event("shutdown")

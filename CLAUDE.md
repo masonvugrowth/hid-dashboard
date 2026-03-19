@@ -73,5 +73,13 @@ hid/
 - Lint:         `cd backend && ruff check .`
 
 ## Current Phase
-Phase 1: Foundation & Data Pipeline
+Phase 4: Creative Intelligence Library (with Ad Combo layer)
 See `docs/current-phase.md` for detailed tasks and checklist.
+
+## Creative Library Rules
+- Verdict lives on ad_combos ONLY — never accept verdict as input on copies or materials
+- derived_verdict on copies and materials is READ-ONLY — computed nightly by verdict_sync.py
+- verdict_source = "manual" blocks nightly auto-overwrite — enforce in sync job always
+- (copy_id, material_id) in ad_combos is UNIQUE — one pair, one row, ever
+- Files are never uploaded to HiD — only Drive/URL links stored
+- id_generator.py must use SELECT FOR UPDATE to prevent race conditions

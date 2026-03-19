@@ -5,6 +5,40 @@ Append a new entry after each phase is completed and verified.
 
 ---
 
+## Phase 4 — 2026-03-19 — Creative Intelligence Library (v2 — Ad Combo Layer)
+
+### Key Design Decision
+Verdict lives on ad_combos (Copy x Material pairs) — NOT on individual copies or materials.
+derived_verdict on copies/materials is computed nightly from their combos.
+
+### Added
+- **Migration** `007_phase4_creative_library.py`: 4 new tables (creative_angles, creative_copies,
+  creative_materials, ad_combos) with UNIQUE constraint on (copy_id, material_id)
+- **Models**: `creative_angle.py`, `creative_copy.py`, `creative_material.py`, `ad_combo.py`
+- **Services**: `id_generator.py` (ANG/CPY/MAT/CMB sequential codes with SELECT FOR UPDATE),
+  `verdict_sync.py` (nightly sync_combo_performance + compute_derived_verdicts)
+- **Routers**: `creative_angles.py`, `creative_copies.py`, `creative_materials.py`,
+  `combos.py` (primary — with insights endpoint, manual sync, verdict management)
+- **Frontend Pages**: `AdCombos.jsx` (primary — combo cards, filters as URL params, detail drawer
+  with verdict editor + meta_ad_name input), `CreativeCopies.jsx` (copy library with derived verdict
+  badges + combo list in detail drawer), `CreativeMaterials.jsx` (materials with conditional KOL fields)
+- **Components**: `VerdictBadge.jsx` (winning/good/neutral/underperformer/kill + derived label),
+  `ComboCard.jsx` (copy headline + material type + ROAS chip + verdict badge)
+- **API Clients**: `angles.js`, `copies.js`, `materials.js`, `combos.js`
+- **Rules**: `.claude/rules/creative-library-rules.md`
+
+### Modified
+- `backend/app/main.py` — Registered 4 new routers, version 4.0.0
+- `backend/app/scheduler.py` — Added nightly verdict sync at 03:30 ICT
+- `backend/app/models/__init__.py` — Added 4 new model imports
+- `frontend/src/App.jsx` — Added 3 Phase 4 routes (/combos, /copies, /materials)
+- `frontend/src/components/Sidebar.jsx` — Added Creatives section (Ad Combos primary)
+- `frontend/src/context/AuthContext.jsx` — Dev mode bypass for local preview
+- `CLAUDE.md` — Updated to Phase 4 Creative Library rules
+- `docs/current-phase.md` — Phase 4 execution order + completion checklist
+
+---
+
 ## Phase 1 — 2026-03-13 — Foundation & Data Pipeline
 
 ### Added

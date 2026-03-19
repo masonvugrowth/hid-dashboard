@@ -13,14 +13,24 @@ axios.interceptors.request.use((config) => {
   return config;
 });
 
+// Dev mode: skip auth when running locally without backend
+const DEV_USER = import.meta.env.DEV ? {
+  id: "dev-admin",
+  email: "admin@hid.local",
+  name: "Dev Admin",
+  role: "admin",
+} : null;
+
 export function AuthProvider({ children }) {
   const [user,    setUser]    = useState(() => {
+    if (DEV_USER) return DEV_USER;
     try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; }
   });
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!DEV_USER);
 
-  // Validate stored token on mount
+  // Validate stored token on mount (skip in dev mode)
   useEffect(() => {
+    if (DEV_USER) { setLoading(false); return; }
     const token = localStorage.getItem(TOKEN_KEY);
     if (!token) { setLoading(false); return; }
     axios.get("/api/auth/me")

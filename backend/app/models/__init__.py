@@ -11,9 +11,16 @@ from app.models.activity import MarketingActivity
 from app.models.user import User
 from app.models.creative import BranchKeypoint, AdCopy, AdMaterial, AdApproval, AdName
 
+# Phase 4 — Creative Intelligence Library
+from app.models.creative_angle import CreativeAngle
+from app.models.creative_copy import CreativeCopy
+from app.models.creative_material import CreativeMaterial
+from app.models.ad_combo import AdCombo
+
 __all__ = [
     "Branch", "KPITarget", "Reservation", "DailyMetrics", "Event",
     "WebsiteMetrics", "AdAngle", "AdsPerformance", "KOLRecord", "KOLBooking",
     "MarketingActivity", "User", "BranchKeypoint", "AdCopy", "AdMaterial",
     "AdApproval", "AdName",
+    "CreativeAngle", "CreativeCopy", "CreativeMaterial", "AdCombo",
 ]
