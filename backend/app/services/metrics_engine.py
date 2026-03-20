@@ -175,12 +175,12 @@ def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
         Reservation.reservation_date == target_date,
     ).count()
 
-    # Cancellations: count by STATUS for check-in date (cancellation_date is often NULL
-    # because Cloudbeds bulk API doesn't return it in lite payloads)
+    # Cancellations + No-shows: count by STATUS for check-in date
+    # (cancellation_date is often NULL — Cloudbeds bulk API lite payload doesn't include it)
     cancellations = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
         Reservation.check_in_date == target_date,
-        func.lower(Reservation.status).in_(["cancelled", "canceled"]),
+        func.lower(Reservation.status).in_(["cancelled", "canceled", "no_show", "noshow", "no show", "no-show"]),
     ).count()
 
     total_checkin = db.query(Reservation).filter(
@@ -292,7 +292,7 @@ def recompute_branch_range(
         Reservation.reservation_date <= date_to,
     ).with_entities(Reservation.reservation_date).all()
 
-    # 4. Cancellation counts by CHECK-IN date + cancelled status
+    # 4. Cancellation + No-show counts by CHECK-IN date + status
     #    (cancellation_date is often NULL in Cloudbeds bulk API lite payload)
     cancel_by_checkin = db.query(
         Reservation.check_in_date,
@@ -301,7 +301,7 @@ def recompute_branch_range(
         Reservation.branch_id == branch.id,
         Reservation.check_in_date >= date_from,
         Reservation.check_in_date <= date_to,
-        func.lower(Reservation.status).in_(["cancelled", "canceled"]),
+        func.lower(Reservation.status).in_(["cancelled", "canceled", "no_show", "noshow", "no show", "no-show"]),
     ).group_by(Reservation.check_in_date).all()
 
     # 5. Total reservations by check-in date (for cancel % denominator)
