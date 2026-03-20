@@ -896,6 +896,142 @@ def populate_reservation_daily(
     return count
 
 
+# ── Cloudbeds Data Insights — Occupancy (v2.1) ────────────────────────────────
+
+INSIGHTS_BASE_URL = "https://api.cloudbeds.com/datainsights/v1.1"
+OCCUPANCY_STOCK_REPORT_ID = "110"  # "Rooms Sold, ADR, RevPar and Occupancy"
+
+
+def fetch_cloudbeds_occupancy(
+    property_id: str,
+    api_key: str,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> dict[date, dict]:
+    """
+    Fetch occupancy metrics directly from Cloudbeds Data Insights API.
+
+    Uses stock report 110 "Rooms Sold, ADR, RevPar and Occupancy" which returns
+    the EXACT same numbers shown on the Cloudbeds OCC dashboard.
+
+    Returns: { date: { rooms_sold, occupancy, mfd_occupancy, adr, revpar,
+                        room_revenue, capacity_count, blocked, out_of_service } }
+    """
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "X-PROPERTY-ID": str(property_id),
+    }
+
+    url = f"{INSIGHTS_BASE_URL}/stock_reports/{OCCUPANCY_STOCK_REPORT_ID}/data"
+    params = {"property_ids": str(property_id)}
+
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(url, headers=headers, params=params)
+        resp.raise_for_status()
+        body = resp.json()
+
+    records = body.get("records", {})
+    result: dict[date, dict] = {}
+
+    for date_str, metrics in records.items():
+        try:
+            d = date.fromisoformat(date_str)
+        except (ValueError, TypeError):
+            continue
+
+        # Filter to requested date range
+        if date_from and d < date_from:
+            continue
+        if date_to and d > date_to:
+            continue
+
+        result[d] = {
+            "rooms_sold":       metrics.get("rooms_sold", {}).get("sum", 0),
+            "occupancy":        metrics.get("occupancy", {}).get("aggregated", 0),
+            "mfd_occupancy":    metrics.get("mfd_occupancy", {}).get("aggregated", 0),
+            "adr":              metrics.get("adr", {}).get("aggregated", 0),
+            "revpar":           metrics.get("revpar", {}).get("aggregated", 0),
+            "room_revenue":     metrics.get("room_revenue", {}).get("sum", 0),
+            "capacity_count":   metrics.get("capacity_count", {}).get("sum", 0),
+            "blocked":          metrics.get("blocked_room_count", {}).get("sum", 0),
+            "out_of_service":   metrics.get("out_of_service_count", {}).get("sum", 0),
+        }
+
+    logger.info(
+        "Fetched Cloudbeds occupancy for property %s: %d days [%s → %s]",
+        property_id, len(result), date_from, date_to,
+    )
+    return result
+
+
+def sync_cloudbeds_occupancy(
+    db: Session,
+    branch_id: str,
+    property_id: str,
+    currency: str,
+    api_key: str,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> dict:
+    """
+    Sync OCC, ADR, RevPAR, Revenue from Cloudbeds Data Insights API
+    directly into daily_metrics. This overwrites computed values with
+    Cloudbeds' authoritative numbers (USALI-standard).
+
+    Returns: { branch_id, dates_updated, date_from, date_to }
+    """
+    from app.models.daily_metrics import DailyMetrics
+
+    today = date.today()
+    if date_from is None:
+        date_from = today.replace(day=1)
+    if date_to is None:
+        date_to = today
+
+    occ_data = fetch_cloudbeds_occupancy(property_id, api_key, date_from, date_to)
+    rate = get_cached_rate(currency, "VND")
+
+    updated = 0
+    now = datetime.now(timezone.utc)
+
+    for d, metrics in sorted(occ_data.items()):
+        rooms_sold = int(metrics["rooms_sold"])
+        occ_pct = round(metrics["occupancy"] / 100.0, 4)  # store as 0.xxxx
+        adr_native = round(metrics["adr"], 2)
+        revpar_native = round(metrics["revpar"], 2)
+        revenue_native = round(metrics["room_revenue"], 2)
+        revenue_vnd = round(revenue_native * rate, 2) if rate else None
+        capacity = int(metrics["capacity_count"])
+
+        dm = db.query(DailyMetrics).filter_by(
+            branch_id=branch_id, date=d,
+        ).first()
+        if not dm:
+            dm = DailyMetrics(branch_id=branch_id, date=d)
+            db.add(dm)
+
+        dm.total_sold = rooms_sold
+        dm.occ_pct = occ_pct
+        dm.adr_native = adr_native
+        dm.revpar_native = revpar_native
+        dm.revenue_native = revenue_native
+        dm.revenue_vnd = revenue_vnd
+        dm.computed_at = now
+        updated += 1
+
+    db.commit()
+    logger.info(
+        "Cloudbeds OCC sync complete branch %s: %d dates updated [%s → %s]",
+        branch_id, updated, date_from, date_to,
+    )
+    return {
+        "branch_id": branch_id,
+        "dates_updated": updated,
+        "date_from": str(date_from),
+        "date_to": str(date_to),
+    }
+
+
 async def sync_all_branches() -> list[dict]:
     """Sync all active branches — uses per-property API key from config."""
     from app.models.branch import Branch

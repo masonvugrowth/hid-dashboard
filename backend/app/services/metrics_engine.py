@@ -425,12 +425,12 @@ def recompute_branch_range(
 
 async def nightly_metrics_job(db_factory) -> None:
     """
-    v2.0: Nightly job — populate reservation_daily then recompute daily_metrics.
+    v2.1: Nightly job — populate reservation_daily, recompute daily_metrics,
+    then overlay Cloudbeds Data Insights OCC/ADR/RevPAR/Revenue for exact match.
     Runs for yesterday + today for all active branches.
-    Fetches actual per-night rates from Cloudbeds transactions when API keys available.
     """
     from app.config import settings
-    from app.services.cloudbeds import populate_reservation_daily
+    from app.services.cloudbeds import populate_reservation_daily, sync_cloudbeds_occupancy
 
     db: Session = db_factory()
     try:
@@ -451,10 +451,25 @@ async def nightly_metrics_job(db_factory) -> None:
                     currency=branch.currency,
                     api_key=api_key,
                 )
-                # Step 2: compute daily_metrics from reservation_daily
+                # Step 2: compute daily_metrics from reservation_daily (cancel rate, bookings, etc.)
                 compute_day(db, branch, yesterday)
                 compute_day(db, branch, today)
-                logger.info(f"Metrics v2.0 OK branch={branch.name} dates={yesterday}..{today}")
+
+                # Step 3: overlay Cloudbeds Data Insights OCC/ADR/RevPAR/Revenue
+                # This overwrites computed OCC with Cloudbeds' exact USALI numbers
+                if pid and api_key:
+                    try:
+                        sync_cloudbeds_occupancy(
+                            db, str(branch.id), pid, branch.currency, api_key,
+                            date_from=yesterday, date_to=today,
+                        )
+                    except Exception as occ_err:
+                        logger.warning(
+                            "Cloudbeds OCC sync failed branch=%s: %s (computed values retained)",
+                            branch.name, occ_err,
+                        )
+
+                logger.info(f"Metrics v2.1 OK branch={branch.name} dates={yesterday}..{today}")
             except Exception as e:
                 logger.error(f"Metrics FAIL branch={branch.name}: {e}")
     finally:
