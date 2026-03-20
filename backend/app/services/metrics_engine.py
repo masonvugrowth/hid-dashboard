@@ -169,20 +169,25 @@ def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
     adr_native    = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
     revpar_native = round(revenue_native / total_rooms, 2) if total_rooms > 0 else 0.0
 
-    # New bookings made on this date
+    # New bookings made on this date (by reservation_date)
     new_bookings = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
         Reservation.reservation_date == target_date,
     ).count()
 
-    # Cancellations recorded on this date
+    # Cancellations: count by STATUS for check-in date (cancellation_date is often NULL
+    # because Cloudbeds bulk API doesn't return it in lite payloads)
     cancellations = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
-        Reservation.cancellation_date == target_date,
+        Reservation.check_in_date == target_date,
+        func.lower(Reservation.status).in_(["cancelled", "canceled"]),
     ).count()
 
-    total_activity = new_bookings + cancellations
-    cancellation_pct = round(cancellations / total_activity, 4) if total_activity > 0 else 0.0
+    total_checkin = db.query(Reservation).filter(
+        Reservation.branch_id == branch.id,
+        Reservation.check_in_date == target_date,
+    ).count()
+    cancellation_pct = round(cancellations / total_checkin, 4) if total_checkin > 0 else 0.0
 
     # Upsert
     dm = db.query(DailyMetrics).filter_by(branch_id=branch.id, date=target_date).first()
@@ -280,18 +285,34 @@ def recompute_branch_range(
     ).all()
     spanning_res = [_ResProxy(r) for r in spanning_raw]
 
-    # 3. Booking/cancellation counts
+    # 3. Booking counts (by reservation_date)
     booking_res = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
         Reservation.reservation_date >= date_from,
         Reservation.reservation_date <= date_to,
     ).with_entities(Reservation.reservation_date).all()
 
-    cancel_res = db.query(Reservation).filter(
+    # 4. Cancellation counts by CHECK-IN date + cancelled status
+    #    (cancellation_date is often NULL in Cloudbeds bulk API lite payload)
+    cancel_by_checkin = db.query(
+        Reservation.check_in_date,
+        func.count(Reservation.id),
+    ).filter(
         Reservation.branch_id == branch.id,
-        Reservation.cancellation_date >= date_from,
-        Reservation.cancellation_date <= date_to,
-    ).with_entities(Reservation.cancellation_date).all()
+        Reservation.check_in_date >= date_from,
+        Reservation.check_in_date <= date_to,
+        func.lower(Reservation.status).in_(["cancelled", "canceled"]),
+    ).group_by(Reservation.check_in_date).all()
+
+    # 5. Total reservations by check-in date (for cancel % denominator)
+    total_by_checkin = db.query(
+        Reservation.check_in_date,
+        func.count(Reservation.id),
+    ).filter(
+        Reservation.branch_id == branch.id,
+        Reservation.check_in_date >= date_from,
+        Reservation.check_in_date <= date_to,
+    ).group_by(Reservation.check_in_date).all()
 
     # ── Precompute day-indexed lookups ───────────────────────────────────────
 
@@ -301,9 +322,14 @@ def recompute_branch_range(
             new_bookings_map[rd] += 1
 
     cancellations_map: dict[date, int] = defaultdict(int)
-    for (cd,) in cancel_res:
-        if cd:
-            cancellations_map[cd] += 1
+    for ci_date, cnt in cancel_by_checkin:
+        if ci_date:
+            cancellations_map[ci_date] = cnt
+
+    total_checkin_map: dict[date, int] = defaultdict(int)
+    for ci_date, cnt in total_by_checkin:
+        if ci_date:
+            total_checkin_map[ci_date] = cnt
 
     # OCC filter: exclude cancelled/no-show + maintenance only
     spanning_valid_occ = [r for r in spanning_res if not _is_excluded_occ(r)]
@@ -364,8 +390,8 @@ def recompute_branch_range(
 
         new_bookings  = new_bookings_map.get(current, 0)
         cancellations = cancellations_map.get(current, 0)
-        total_activity = new_bookings + cancellations
-        cancellation_pct = round(cancellations / total_activity, 4) if total_activity > 0 else 0.0
+        total_checkin = total_checkin_map.get(current, 0)
+        cancellation_pct = round(cancellations / total_checkin, 4) if total_checkin > 0 else 0.0
 
         dm = existing_map.get(current)
         if not dm:
