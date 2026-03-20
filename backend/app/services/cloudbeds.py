@@ -986,7 +986,10 @@ def sync_cloudbeds_occupancy(
     if date_from is None:
         date_from = today.replace(day=1)
     if date_to is None:
-        date_to = today
+        # Sync full month (including future confirmed bookings)
+        import calendar
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        date_to = today.replace(day=last_day)
 
     occ_data = fetch_cloudbeds_occupancy(property_id, api_key, date_from, date_to)
     rate = get_cached_rate(currency, "VND")
