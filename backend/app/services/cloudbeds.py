@@ -711,19 +711,106 @@ def sync_branch(
 
 # ── Reservation Daily population (v2.0) ───────────────────────────────────────
 
+def _fetch_nightly_rates_from_transactions(
+    property_id: str,
+    currency: str,
+    api_key: Optional[str],
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> dict[str, dict[date, float]]:
+    """
+    Fetch Room Revenue transactions from Cloudbeds grouped by (reservationID, serviceDate).
+    Returns: { cloudbeds_reservation_id: { date: nightly_rate } }
+
+    Cloudbeds posts one Room Revenue debit transaction per night of stay on the
+    serviceDate = the actual night. This gives us TRUE per-night rates without
+    any proration math needed.
+    """
+    rev_map: dict[str, dict[date, float]] = {}  # res_id → { date → amount }
+
+    page = 1
+    while True:
+        data = _fetch_transactions_by_date_page(
+            property_id, page, api_key,
+            date_from=date_from, date_to=date_to,
+        )
+        records = data.get("data", [])
+        total_count = data.get("total", 0)
+
+        for txn in records:
+            is_room_revenue = (
+                txn.get("category") == "Room Revenue"
+                and txn.get("transactionType") == "debit"
+                and not txn.get("isDeleted", False)
+            )
+            if not is_room_revenue:
+                continue
+
+            res_id = str(txn.get("reservationID", ""))
+            if not res_id:
+                continue
+
+            txn_date_str = txn.get("serviceDate") or txn.get("transactionDateTime") or ""
+            try:
+                txn_date = date.fromisoformat(txn_date_str[:10])
+            except (ValueError, TypeError):
+                continue
+
+            amount = float(_safe_decimal(txn.get("amount")) or 0)
+            if res_id not in rev_map:
+                rev_map[res_id] = {}
+            rev_map[res_id][txn_date] = rev_map[res_id].get(txn_date, 0.0) + amount
+
+        fetched_so_far = (page - 1) * PAGE_SIZE + len(records)
+        if fetched_so_far >= total_count or not records:
+            break
+        page += 1
+
+    logger.info(
+        "Fetched nightly rates for %d reservations from Cloudbeds transactions [%s → %s]",
+        len(rev_map), date_from, date_to,
+    )
+    return rev_map
+
+
 def populate_reservation_daily(
     db: Session,
     branch_id: str,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    property_id: Optional[str] = None,
+    currency: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> int:
     """
-    Expand reservations into per-night rows in reservation_daily.
-    nightly_rate = grand_total_native / nights (simple proration).
-    Upserts on (reservation_id, date).
-    Returns count of rows written.
+    v2.0: Expand reservations into per-night rows in reservation_daily.
+
+    Strategy:
+    1. PRIMARY — If Cloudbeds API credentials are provided, fetch actual per-night
+       Room Revenue transactions (serviceDate-based). Each night gets its true rate.
+    2. FALLBACK — If no API access or no transaction found for a night, prorate:
+       nightly_rate = grand_total_native / nights.
+
+    Upserts on (reservation_id, date). Returns count of rows written.
     """
     from app.models.reservation_daily import ReservationDaily
+
+    # ── Fetch actual nightly rates from Cloudbeds if API available ────────
+    txn_rates: dict[str, dict[date, float]] = {}
+    if property_id and api_key:
+        try:
+            txn_rates = _fetch_nightly_rates_from_transactions(
+                property_id, currency or "USD", api_key,
+                date_from=date_from, date_to=date_to,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to fetch nightly rates from Cloudbeds for branch %s: %s. "
+                "Falling back to proration.", branch_id, e,
+            )
+
+    # ── Build cloudbeds_id → txn_rates lookup ────────────────────────────
+    # txn_rates keys are cloudbeds_reservation_id, need to map to DB reservation.id
 
     q = db.query(Reservation).filter(Reservation.branch_id == branch_id)
     if date_from:
@@ -732,6 +819,13 @@ def populate_reservation_daily(
         q = q.filter(Reservation.check_in_date <= date_to)
 
     reservations = q.all()
+
+    # Map cloudbeds_id → per-night rates
+    cb_id_to_rates: dict[str, dict[date, float]] = {}
+    for cb_id, rates in txn_rates.items():
+        cb_id_to_rates[cb_id] = rates
+
+    vnd_rate = get_cached_rate(currency or "USD", "VND") if currency else None
     count = 0
 
     for res in reservations:
@@ -741,64 +835,60 @@ def populate_reservation_daily(
         if nights <= 0:
             continue
 
-        grand_total = float(res.grand_total_native or 0)
-        grand_total_vnd = float(res.grand_total_vnd or 0)
-        nightly_rate = round(grand_total / nights, 2)
-        nightly_rate_vnd = round(grand_total_vnd / nights, 2)
+        # Try to get actual per-night rates from Cloudbeds transactions
+        actual_rates = cb_id_to_rates.get(res.cloudbeds_reservation_id, {})
 
-        # Expand room_number (comma-separated) into individual rooms
-        room_ids = []
+        # Fallback proration
+        grand_total = float(res.grand_total_native or 0)
+        fallback_rate = round(grand_total / nights, 2) if nights > 0 else 0.0
+
+        # Determine room_id (first room from comma-separated list)
+        room_id = None
         if res.room_number:
             for rm in str(res.room_number).split(","):
                 rm = rm.strip()
                 if rm:
-                    room_ids.append(rm)
-        if not room_ids:
-            room_ids = [None]
+                    room_id = rm
+                    break
 
         current = res.check_in_date
         end = res.check_out_date
         while current < end:
-            for room_id in room_ids:
-                existing = db.query(ReservationDaily).filter_by(
-                    reservation_id=res.id, date=current,
-                ).first()
-                if existing:
-                    # For multi-room, only update if room_id matches or is the first
-                    if len(room_ids) > 1 and existing.room_id != room_id:
-                        # Check if a row for this specific room already exists
-                        room_existing = db.query(ReservationDaily).filter_by(
-                            reservation_id=res.id, date=current,
-                        ).all()
-                        room_ids_in_db = {r.room_id for r in room_existing}
-                        if room_id in room_ids_in_db:
-                            continue  # Already exists for this room
-                        # Need separate row — but unique constraint is (reservation_id, date)
-                        # For multi-room bookings, we split nightly_rate per room
-                        # Use a single row with combined room info
-                        continue
-                    existing.nightly_rate = nightly_rate
-                    existing.nightly_rate_vnd = nightly_rate_vnd
-                    existing.status = res.status
-                    existing.source = res.source
-                    existing.source_category = res.source_category
-                    existing.room_type_category = res.room_type_category
-                    existing.room_id = room_id
-                else:
-                    db.add(ReservationDaily(
-                        reservation_id=res.id,
-                        branch_id=branch_id,
-                        date=current,
-                        room_id=room_id,
-                        nightly_rate=nightly_rate,
-                        nightly_rate_vnd=nightly_rate_vnd,
-                        status=res.status,
-                        source=res.source,
-                        source_category=res.source_category,
-                        room_type_category=res.room_type_category,
-                    ))
-                count += 1
-                break  # unique constraint is (reservation_id, date), so one row per res per night
+            # Use actual Cloudbeds nightly rate if available, otherwise prorate
+            if current in actual_rates:
+                night_rate = round(actual_rates[current], 2)
+            else:
+                night_rate = fallback_rate
+
+            night_rate_vnd = round(night_rate * vnd_rate, 2) if vnd_rate else None
+
+            existing = db.query(ReservationDaily).filter_by(
+                reservation_id=res.id, date=current,
+            ).first()
+
+            if existing:
+                existing.nightly_rate = night_rate
+                existing.nightly_rate_vnd = night_rate_vnd
+                existing.status = res.status
+                existing.source = res.source
+                existing.source_category = res.source_category
+                existing.room_type_category = res.room_type_category
+                existing.room_id = room_id
+            else:
+                db.add(ReservationDaily(
+                    reservation_id=res.id,
+                    branch_id=branch_id,
+                    date=current,
+                    room_id=room_id,
+                    nightly_rate=night_rate,
+                    nightly_rate_vnd=night_rate_vnd,
+                    status=res.status,
+                    source=res.source,
+                    source_category=res.source_category,
+                    room_type_category=res.room_type_category,
+                ))
+
+            count += 1
             current += timedelta(days=1)
 
     db.commit()

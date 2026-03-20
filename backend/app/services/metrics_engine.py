@@ -401,7 +401,9 @@ async def nightly_metrics_job(db_factory) -> None:
     """
     v2.0: Nightly job — populate reservation_daily then recompute daily_metrics.
     Runs for yesterday + today for all active branches.
+    Fetches actual per-night rates from Cloudbeds transactions when API keys available.
     """
+    from app.config import settings
     from app.services.cloudbeds import populate_reservation_daily
 
     db: Session = db_factory()
@@ -411,10 +413,17 @@ async def nightly_metrics_job(db_factory) -> None:
         branches = db.query(Branch).filter_by(is_active=True).all()
         for branch in branches:
             try:
-                # Step 1: populate reservation_daily rows
+                # Get API credentials for actual nightly rate fetch
+                pid = branch.cloudbeds_property_id
+                api_key = settings.get_api_key_for_property(str(pid)) if pid else None
+
+                # Step 1: populate reservation_daily with actual Cloudbeds nightly rates
                 populate_reservation_daily(
                     db, str(branch.id),
                     date_from=yesterday, date_to=today,
+                    property_id=pid,
+                    currency=branch.currency,
+                    api_key=api_key,
                 )
                 # Step 2: compute daily_metrics from reservation_daily
                 compute_day(db, branch, yesterday)
