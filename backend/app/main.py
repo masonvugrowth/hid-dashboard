@@ -19,7 +19,7 @@ from app.models.branch import Branch
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="HiD — Hotel Intelligence Dashboard", version="4.0.0")
+app = FastAPI(title="HiD — Hotel Intelligence Dashboard", version="4.1.0")
 
 app.add_middleware(
     CORSMiddleware,
