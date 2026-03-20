@@ -1,11 +1,11 @@
 """
-KPI Engine — Phase 2
+KPI Engine — Phase 2 (v2.0 exclusion filters)
 Calculates KPI achievement %, run-rate forecast, and OCC-based forecast.
 
-Revenue rule: sum grand_total_native for reservations with check_in_date in the
-given month (full month, including future bookings already made).
-Excludes: cancelled / no_show statuses and internal sources
-(Blogger, House Use, KOL, Maintenance).
+Revenue rule: sum revenue_native from daily_metrics for the month
+(per-night prorated via reservation_daily).
+Excludes: cancelled / no_show statuses and non-paying sources
+(Blogger, House Use, KOL, Special Case, Maintenance) — but NOT Day Use.
 """
 from __future__ import annotations
 
@@ -21,11 +21,13 @@ from app.models.daily_metrics import DailyMetrics
 from app.models.kpi import KPITarget
 from app.models.reservation import Reservation
 
-# Sources excluded from revenue (case-insensitive match against stored source)
-_EXCLUDED_STATUSES = {"cancelled", "canceled", "no_show", "noshow"}
+# v2.0: Aligned exclusion filters — Day Use is now INCLUDED in revenue
+_EXCLUDED_STATUSES = {"cancelled", "canceled", "no_show", "noshow", "no show", "no-show"}
 _EXCLUDED_SOURCES  = {
     "blogger", "house use", "houseuse", "kol",
-    "maintenance", "maintain", "day use", "dayuse",
+    "special case",
+    "maintenance", "maintain",
+    # NOTE: "day use" / "dayuse" deliberately NOT excluded — counts toward revenue
 }
 
 
@@ -249,9 +251,8 @@ def compute_kpi_summary(
     nights_booked = int(nights_row or 0)
 
     # True ADR = SUM(grand_total_native) / SUM(nights) — nightly rate (industry standard)
-    # Must use reservations directly, NOT daily_metrics, because daily_metrics.revenue_native
-    # is now check-in attributed (full stay value on check-in night), so
-    # revenue/rooms_sold would give full-stay ADR, not nightly rate.
+    # v2.0: daily_metrics.revenue_native is now per-night (from reservation_daily),
+    # but KPI ADR still uses reservations for grand_total/nights to ensure consistency.
     adr_res = (
         _revenue_query(db, branch_id, year, month)
         .with_entities(

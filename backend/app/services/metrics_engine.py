@@ -1,14 +1,19 @@
 """
-Metrics Engine — v1.6
-Split OCC and Revenue attribution:
+Metrics Engine — v2.0
+Nightly rate attribution model:
   - OCC     = traditional in-house (spanning): rooms occupied on date / total_rooms
               (reservations where check_in_date <= date < check_out_date)
-  - Revenue = check-in date attribution: sum(grand_total_native) for check-ins on date
-              (matches Cloudbeds / Google Sheet monthly totals)
-  - total_sold / rooms_sold / dorms_sold = check-in units (for ADR denominator)
-Business exclusion filters applied permanently (not configurable):
-  - status: cancelled, canceled, no_show, no show, no-show
-  - source: house use, blogger, kol, day use, maintenance
+  - Revenue = nightly rate attribution: SUM(nightly_rate) from reservation_daily for date
+              (accurate per-night revenue distribution)
+  - total_sold / rooms_sold / dorms_sold = rooms occupied on date (from reservation_daily)
+  - ADR     = SUM(nightly_rate) / rooms_sold   (per-night, not lump-sum)
+  - RevPAR  = ADR × OCC%
+
+Split exclusion filters (v2.0):
+  OCC excludes:     cancelled/no-show statuses, maintenance
+  OCC includes:     blogger, kol, house use, special case, day use
+  Revenue excludes: cancelled/no-show statuses, blogger, kol, house use, special case, maintenance
+  Revenue includes: day use
 """
 from __future__ import annotations
 
@@ -23,38 +28,72 @@ from sqlalchemy.orm import Session
 from app.models.branch import Branch
 from app.models.daily_metrics import DailyMetrics
 from app.models.reservation import Reservation
+from app.models.reservation_daily import ReservationDaily
 
 logger = logging.getLogger(__name__)
 
-# ── Exclusion filter constants ─────────────────────────────────────────────────
+# ── Exclusion filter constants (v2.0 — split OCC vs Revenue) ─────────────────
 EXCLUDED_STATUSES = {"cancelled", "canceled", "no_show", "noshow", "no show", "no-show"}
-EXCLUDED_SOURCES  = {"house use", "blogger", "kol", "day use", "maintain", "maintenance", "houseuse", "dayuse"}
+
+# OCC: only exclude maintenance (inactive in PMS) — blogger/kol/house use/day use count occupancy
+EXCLUDED_SOURCES_OCC = {"maintain", "maintenance"}
+
+# Revenue: exclude non-paying sources but INCLUDE day use (which has a fixed rate)
+EXCLUDED_SOURCES_REVENUE = {
+    "blogger", "kol", "house use", "houseuse",
+    "special case",
+    "maintain", "maintenance",
+}
+
+# Legacy combined set — used only by OTA mix / channel rate queries that don't need the split
+EXCLUDED_SOURCES = {
+    "house use", "houseuse", "maintain", "maintenance",
+}
 
 
-def _is_excluded(reservation: Reservation) -> bool:
-    status = (reservation.status or "").lower().strip()
-    source = (reservation.source or "").lower().strip()
-    # Normalise both hyphen and underscore variants so all forms match
+def _is_excluded_status(reservation) -> bool:
+    """Check if reservation has an excluded status (cancelled/no-show)."""
+    status = (getattr(reservation, "status", None) or "").lower().strip()
     status_norm = status.replace("-", "_").replace(" ", "_")
-    return (
-        status in EXCLUDED_STATUSES
-        or status_norm in EXCLUDED_STATUSES
-        or source in EXCLUDED_SOURCES
-    )
+    return status in EXCLUDED_STATUSES or status_norm in EXCLUDED_STATUSES
+
+
+def _is_excluded_occ(reservation) -> bool:
+    """v2.0 OCC exclusion: cancelled/no-show + maintenance only."""
+    if _is_excluded_status(reservation):
+        return True
+    source = (getattr(reservation, "source", None) or "").lower().strip()
+    return source in EXCLUDED_SOURCES_OCC
+
+
+def _is_excluded_revenue(reservation) -> bool:
+    """v2.0 Revenue exclusion: cancelled/no-show + non-paying sources (NOT day use)."""
+    if _is_excluded_status(reservation):
+        return True
+    source = (getattr(reservation, "source", None) or "").lower().strip()
+    return source in EXCLUDED_SOURCES_REVENUE
+
+
+# Keep old _is_excluded for backward compat with OTA mix queries
+def _is_excluded(reservation) -> bool:
+    """Legacy exclusion filter — used by OTA mix/channel rate queries."""
+    if _is_excluded_status(reservation):
+        return True
+    source = (getattr(reservation, "source", None) or "").lower().strip()
+    return source in EXCLUDED_SOURCES
 
 
 def _room_night_expand(reservations) -> set[str]:
     """
     Room-night expansion: split comma-separated room_number fields,
     return set of distinct room identifiers occupied.
-    v2 spec: rooms_sold = COUNT(DISTINCT room) across all valid reservations.
     Works with both ORM Reservation objects and lightweight _ResProxy objects.
     """
     rooms: set[str] = set()
     for r in reservations:
-        room_num = getattr(r, "room_number", None)
+        room_num = getattr(r, "room_number", None) or getattr(r, "room_id", None)
         if not room_num:
-            rooms.add(str(r.id))
+            rooms.add(str(getattr(r, "id", id(r))))
             continue
         for rm in str(room_num).split(","):
             rm = rm.strip()
@@ -63,43 +102,58 @@ def _room_night_expand(reservations) -> set[str]:
     return rooms
 
 
+def _room_expand_daily(daily_rows) -> set[str]:
+    """Count distinct room_id values from ReservationDaily rows."""
+    rooms: set[str] = set()
+    for rd in daily_rows:
+        if rd.room_id:
+            rooms.add(rd.room_id)
+        else:
+            rooms.add(str(rd.reservation_id))
+    return rooms
+
+
 # ── per-day aggregation ────────────────────────────────────────────────────────
 
 def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
     """
-    Aggregate reservations for one branch on one date → DailyMetrics row.
-    OCC  = traditional in-house: distinct rooms occupied (check_in <= date < check_out)
-    Revenue = check-in date attribution: sum(grand_total_native) for check-ins on target_date
-    total_sold / rooms_sold / dorms_sold = check-in units (ADR denominator)
+    v2.0: Aggregate metrics for one branch on one date → DailyMetrics row.
+    OCC     = traditional in-house (spanning) with OCC exclusion filter
+    Revenue = SUM(nightly_rate) from reservation_daily with Revenue exclusion filter
+    ADR     = Revenue / rooms_sold
+    RevPAR  = Revenue / total_rooms
     Upserts into daily_metrics table.
     """
     total_rooms: int = branch.total_rooms or 0
     total_room_count: int = branch.total_room_count or 0
     total_dorm_count: int = branch.total_dorm_count or 0
 
-    # ── Revenue / total_sold: check-in date attribution ────────────────────────
-    checkin_raw = db.query(Reservation).filter(
-        Reservation.branch_id == branch.id,
-        Reservation.check_in_date == target_date,
+    # ── Revenue / total_sold: nightly rate from reservation_daily (v2.0) ─────
+    daily_rows = db.query(ReservationDaily).filter(
+        ReservationDaily.branch_id == branch.id,
+        ReservationDaily.date == target_date,
     ).all()
-    checkin_res = [r for r in checkin_raw if not _is_excluded(r)]
 
-    room_ci = [r for r in checkin_res if (r.room_type_category or "").lower() == "room"]
-    dorm_ci = [r for r in checkin_res if (r.room_type_category or "").lower() == "dorm"]
-    rooms_sold = len(_room_night_expand(room_ci))
-    dorms_sold = len(_room_night_expand(dorm_ci))
+    # Apply REVENUE exclusion filter (excludes blogger/kol/house use but NOT day use)
+    revenue_rows = [rd for rd in daily_rows if not _is_excluded_revenue(rd)]
+
+    room_rev = [rd for rd in revenue_rows if (rd.room_type_category or "").lower() == "room"]
+    dorm_rev = [rd for rd in revenue_rows if (rd.room_type_category or "").lower() == "dorm"]
+    rooms_sold = len(_room_expand_daily(room_rev))
+    dorms_sold = len(_room_expand_daily(dorm_rev))
     total_sold = rooms_sold + dorms_sold
 
-    revenue_native = round(sum(float(r.grand_total_native or 0) for r in checkin_res), 2)
-    revenue_vnd    = round(sum(float(r.grand_total_vnd or 0) for r in checkin_res), 2)
+    revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in revenue_rows), 2)
+    revenue_vnd    = round(sum(float(rd.nightly_rate_vnd or 0) for rd in revenue_rows), 2)
 
-    # ── OCC: traditional in-house (spanning) ──────────────────────────────────
+    # ── OCC: traditional in-house (spanning) with OCC exclusion filter ───────
     inhouse_raw = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
         Reservation.check_in_date <= target_date,
         Reservation.check_out_date > target_date,
     ).all()
-    inhouse_res = [r for r in inhouse_raw if not _is_excluded(r)]
+    # Apply OCC exclusion filter (only excludes cancelled/no-show + maintenance)
+    inhouse_res = [r for r in inhouse_raw if not _is_excluded_occ(r)]
 
     room_ih = [r for r in inhouse_res if (r.room_type_category or "").lower() == "room"]
     dorm_ih = [r for r in inhouse_res if (r.room_type_category or "").lower() == "dorm"]
@@ -111,7 +165,7 @@ def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
     room_occ_pct = round(rooms_inhouse / total_room_count, 4) if total_room_count > 0 else None
     dorm_occ_pct = round(dorms_inhouse / total_dorm_count, 4) if total_dorm_count > 0 else None
 
-    # ADR and RevPAR (in native currency)
+    # ADR and RevPAR (in native currency) — using nightly rate revenue
     adr_native    = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
     revpar_native = round(revenue_native / total_rooms, 2) if total_rooms > 0 else 0.0
 
@@ -163,8 +217,8 @@ def recompute_branch_range(
     date_to: date,
 ) -> int:
     """
-    Fast bulk recompute: fetches all reservations once, computes in Python,
-    then bulk-upserts. Reduces DB round trips from O(days×4) to O(1) per branch.
+    v2.0: Fast bulk recompute using reservation_daily for revenue attribution.
+    Fetches all data once, computes in Python, then bulk-upserts.
     """
     from collections import defaultdict
 
@@ -172,10 +226,10 @@ def recompute_branch_range(
     total_room_count: int = branch.total_room_count or 0
     total_dorm_count: int = branch.total_dorm_count or 0
 
-    # ── Fetch all data in 4 queries, then detach from session ─────────────────
+    # ── Lightweight proxy for session-independent computation ────────────────
 
     class _ResProxy:
-        """Lightweight plain-Python copy of a Reservation row — session-independent."""
+        """Lightweight plain-Python copy of a Reservation row."""
         __slots__ = ("id", "status", "source", "room_number", "room_type_category",
                      "check_in_date", "check_out_date", "nights",
                      "grand_total_native", "grand_total_vnd")
@@ -192,16 +246,33 @@ def recompute_branch_range(
             self.grand_total_native = r.grand_total_native
             self.grand_total_vnd   = r.grand_total_vnd
 
-    # 1. Check-in date reservations (for revenue / total_sold / ADR)
-    raw_res = db.query(Reservation).filter(
-        Reservation.branch_id == branch.id,
-        Reservation.check_in_date >= date_from,
-        Reservation.check_in_date <= date_to,
-    ).all()
-    all_res = [_ResProxy(r) for r in raw_res]
+    class _DailyProxy:
+        """Lightweight proxy for ReservationDaily row."""
+        __slots__ = ("reservation_id", "date", "room_id", "nightly_rate", "nightly_rate_vnd",
+                     "status", "source", "source_category", "room_type_category")
 
-    # 2. Spanning reservations (for traditional in-house OCC)
-    #    check_in_date <= date_to AND check_out_date > date_from → overlaps the range
+        def __init__(self, rd: ReservationDaily):
+            self.reservation_id   = rd.reservation_id
+            self.date             = rd.date
+            self.room_id          = rd.room_id
+            self.nightly_rate     = rd.nightly_rate
+            self.nightly_rate_vnd = rd.nightly_rate_vnd
+            self.status           = rd.status
+            self.source           = rd.source
+            self.source_category  = rd.source_category
+            self.room_type_category = rd.room_type_category
+
+    # ── Fetch all data ──────────────────────────────────────────────────────
+
+    # 1. reservation_daily rows for revenue (v2.0)
+    daily_raw = db.query(ReservationDaily).filter(
+        ReservationDaily.branch_id == branch.id,
+        ReservationDaily.date >= date_from,
+        ReservationDaily.date <= date_to,
+    ).all()
+    all_daily = [_DailyProxy(rd) for rd in daily_raw]
+
+    # 2. Spanning reservations for OCC
     spanning_raw = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
         Reservation.check_in_date <= date_to,
@@ -209,7 +280,7 @@ def recompute_branch_range(
     ).all()
     spanning_res = [_ResProxy(r) for r in spanning_raw]
 
-    # 3. All reservation_dates / cancellation_dates in range
+    # 3. Booking/cancellation counts
     booking_res = db.query(Reservation).filter(
         Reservation.branch_id == branch.id,
         Reservation.reservation_date >= date_from,
@@ -222,7 +293,7 @@ def recompute_branch_range(
         Reservation.cancellation_date <= date_to,
     ).with_entities(Reservation.cancellation_date).all()
 
-    # ── Precompute day-indexed lookups ─────────────────────────────────────────
+    # ── Precompute day-indexed lookups ───────────────────────────────────────
 
     new_bookings_map: dict[date, int] = defaultdict(int)
     for (rd,) in booking_res:
@@ -234,15 +305,18 @@ def recompute_branch_range(
         if cd:
             cancellations_map[cd] += 1
 
-    valid_res    = [r for r in all_res if not _is_excluded(r)]
-    spanning_valid = [r for r in spanning_res if not _is_excluded(r)]
+    # OCC filter: exclude cancelled/no-show + maintenance only
+    spanning_valid_occ = [r for r in spanning_res if not _is_excluded_occ(r)]
 
-    # ── Iterate days in Python (no more DB queries) ───────────────────────────
+    # Revenue filter: exclude cancelled/no-show + non-paying sources (NOT day use)
+    valid_daily_revenue = [rd for rd in all_daily if not _is_excluded_revenue(rd)]
 
-    current = date_from
-    count = 0
+    # Pre-index reservation_daily by date for O(1) lookup
+    daily_by_date: dict = defaultdict(list)
+    for rd in valid_daily_revenue:
+        daily_by_date[rd.date].append(rd)
 
-    # Load existing daily_metrics for this range to decide insert vs update
+    # Load existing daily_metrics for upsert
     existing_map: dict[date, DailyMetrics] = {
         dm.date: dm
         for dm in db.query(DailyMetrics).filter(
@@ -252,31 +326,29 @@ def recompute_branch_range(
         ).all()
     }
 
-    # Pre-index check-in reservations by check-in date for O(1) revenue lookup
-    from collections import defaultdict as _defaultdict
-    checkin_map: dict = _defaultdict(list)
-    for r in valid_res:
-        if r.check_in_date is not None:
-            checkin_map[r.check_in_date].append(r)
+    # ── Iterate days ────────────────────────────────────────────────────────
+
+    current = date_from
+    count = 0
 
     while current <= date_to:
-        # ── Revenue / total_sold: check-in date attribution ────────────────────
-        checkin_res = checkin_map.get(current, [])
+        # ── Revenue from reservation_daily (v2.0 nightly rate) ───────────────
+        day_revenue_rows = daily_by_date.get(current, [])
 
-        room_ci = [r for r in checkin_res if (r.room_type_category or "").lower() == "room"]
-        dorm_ci = [r for r in checkin_res if (r.room_type_category or "").lower() == "dorm"]
-        rooms_sold = len(_room_night_expand(room_ci))
-        dorms_sold = len(_room_night_expand(dorm_ci))
+        room_rev = [rd for rd in day_revenue_rows if (rd.room_type_category or "").lower() == "room"]
+        dorm_rev = [rd for rd in day_revenue_rows if (rd.room_type_category or "").lower() == "dorm"]
+        rooms_sold = len(_room_expand_daily(room_rev))
+        dorms_sold = len(_room_expand_daily(dorm_rev))
         total_sold = rooms_sold + dorms_sold
 
-        revenue_native = round(sum(float(r.grand_total_native or 0) for r in checkin_res), 2)
-        revenue_vnd    = round(sum(float(r.grand_total_vnd or 0) for r in checkin_res), 2)
+        revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in day_revenue_rows), 2)
+        revenue_vnd    = round(sum(float(rd.nightly_rate_vnd or 0) for rd in day_revenue_rows), 2)
         adr_native     = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
         revpar_native  = round(revenue_native / total_rooms, 2) if total_rooms > 0 else 0.0
 
-        # ── OCC: traditional in-house (spanning) ──────────────────────────────
+        # ── OCC: traditional in-house with OCC exclusion filter ──────────────
         inhouse_res = [
-            r for r in spanning_valid
+            r for r in spanning_valid_occ
             if r.check_in_date <= current
             and (r.check_out_date or current + timedelta(days=1)) > current
         ]
@@ -318,7 +390,6 @@ def recompute_branch_range(
         current += timedelta(days=1)
         count += 1
 
-        # Commit in batches of 90 days to avoid holding large transactions
         if count % 90 == 0:
             db.commit()
 
@@ -327,15 +398,28 @@ def recompute_branch_range(
 
 
 async def nightly_metrics_job(db_factory) -> None:
-    """Async nightly job: recompute yesterday for all active branches."""
+    """
+    v2.0: Nightly job — populate reservation_daily then recompute daily_metrics.
+    Runs for yesterday + today for all active branches.
+    """
+    from app.services.cloudbeds import populate_reservation_daily
+
     db: Session = db_factory()
     try:
         yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+        today = datetime.now(timezone.utc).date()
         branches = db.query(Branch).filter_by(is_active=True).all()
         for branch in branches:
             try:
+                # Step 1: populate reservation_daily rows
+                populate_reservation_daily(
+                    db, str(branch.id),
+                    date_from=yesterday, date_to=today,
+                )
+                # Step 2: compute daily_metrics from reservation_daily
                 compute_day(db, branch, yesterday)
-                logger.info(f"Metrics OK branch={branch.name} date={yesterday}")
+                compute_day(db, branch, today)
+                logger.info(f"Metrics v2.0 OK branch={branch.name} dates={yesterday}..{today}")
             except Exception as e:
                 logger.error(f"Metrics FAIL branch={branch.name}: {e}")
     finally:

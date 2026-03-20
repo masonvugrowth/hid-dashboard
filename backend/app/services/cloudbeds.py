@@ -709,6 +709,103 @@ def sync_branch(
         db.close()
 
 
+# ── Reservation Daily population (v2.0) ───────────────────────────────────────
+
+def populate_reservation_daily(
+    db: Session,
+    branch_id: str,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> int:
+    """
+    Expand reservations into per-night rows in reservation_daily.
+    nightly_rate = grand_total_native / nights (simple proration).
+    Upserts on (reservation_id, date).
+    Returns count of rows written.
+    """
+    from app.models.reservation_daily import ReservationDaily
+
+    q = db.query(Reservation).filter(Reservation.branch_id == branch_id)
+    if date_from:
+        q = q.filter(Reservation.check_out_date > date_from)
+    if date_to:
+        q = q.filter(Reservation.check_in_date <= date_to)
+
+    reservations = q.all()
+    count = 0
+
+    for res in reservations:
+        if not res.check_in_date or not res.check_out_date:
+            continue
+        nights = res.nights or (res.check_out_date - res.check_in_date).days
+        if nights <= 0:
+            continue
+
+        grand_total = float(res.grand_total_native or 0)
+        grand_total_vnd = float(res.grand_total_vnd or 0)
+        nightly_rate = round(grand_total / nights, 2)
+        nightly_rate_vnd = round(grand_total_vnd / nights, 2)
+
+        # Expand room_number (comma-separated) into individual rooms
+        room_ids = []
+        if res.room_number:
+            for rm in str(res.room_number).split(","):
+                rm = rm.strip()
+                if rm:
+                    room_ids.append(rm)
+        if not room_ids:
+            room_ids = [None]
+
+        current = res.check_in_date
+        end = res.check_out_date
+        while current < end:
+            for room_id in room_ids:
+                existing = db.query(ReservationDaily).filter_by(
+                    reservation_id=res.id, date=current,
+                ).first()
+                if existing:
+                    # For multi-room, only update if room_id matches or is the first
+                    if len(room_ids) > 1 and existing.room_id != room_id:
+                        # Check if a row for this specific room already exists
+                        room_existing = db.query(ReservationDaily).filter_by(
+                            reservation_id=res.id, date=current,
+                        ).all()
+                        room_ids_in_db = {r.room_id for r in room_existing}
+                        if room_id in room_ids_in_db:
+                            continue  # Already exists for this room
+                        # Need separate row — but unique constraint is (reservation_id, date)
+                        # For multi-room bookings, we split nightly_rate per room
+                        # Use a single row with combined room info
+                        continue
+                    existing.nightly_rate = nightly_rate
+                    existing.nightly_rate_vnd = nightly_rate_vnd
+                    existing.status = res.status
+                    existing.source = res.source
+                    existing.source_category = res.source_category
+                    existing.room_type_category = res.room_type_category
+                    existing.room_id = room_id
+                else:
+                    db.add(ReservationDaily(
+                        reservation_id=res.id,
+                        branch_id=branch_id,
+                        date=current,
+                        room_id=room_id,
+                        nightly_rate=nightly_rate,
+                        nightly_rate_vnd=nightly_rate_vnd,
+                        status=res.status,
+                        source=res.source,
+                        source_category=res.source_category,
+                        room_type_category=res.room_type_category,
+                    ))
+                count += 1
+                break  # unique constraint is (reservation_id, date), so one row per res per night
+            current += timedelta(days=1)
+
+    db.commit()
+    logger.info("Populated %d reservation_daily rows for branch %s", count, branch_id)
+    return count
+
+
 async def sync_all_branches() -> list[dict]:
     """Sync all active branches — uses per-property API key from config."""
     from app.models.branch import Branch
