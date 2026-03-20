@@ -12,11 +12,11 @@ def setup_scheduler(app):
     @app.on_event("startup")
     async def start_scheduler():
         from app.services.cloudbeds import sync_all_branches
-        from app.services.metrics_engine import nightly_metrics_job
+        from app.services.metrics_engine import nightly_metrics_job, cloudbeds_insights_sync_job
         from app.services.verdict_sync import sync_combo_performance, compute_derived_verdicts
         from app.database import SessionLocal
 
-        # Nightly Cloudbeds sync at 2:00am Vietnam time
+        # Nightly Cloudbeds reservations sync at 2:00am Vietnam time
         scheduler.add_job(
             sync_all_branches,
             trigger=CronTrigger(hour=2, minute=0),
@@ -25,11 +25,29 @@ def setup_scheduler(app):
         )
 
         # Nightly metrics recompute at 3:00am Vietnam time (after sync)
+        # Includes full-month Cloudbeds Insights overlay
         scheduler.add_job(
             nightly_metrics_job,
             args=[SessionLocal],
             trigger=CronTrigger(hour=3, minute=0),
             id="nightly_metrics_compute",
+            replace_existing=True,
+        )
+
+        # Cloudbeds Insights sync at 8:00am and 2:00pm Vietnam time
+        # Keeps OCC/ADR/RevPAR/Revenue fresh throughout the day
+        scheduler.add_job(
+            cloudbeds_insights_sync_job,
+            args=[SessionLocal],
+            trigger=CronTrigger(hour=8, minute=0),
+            id="insights_sync_morning",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            cloudbeds_insights_sync_job,
+            args=[SessionLocal],
+            trigger=CronTrigger(hour=14, minute=0),
+            id="insights_sync_afternoon",
             replace_existing=True,
         )
 
@@ -55,8 +73,9 @@ def setup_scheduler(app):
         scheduler.start()
         logger.info(
             "Scheduler started — "
-            "Cloudbeds sync at 02:00 ICT, "
-            "metrics compute at 03:00 ICT, "
+            "Cloudbeds reservation sync at 02:00 ICT, "
+            "metrics compute + full-month Insights at 03:00 ICT, "
+            "Insights refresh at 08:00 & 14:00 ICT, "
             "verdict sync at 03:30 ICT"
         )
 

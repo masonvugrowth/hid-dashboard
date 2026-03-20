@@ -425,10 +425,12 @@ def recompute_branch_range(
 
 async def nightly_metrics_job(db_factory) -> None:
     """
-    v2.1: Nightly job — populate reservation_daily, recompute daily_metrics,
-    then overlay Cloudbeds Data Insights OCC/ADR/RevPAR/Revenue for exact match.
-    Runs for yesterday + today for all active branches.
+    v2.2: Nightly job — populate reservation_daily, recompute daily_metrics,
+    then overlay Cloudbeds Data Insights OCC/ADR/RevPAR/Revenue for full month.
+    Runs for yesterday + today for reservation_daily + compute_day,
+    then syncs full current month from Cloudbeds Insights (including future dates).
     """
+    import calendar
     from app.config import settings
     from app.services.cloudbeds import populate_reservation_daily, sync_cloudbeds_occupancy
 
@@ -436,6 +438,10 @@ async def nightly_metrics_job(db_factory) -> None:
     try:
         yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
         today = datetime.now(timezone.utc).date()
+        # Full month boundaries for Cloudbeds Insights sync
+        month_start = today.replace(day=1)
+        month_end = today.replace(day=calendar.monthrange(today.year, today.month)[1])
+
         branches = db.query(Branch).filter_by(is_active=True).all()
         for branch in branches:
             try:
@@ -455,23 +461,57 @@ async def nightly_metrics_job(db_factory) -> None:
                 compute_day(db, branch, yesterday)
                 compute_day(db, branch, today)
 
-                # Step 3: overlay Cloudbeds Data Insights OCC/ADR/RevPAR/Revenue
-                # This overwrites computed OCC with Cloudbeds' exact USALI numbers
+                # Step 3: overlay Cloudbeds Data Insights for FULL MONTH
+                # Revenue, OCC, ADR, RevPAR — including future confirmed bookings
                 if pid and api_key:
                     try:
                         sync_cloudbeds_occupancy(
                             db, str(branch.id), pid, branch.currency, api_key,
-                            date_from=yesterday, date_to=today,
+                            date_from=month_start, date_to=month_end,
                         )
                     except Exception as occ_err:
                         logger.warning(
-                            "Cloudbeds OCC sync failed branch=%s: %s (computed values retained)",
+                            "Cloudbeds Insights sync failed branch=%s: %s (computed values retained)",
                             branch.name, occ_err,
                         )
 
-                logger.info(f"Metrics v2.1 OK branch={branch.name} dates={yesterday}..{today}")
+                logger.info(f"Metrics v2.2 OK branch={branch.name} dates={yesterday}..{today}, insights={month_start}..{month_end}")
             except Exception as e:
                 logger.error(f"Metrics FAIL branch={branch.name}: {e}")
+    finally:
+        db.close()
+
+
+async def cloudbeds_insights_sync_job(db_factory) -> None:
+    """
+    Standalone job to sync Cloudbeds Data Insights (OCC/ADR/RevPAR/Revenue)
+    for the full current month. Runs independently of nightly_metrics_job
+    so revenue/OCC stays up-to-date throughout the day.
+    """
+    import calendar
+    from app.config import settings
+    from app.services.cloudbeds import sync_cloudbeds_occupancy
+
+    db: Session = db_factory()
+    try:
+        today = datetime.now(timezone.utc).date()
+        month_start = today.replace(day=1)
+        month_end = today.replace(day=calendar.monthrange(today.year, today.month)[1])
+
+        branches = db.query(Branch).filter_by(is_active=True).all()
+        for branch in branches:
+            pid = branch.cloudbeds_property_id
+            api_key = settings.get_api_key_for_property(str(pid)) if pid else None
+            if not pid or not api_key:
+                continue
+            try:
+                sync_cloudbeds_occupancy(
+                    db, str(branch.id), pid, branch.currency, api_key,
+                    date_from=month_start, date_to=month_end,
+                )
+                logger.info(f"Insights sync OK branch={branch.name} [{month_start}..{month_end}]")
+            except Exception as e:
+                logger.warning(f"Insights sync FAIL branch={branch.name}: {e}")
     finally:
         db.close()
 
