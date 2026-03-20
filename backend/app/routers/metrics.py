@@ -100,7 +100,7 @@ def get_weekly(
         "rooms_sold": 0, "dorms_sold": 0, "total_sold": 0,
         "revenue_native": 0.0, "revenue_vnd": 0.0,
         "new_bookings": 0, "cancellations": 0,
-        "occ_sum": 0.0, "day_count": 0,
+        "occ_sum": 0.0, "cancel_pct_sum": 0.0, "day_count": 0,
     })
 
     for dm in rows:
@@ -120,18 +120,21 @@ def get_weekly(
         w["new_bookings"] += dm.new_bookings or 0
         w["cancellations"] += dm.cancellations or 0
         w["occ_sum"] += float(dm.occ_pct or 0)
+        w["cancel_pct_sum"] += float(dm.cancellation_pct or 0)
         w["day_count"] += 1
 
     result = []
     for w in weekly.values():
         n = w["day_count"]
-        total_act = w["new_bookings"] + w["cancellations"]
         sold = w["total_sold"]
         # Weighted ADR = SUM(revenue) / SUM(rooms_sold) — industry standard
         avg_adr = round(w["revenue_native"] / sold, 2) if sold > 0 else 0
         # Weighted RevPAR = revenue / (days × total_rooms) — use OCC × ADR as proxy
         avg_occ = round(w["occ_sum"] / n, 4) if n > 0 else 0
         avg_revpar = round(avg_occ * avg_adr, 2)
+        # Cancel rate = average of daily cancellation_pct (each daily pct is already
+        # correctly computed as cancelled_checkins / total_checkins for that date)
+        avg_cancel_pct = round(w["cancel_pct_sum"] / n, 4) if n > 0 else 0
         result.append({
             "branch_id": w.get("branch_id"),
             "year": w.get("year"),
@@ -144,7 +147,7 @@ def get_weekly(
             "revenue_vnd": round(w["revenue_vnd"], 2),
             "new_bookings": w["new_bookings"],
             "cancellations": w["cancellations"],
-            "cancellation_pct": round(w["cancellations"] / total_act, 4) if total_act > 0 else 0,
+            "cancellation_pct": avg_cancel_pct,
             "avg_occ_pct": avg_occ,
             "avg_adr_native": avg_adr,
             "avg_revpar_native": avg_revpar,
@@ -187,7 +190,7 @@ def get_monthly(
         "rooms_sold": 0, "dorms_sold": 0, "total_sold": 0,
         "revenue_native": 0.0, "revenue_vnd": 0.0,
         "new_bookings": 0, "cancellations": 0,
-        "occ_sum": 0.0, "day_count": 0,
+        "occ_sum": 0.0, "cancel_pct_sum": 0.0, "day_count": 0,
     })
 
     for dm in rows:
@@ -204,6 +207,7 @@ def get_monthly(
         m["new_bookings"] += dm.new_bookings or 0
         m["cancellations"] += dm.cancellations or 0
         m["occ_sum"] += float(dm.occ_pct or 0)
+        m["cancel_pct_sum"] += float(dm.cancellation_pct or 0)
         m["day_count"] += 1
 
     # Country breakdown per month
@@ -242,12 +246,13 @@ def get_monthly(
     for m in monthly.values():
         n = m["day_count"]
         sold = m["total_sold"]
-        total_act = m["new_bookings"] + m["cancellations"]
         ym = (m["year"], m["month"])
         # Weighted ADR = SUM(revenue) / SUM(rooms_sold) — industry standard
         avg_adr = round(m["revenue_native"] / sold, 2) if sold > 0 else 0
         avg_occ = round(m["occ_sum"] / n, 4) if n > 0 else 0
         avg_revpar = round(avg_occ * avg_adr, 2)
+        # Cancel rate = average of daily cancellation_pct
+        avg_cancel_pct = round(m["cancel_pct_sum"] / n, 4) if n > 0 else 0
         result.append({
             "branch_id": m.get("branch_id"),
             "year": m.get("year"),
@@ -259,7 +264,7 @@ def get_monthly(
             "revenue_vnd": round(m["revenue_vnd"], 2),
             "new_bookings": m["new_bookings"],
             "cancellations": m["cancellations"],
-            "cancellation_pct": round(m["cancellations"] / total_act, 4) if total_act > 0 else 0,
+            "cancellation_pct": avg_cancel_pct,
             "avg_occ_pct": avg_occ,
             "avg_adr_native": avg_adr,
             "avg_revpar_native": avg_revpar,
