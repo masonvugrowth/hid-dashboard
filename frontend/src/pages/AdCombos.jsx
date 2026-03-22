@@ -17,7 +17,7 @@ const AUDIENCES = ["Solo", "Couple", "Friend", "Friend Group", "Family", "Busine
 const CHANNELS = ["Facebook", "Instagram", "TikTok", "YouTube", "Meta", "Google"];
 const LANGUAGES = ["Vietnamese", "English", "Japanese", "Korean", "Thai", "Indonesian", "Malay"];
 const COUNTRIES = ["Vietnam", "Philippines", "Indonesia", "Australia", "Taiwan", "South Korea", "Japan", "Thailand", "Malaysia", "Singapore", "United Kingdom", "United States", "India", "China"];
-const VERDICTS = ["winning", "good", "neutral", "underperformer", "kill"];
+const VERDICTS = ["WIN", "TEST", "LOSE"];
 const RUN_STATUSES = ["Active", "Paused", "Ended"];
 
 export default function AdCombos() {
@@ -214,7 +214,7 @@ export default function AdCombos() {
       {insights && (
         <div className="flex gap-3 mb-4 text-xs">
           <span className="px-2 py-1 bg-gray-100 rounded">Total: {insights.total_combos}</span>
-          <span className="px-2 py-1 bg-green-100 text-green-700 rounded">Winning: {insights.winning_count}</span>
+          <span className="px-2 py-1 bg-green-100 text-green-700 rounded">WIN: {insights.win_count ?? insights.winning_count}</span>
           {insights.top_by_roas?.[0] && (
             <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded">
               Top ROAS: {insights.top_by_roas[0].roas.toFixed(2)} ({insights.top_by_roas[0].combo_code})
@@ -284,13 +284,18 @@ export default function AdCombos() {
             </div>
             <div className="p-4 space-y-4">
               {/* Verdict */}
-              <div className="flex items-center gap-3">
-                <VerdictBadge verdict={detail.verdict} />
-                {detail.verdict_source && <span className="text-xs text-gray-400">({detail.verdict_source})</span>}
-                {detail.roas != null && (
-                  <span className={`text-sm font-medium ${
-                    detail.roas >= 3 ? "text-green-600" : detail.roas >= 1 ? "text-amber-500" : "text-red-500"
-                  }`}>ROAS {detail.roas.toFixed(2)}</span>
+              <div className="space-y-1">
+                <div className="flex items-center gap-3">
+                  <VerdictBadge verdict={detail.verdict} reason={detail.verdict_notes} />
+                  {detail.verdict_source && <span className="text-xs text-gray-400">({detail.verdict_source})</span>}
+                  {detail.roas != null && (
+                    <span className={`text-sm font-medium ${
+                      detail.roas >= 3 ? "text-green-600" : detail.roas >= 1 ? "text-amber-500" : "text-red-500"
+                    }`}>ROAS {detail.roas.toFixed(2)}</span>
+                  )}
+                </div>
+                {detail.verdict_notes && (
+                  <p className="text-[11px] text-gray-500 bg-gray-50 px-2 py-1 rounded">{detail.verdict_notes}</p>
                 )}
               </div>
 

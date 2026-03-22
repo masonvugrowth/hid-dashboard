@@ -256,12 +256,12 @@ def combo_insights(
         q = q.filter(AdCombo.branch_id == branch_id)
 
     total = q.count()
-    winning = q.filter(AdCombo.verdict == "winning").count()
+    winning = q.filter(AdCombo.verdict == "WIN").count()
     top_roas = q.filter(AdCombo.roas.isnot(None)).order_by(AdCombo.roas.desc()).limit(5).all()
 
     return _envelope({
         "total_combos": total,
-        "winning_count": winning,
+        "win_count": winning,
         "top_by_roas": [
             {"combo_code": cb.combo_code, "roas": float(cb.roas), "target_audience": cb.target_audience,
              "channel": cb.channel}
