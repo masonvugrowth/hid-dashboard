@@ -1,5 +1,5 @@
 /**
- * Ad Angles — WIN/TEST/LOSE — Phase 3
+ * Ad Angles — WIN/TEST/LOSE — sourced from creative_angles + ad_combos
  */
 import { useEffect, useState } from "react";
 import axios from "axios";
@@ -12,6 +12,20 @@ const STATUS_STYLE = {
   TEST: { card: "border-yellow-200 bg-yellow-50", badge: "bg-yellow-500 text-white", label: "TEST" },
   LOSE: { card: "border-red-200 bg-red-50",       badge: "bg-red-500 text-white",    label: "LOSE" },
   null: { card: "border-gray-200 bg-white",        badge: "bg-gray-300 text-gray-600", label: "—" },
+};
+
+const HOOK_COLORS = {
+  "Question": "bg-blue-100 text-blue-700",
+  "Shock/Surprise": "bg-purple-100 text-purple-700",
+  "Pain Point": "bg-red-100 text-red-700",
+  "Aspiration": "bg-emerald-100 text-emerald-700",
+  "Social Proof": "bg-amber-100 text-amber-700",
+  "Story": "bg-indigo-100 text-indigo-700",
+  "How-To": "bg-cyan-100 text-cyan-700",
+  "Trend/Meme": "bg-pink-100 text-pink-700",
+  "Seasonal": "bg-orange-100 text-orange-700",
+  "Activity": "bg-teal-100 text-teal-700",
+  "Reframing": "bg-violet-100 text-violet-700",
 };
 
 function ScoreBar({ score }) {
@@ -115,13 +129,29 @@ export default function Angles() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {displayRows.map(row => {
             const st = STATUS_STYLE[row.status] || STATUS_STYLE[null];
+            const hookClass = HOOK_COLORS[row.hook_type] || "bg-gray-100 text-gray-600";
+            const keypoints = [row.keypoint_1, row.keypoint_2, row.keypoint_3, row.keypoint_4, row.keypoint_5].filter(Boolean);
             return (
               <div key={row.id} className={"rounded-xl border-2 p-5 space-y-3 " + st.card}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1">
-                    <span className={"px-2 py-0.5 rounded text-xs font-bold " + st.badge}>{row.status || "—"}</span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={"px-2 py-0.5 rounded text-xs font-bold " + st.badge}>{row.status || "—"}</span>
+                      {row.hook_type && <span className={"px-2 py-0.5 rounded text-xs font-medium " + hookClass}>{row.hook_type}</span>}
+                      {row.angle_code && <span className="text-xs text-gray-400 font-mono">{row.angle_code}</span>}
+                    </div>
                     <h3 className="font-semibold text-gray-800 mt-2 leading-tight">{row.name}</h3>
-                    {row.description && <p className="text-xs text-gray-500 mt-1">{row.description}</p>}
+                    {keypoints.length > 0 && (
+                      <ul className="mt-1.5 space-y-0.5">
+                        {keypoints.map((kp, i) => (
+                          <li key={i} className="text-xs text-gray-500 flex items-start gap-1">
+                            <span className="text-gray-300 mt-0.5">•</span>
+                            <span>{kp}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {row.description && !keypoints.length && <p className="text-xs text-gray-500 mt-1">{row.description}</p>}
                   </div>
                   <div className="flex gap-1 shrink-0">
                     <button onClick={() => openEdit(row)} className="text-indigo-500 hover:text-indigo-700 text-xs">Edit</button>
@@ -138,11 +168,11 @@ export default function Angles() {
                   <ScoreBar score={row.score} />
                 </div>
 
-                {row.cost_native > 0 && (
-                  <div className="grid grid-cols-3 gap-1 pt-1 border-t border-black/5 text-xs">
+                {(row.cost_native > 0 || row.combo_count > 0) && (
+                  <div className="grid grid-cols-4 gap-1 pt-1 border-t border-black/5 text-xs">
                     <div>
                       <p className="text-gray-400">Spend</p>
-                      <p className="font-medium text-gray-700">{sym}{(row.cost_native / 1000).toFixed(0)}K</p>
+                      <p className="font-medium text-gray-700">{row.cost_native > 0 ? sym + (row.cost_native / 1000).toFixed(0) + "K" : "—"}</p>
                     </div>
                     <div>
                       <p className="text-gray-400">ROAS</p>
@@ -151,6 +181,10 @@ export default function Angles() {
                     <div>
                       <p className="text-gray-400">Bookings</p>
                       <p className="font-medium text-gray-700">{row.bookings || 0}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-400">Combos</p>
+                      <p className="font-medium text-gray-700">{row.combo_count || 0}</p>
                     </div>
                   </div>
                 )}
@@ -172,13 +206,6 @@ export default function Angles() {
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">Description</label>
                 <textarea value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" rows={3} />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">Status</label>
-                <select value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
-                  <option value="">— select —</option>
-                  {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
               </div>
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">Created By</label>

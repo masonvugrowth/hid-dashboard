@@ -1,4 +1,4 @@
-"""Ad Angles router — WIN/TEST/LOSE scoring"""
+"""Ad Angles router — WIN/TEST/LOSE scoring from creative_angles + ad_combos"""
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.database import get_db
-from app.models.angle import AdAngle
-from app.models.ads import AdsPerformance
+from app.models.creative_angle import CreativeAngle
+from app.models.ad_combo import AdCombo
 
 router = APIRouter()
 
@@ -26,6 +26,16 @@ class AngleIn(BaseModel):
     status: Optional[str] = None  # WIN, TEST, LOSE
     branch_id: Optional[UUID] = None
     created_by: Optional[str] = None
+
+
+# ── verdict → WIN/TEST/LOSE mapping ──────────────────────────
+VERDICT_TO_STATUS = {
+    "winning": "WIN",
+    "good": "WIN",
+    "neutral": "TEST",
+    "underperformer": "LOSE",
+    "kill": "LOSE",
+}
 
 
 def _compute_score(roas, ctr_pct, cpb_native, bookings):
@@ -55,38 +65,62 @@ def _compute_score(roas, ctr_pct, cpb_native, bookings):
     return round((roas_score + ctr_score + cpb_score + vol_score) * 100, 1)
 
 
+def _derive_status(combos_verdicts: list[str]) -> Optional[str]:
+    """Derive angle status from its combos' verdicts using majority rule."""
+    if not combos_verdicts:
+        return "TEST"  # no combos yet → testing
+    statuses = [VERDICT_TO_STATUS.get(v, "TEST") for v in combos_verdicts if v]
+    if not statuses:
+        return "TEST"
+    # majority vote
+    from collections import Counter
+    counts = Counter(statuses)
+    return counts.most_common(1)[0][0]
+
+
 @router.get("")
 def list_angles(
     branch_id: Optional[UUID] = Query(None),
     status: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    q = db.query(AdAngle)
+    # Query creative_angles (the real source of truth)
+    q = db.query(CreativeAngle).filter(CreativeAngle.is_active == True)
     if branch_id:
-        q = q.filter(AdAngle.branch_id == branch_id)
-    if status:
-        q = q.filter(AdAngle.status == status)
-    angles = q.order_by(AdAngle.created_at.desc()).all()
+        q = q.filter(CreativeAngle.branch_id == branch_id)
+    angles = q.order_by(CreativeAngle.created_at.desc()).all()
 
-    # Aggregate ads stats per angle
+    # Aggregate ad_combos stats per angle
     stats_q = (
         db.query(
-            AdsPerformance.ad_angle_id,
-            func.coalesce(func.sum(AdsPerformance.cost_native), 0).label("cost"),
-            func.coalesce(func.sum(AdsPerformance.revenue_native), 0).label("revenue"),
-            func.coalesce(func.sum(AdsPerformance.impressions), 0).label("impressions"),
-            func.coalesce(func.sum(AdsPerformance.clicks), 0).label("clicks"),
-            func.coalesce(func.sum(AdsPerformance.bookings), 0).label("bookings"),
+            AdCombo.angle_id,
+            func.coalesce(func.sum(AdCombo.spend_vnd), 0).label("cost"),
+            func.coalesce(func.sum(AdCombo.revenue_vnd), 0).label("revenue"),
+            func.coalesce(func.sum(AdCombo.impressions), 0).label("impressions"),
+            func.coalesce(func.sum(AdCombo.clicks), 0).label("clicks"),
+            func.coalesce(func.sum(AdCombo.purchases), 0).label("bookings"),
         )
-        .filter(AdsPerformance.ad_angle_id.isnot(None))
+        .filter(AdCombo.angle_id.isnot(None), AdCombo.is_active == True)
     )
     if branch_id:
-        stats_q = stats_q.filter(AdsPerformance.branch_id == branch_id)
-    stats_map = {str(r.ad_angle_id): r for r in stats_q.group_by(AdsPerformance.ad_angle_id).all()}
+        stats_q = stats_q.filter(AdCombo.branch_id == branch_id)
+    stats_map = {str(r.angle_id): r for r in stats_q.group_by(AdCombo.angle_id).all()}
+
+    # Gather verdicts per angle for status derivation
+    verdict_q = (
+        db.query(AdCombo.angle_id, AdCombo.verdict)
+        .filter(AdCombo.angle_id.isnot(None), AdCombo.is_active == True, AdCombo.verdict.isnot(None))
+    )
+    if branch_id:
+        verdict_q = verdict_q.filter(AdCombo.branch_id == branch_id)
+    verdicts_map: dict[str, list[str]] = {}
+    for row in verdict_q.all():
+        verdicts_map.setdefault(str(row.angle_id), []).append(row.verdict)
 
     result = []
     for a in angles:
-        s = stats_map.get(str(a.id))
+        aid = str(a.id)
+        s = stats_map.get(aid)
         cost = float(s.cost) if s else 0
         rev = float(s.revenue) if s else 0
         impr = int(s.impressions) if s else 0
@@ -98,15 +132,24 @@ def list_angles(
         cpb = round(cost / bookings, 2) if bookings > 0 else None
         score = _compute_score(roas, ctr_pct, cpb, bookings)
 
+        angle_status = _derive_status(verdicts_map.get(aid, []))
+
         result.append({
-            "id": str(a.id),
+            "id": aid,
+            "angle_code": a.angle_code,
             "name": a.name,
-            "description": a.description,
-            "status": a.status,
+            "description": a.notes,
+            "hook_type": a.hook_type,
+            "keypoint_1": a.keypoint_1,
+            "keypoint_2": a.keypoint_2,
+            "keypoint_3": a.keypoint_3,
+            "keypoint_4": a.keypoint_4,
+            "keypoint_5": a.keypoint_5,
+            "status": angle_status,
             "branch_id": str(a.branch_id) if a.branch_id else None,
-            "created_by": a.created_by,
+            "created_by": None,
             "created_at": a.created_at.isoformat() if a.created_at else None,
-            # Aggregated
+            # Aggregated from ad_combos
             "cost_native": cost,
             "revenue_native": rev,
             "impressions": impr,
@@ -116,7 +159,12 @@ def list_angles(
             "ctr_pct": ctr_pct,
             "cpb_native": cpb,
             "score": score,
+            "combo_count": len(verdicts_map.get(aid, [])),
         })
+
+    # Filter by status if requested
+    if status:
+        result = [r for r in result if r["status"] == status]
 
     # Sort by score desc, then status order WIN > TEST > LOSE
     status_order = {"WIN": 0, "TEST": 1, "LOSE": 2, None: 3}
@@ -126,31 +174,42 @@ def list_angles(
 
 @router.post("")
 def create_angle(body: AngleIn, db: Session = Depends(get_db)):
-    obj = AdAngle(**body.model_dump())
+    """Create a new creative angle (redirects to creative_angles table)."""
+    from app.services.id_generator import generate_code
+    angle_code = generate_code(db, "ANG", "creative_angles", "angle_code")
+    obj = CreativeAngle(
+        angle_code=angle_code,
+        name=body.name,
+        hook_type="Story",  # default
+        keypoint_1=body.description or body.name,
+        branch_id=body.branch_id,
+        notes=body.description,
+    )
     db.add(obj)
     db.commit()
     db.refresh(obj)
-    return _envelope({"id": str(obj.id), "name": obj.name, "status": obj.status})
+    return _envelope({"id": str(obj.id), "name": obj.name, "status": "TEST"})
 
 
 @router.put("/{angle_id}")
 def update_angle(angle_id: UUID, body: AngleIn, db: Session = Depends(get_db)):
-    obj = db.query(AdAngle).filter(AdAngle.id == angle_id).first()
+    obj = db.query(CreativeAngle).filter(CreativeAngle.id == angle_id, CreativeAngle.is_active == True).first()
     if not obj:
         raise HTTPException(404, "Angle not found")
-    for k, v in body.model_dump(exclude_unset=True).items():
-        setattr(obj, k, v)
+    obj.name = body.name
+    if body.description:
+        obj.notes = body.description
     obj.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(obj)
-    return _envelope({"id": str(obj.id), "name": obj.name, "status": obj.status})
+    return _envelope({"id": str(obj.id), "name": obj.name, "status": "TEST"})
 
 
 @router.delete("/{angle_id}")
 def delete_angle(angle_id: UUID, db: Session = Depends(get_db)):
-    obj = db.query(AdAngle).filter(AdAngle.id == angle_id).first()
+    obj = db.query(CreativeAngle).filter(CreativeAngle.id == angle_id).first()
     if not obj:
         raise HTTPException(404, "Angle not found")
-    db.delete(obj)
+    obj.is_active = False
     db.commit()
     return _envelope({"deleted": str(angle_id)})
