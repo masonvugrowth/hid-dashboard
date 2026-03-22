@@ -304,7 +304,7 @@ def country_intelligence(
     """), b_params).fetchall()
 
     from datetime import date, timedelta
-    running_cutoff = date.today() - timedelta(days=7)
+    running_cutoff = date.today() - timedelta(days=2)
 
     # ads_map: branch_id -> { country_lower -> { target_country, channels, has_running } }
     ads_map: dict[str, dict] = {}
