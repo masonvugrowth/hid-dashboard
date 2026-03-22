@@ -62,13 +62,13 @@ def _compute_branch_benchmarks(db: Session, branch_ids: list[str]) -> dict[str, 
     rows = (
         db.query(
             AdsPerformance.branch_id,
-            func.sum(AdsPerformance.revenue_vnd).label("total_rev"),
-            func.sum(AdsPerformance.cost_vnd).label("total_cost"),
+            func.sum(func.coalesce(AdsPerformance.revenue_vnd, AdsPerformance.revenue_native)).label("total_rev"),
+            func.sum(func.coalesce(AdsPerformance.cost_vnd, AdsPerformance.cost_native)).label("total_cost"),
         )
         .filter(
             AdsPerformance.funnel_stage == "TOF",
             AdsPerformance.campaign_name.ilike("%Sales%"),
-            AdsPerformance.cost_vnd > 0,
+            func.coalesce(AdsPerformance.cost_vnd, AdsPerformance.cost_native) > 0,
         )
         .group_by(AdsPerformance.branch_id)
         .all()
@@ -99,8 +99,8 @@ def _get_tof_sales_stats_per_angle(db: Session, branch_id: Optional[UUID] = None
             func.sum(AdsPerformance.impressions).label("impressions"),
             func.sum(AdsPerformance.clicks).label("clicks"),
             func.sum(AdsPerformance.bookings).label("bookings"),
-            func.sum(AdsPerformance.cost_vnd).label("spend"),
-            func.sum(AdsPerformance.revenue_vnd).label("revenue"),
+            func.sum(func.coalesce(AdsPerformance.cost_vnd, AdsPerformance.cost_native)).label("spend"),
+            func.sum(func.coalesce(AdsPerformance.revenue_vnd, AdsPerformance.revenue_native)).label("revenue"),
             func.count(AdCombo.id).label("qualifying_combos"),
         )
         .join(AdsPerformance, AdsPerformance.ad_name == AdCombo.meta_ad_name)
