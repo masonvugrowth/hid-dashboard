@@ -1,5 +1,6 @@
 /**
- * Ad Angles — WIN/TEST/LOSE — sourced from creative_angles + ad_combos
+ * Ad Angles — WIN/TEST/LOSE based on TOF Sales campaign performance.
+ * Verdict: Only TOF Sales combos count. Benchmark = AVG ROAS of branch.
  */
 import { useEffect, useState } from "react";
 import axios from "axios";
@@ -99,7 +100,7 @@ export default function Angles() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-gray-800">Ad Angles</h1>
-          <p className="text-xs text-gray-400 mt-0.5">Score: ROAS 40% · CTR 25% · CPB 25% · Volume 10%</p>
+          <p className="text-xs text-gray-400 mt-0.5">Verdict: TOF Sales only · Benchmark = Branch AVG ROAS</p>
         </div>
         <button onClick={openNew} className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700">+ New Angle</button>
       </div>
@@ -160,22 +161,49 @@ export default function Angles() {
                   </div>
                 </div>
 
-                <div className="space-y-1">
-                  <div className="flex justify-between text-xs text-gray-500">
-                    <span>Score</span>
-                    <span className="font-medium">{row.score != null ? row.score + " / 100" : "—"}</span>
+                {/* TOF Sales verdict info */}
+                <div className="pt-2 border-t border-black/5 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-gray-500">TOF Sales Verdict</span>
+                    {row.benchmark_tof != null && (
+                      <span className="text-xs text-indigo-500 font-medium">Benchmark: {row.benchmark_tof}x</span>
+                    )}
                   </div>
-                  <ScoreBar score={row.score} />
+                  {row.status_reason === "no_tof_sales_data" ? (
+                    <p className="text-xs text-gray-400 italic">No TOF Sales combos linked</p>
+                  ) : row.status_reason === "insufficient_data" ? (
+                    <p className="text-xs text-amber-500 italic">
+                      Insufficient data: {row.tof_impressions < 20000 ? `${(row.tof_impressions/1000).toFixed(1)}K/${20}K impr` : ""}{row.tof_impressions < 20000 && row.tof_bookings < 5 ? " · " : ""}{row.tof_bookings < 5 ? `${row.tof_bookings}/5 bookings` : ""}
+                    </p>
+                  ) : row.status_reason === "no_benchmark" ? (
+                    <p className="text-xs text-gray-400 italic">No benchmark data for this branch</p>
+                  ) : (
+                    <div className="grid grid-cols-3 gap-1 text-xs">
+                      <div>
+                        <p className="text-gray-400">TOF ROAS</p>
+                        <p className={"font-semibold " + (row.status === "WIN" ? "text-green-600" : row.status === "LOSE" ? "text-red-500" : "text-gray-700")}>{row.tof_roas != null ? row.tof_roas + "x" : "—"}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-400">Impressions</p>
+                        <p className="font-medium text-gray-700">{row.tof_impressions > 0 ? (row.tof_impressions/1000).toFixed(1) + "K" : "—"}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-400">Bookings</p>
+                        <p className="font-medium text-gray-700">{row.tof_bookings || 0}</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
+                {/* All-campaign stats */}
                 {(row.cost_native > 0 || row.combo_count > 0) && (
                   <div className="grid grid-cols-4 gap-1 pt-1 border-t border-black/5 text-xs">
                     <div>
-                      <p className="text-gray-400">Spend</p>
+                      <p className="text-gray-400">Total Spend</p>
                       <p className="font-medium text-gray-700">{row.cost_native > 0 ? sym + (row.cost_native / 1000).toFixed(0) + "K" : "—"}</p>
                     </div>
                     <div>
-                      <p className="text-gray-400">ROAS</p>
+                      <p className="text-gray-400">Total ROAS</p>
                       <p className="font-medium text-gray-700">{row.roas != null ? row.roas + "x" : "—"}</p>
                     </div>
                     <div>
@@ -183,8 +211,8 @@ export default function Angles() {
                       <p className="font-medium text-gray-700">{row.bookings || 0}</p>
                     </div>
                     <div>
-                      <p className="text-gray-400">Combos</p>
-                      <p className="font-medium text-gray-700">{row.combo_count || 0}</p>
+                      <p className="text-gray-400">TOF Combos</p>
+                      <p className="font-medium text-gray-700">{row.qualifying_combos || 0} / {row.combo_count || 0}</p>
                     </div>
                   </div>
                 )}
