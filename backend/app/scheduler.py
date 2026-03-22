@@ -51,6 +51,179 @@ def setup_scheduler(app):
             replace_existing=True,
         )
 
+        # Daily Meta + Google Ads sync at 6:00am Vietnam time
+        # Pulls latest spend/performance data so Running/Stopped status stays accurate
+        def _ads_sync_job():
+            from app.config import settings
+            from app.models.branch import Branch
+            from app.models.ads import AdsPerformance
+            from app.services import meta_ads as meta_service
+            from app.services.google_sheets_ads import sync_google_ads_sheet
+            from datetime import date, timedelta
+
+            db = SessionLocal()
+            try:
+                branches = db.query(Branch).filter_by(is_active=True).all()
+                date_from = (date.today() - timedelta(days=3)).isoformat()
+                date_to = date.today().isoformat()
+
+                # ── Meta Ads ──────────────────────────────────────────────
+                META_CONFIG = {
+                    "saigon": ("META_ACCESS_TOKEN_SAIGON", "META_AD_ACCOUNT_SAIGON"),
+                    "1948":   ("META_ACCESS_TOKEN_1948",   "META_AD_ACCOUNT_1948"),
+                    "taipei": ("META_ACCESS_TOKEN_TAIPEI", "META_AD_ACCOUNT_TAIPEI"),
+                    "osaka":  ("META_ACCESS_TOKEN_OSAKA",  "META_AD_ACCOUNT_OSAKA"),
+                    "oani":   ("META_ACCESS_TOKEN_OANI",   "META_AD_ACCOUNT_OANI"),
+                }
+
+                for branch in branches:
+                    key = branch.name.lower().replace("meander ", "").strip()
+                    token = account_id = ""
+                    for suffix, (tok_field, acc_field) in META_CONFIG.items():
+                        if suffix in key:
+                            token = getattr(settings, tok_field, "") or ""
+                            account_id = getattr(settings, acc_field, "") or ""
+                            break
+
+                    if not token or not account_id:
+                        continue
+
+                    try:
+                        ads = meta_service.sync_ads(
+                            token, account_id,
+                            date_from=date_from, date_to=date_to,
+                        )
+                        created = updated = 0
+                        for ad in ads:
+                            existing = (
+                                db.query(AdsPerformance)
+                                .filter_by(meta_ad_id=ad["meta_ad_id"])
+                                .first()
+                            )
+                            if existing:
+                                existing.cost_native = ad["spend_vnd"]
+                                existing.cost_vnd = ad["spend_vnd"]
+                                existing.impressions = ad["impressions"]
+                                existing.clicks = ad["clicks"]
+                                existing.leads = ad["leads"]
+                                existing.bookings = ad.get("bookings", 0) or 0
+                                existing.revenue_native = ad.get("revenue", 0.0) or 0.0
+                                if ad["date_start"]:
+                                    existing.date_from = date.fromisoformat(ad["date_start"])
+                                if ad["date_stop"]:
+                                    existing.date_to = date.fromisoformat(ad["date_stop"])
+                                existing.campaign_name = ad["campaign_name"]
+                                existing.adset_name = ad["adset_name"]
+                                existing.ad_name = ad["ad_name"]
+                                existing.target_country = ad["target_country"]
+                                existing.target_audience = ad["target_audience"]
+                                existing.funnel_stage = ad["funnel_stage"]
+                                existing.channel = "Meta"
+                                updated += 1
+                            else:
+                                row = AdsPerformance(
+                                    branch_id=branch.id,
+                                    meta_ad_id=ad["meta_ad_id"],
+                                    meta_campaign_id=ad["meta_campaign_id"],
+                                    campaign_name=ad["campaign_name"],
+                                    adset_name=ad["adset_name"],
+                                    ad_name=ad["ad_name"],
+                                    channel="Meta",
+                                    target_country=ad["target_country"],
+                                    target_audience=ad["target_audience"],
+                                    funnel_stage=ad["funnel_stage"],
+                                    pic=ad.get("pic", ""),
+                                    ad_body=ad.get("ad_body", ""),
+                                    cost_native=ad["spend_vnd"],
+                                    cost_vnd=ad["spend_vnd"],
+                                    impressions=ad["impressions"],
+                                    clicks=ad["clicks"],
+                                    leads=ad["leads"],
+                                    bookings=ad.get("bookings", 0) or 0,
+                                    revenue_native=ad.get("revenue", 0.0) or 0.0,
+                                    date_from=date.fromisoformat(ad["date_start"]) if ad.get("date_start") else None,
+                                    date_to=date.fromisoformat(ad["date_stop"]) if ad.get("date_stop") else None,
+                                )
+                                db.add(row)
+                                created += 1
+                        db.commit()
+                        logger.info("Meta sync OK branch=%s — %d created, %d updated", branch.name, created, updated)
+                    except Exception as e:
+                        db.rollback()
+                        logger.warning("Meta sync FAIL branch=%s: %s", branch.name, e)
+
+                # ── Google Ads (via Sheets) ───────────────────────────────
+                GOOGLE_SHEET_MAP = {
+                    "11111111-1111-1111-1111-111111111101": "GOOGLE_SHEET_TAIPEI",
+                    "11111111-1111-1111-1111-111111111102": "GOOGLE_SHEET_SAIGON",
+                    "11111111-1111-1111-1111-111111111103": "GOOGLE_SHEET_1948",
+                    "11111111-1111-1111-1111-111111111104": "GOOGLE_SHEET_OANI",
+                    "11111111-1111-1111-1111-111111111105": "GOOGLE_SHEET_OSAKA",
+                }
+                client_id = getattr(settings, "GOOGLE_CLIENT_ID", "") or ""
+                client_secret = getattr(settings, "GOOGLE_CLIENT_SECRET", "") or ""
+                refresh_token_g = getattr(settings, "GOOGLE_REFRESH_TOKEN", "") or ""
+
+                if client_id and refresh_token_g:
+                    df = date.today() - timedelta(days=3)
+                    dt = date.today()
+                    for branch in branches:
+                        sheet_attr = GOOGLE_SHEET_MAP.get(str(branch.id))
+                        if not sheet_attr:
+                            continue
+                        spreadsheet_id = getattr(settings, sheet_attr, "") or ""
+                        if not spreadsheet_id:
+                            continue
+                        try:
+                            data = sync_google_ads_sheet(
+                                branch_id=str(branch.id),
+                                branch_name=branch.name,
+                                spreadsheet_id=spreadsheet_id,
+                                currency=branch.currency or "VND",
+                                client_id=client_id,
+                                client_secret=client_secret,
+                                refresh_token=refresh_token_g,
+                                date_from=df,
+                                date_to=dt,
+                            )
+                            created = updated = 0
+                            for row in data["rows"]:
+                                existing = (
+                                    db.query(AdsPerformance)
+                                    .filter_by(
+                                        branch_id=branch.id,
+                                        channel="Google",
+                                        campaign_name=row["campaign_name"],
+                                        date_from=row["date_from"],
+                                    )
+                                    .first()
+                                )
+                                if existing:
+                                    for k, v in row.items():
+                                        if k != "branch_id" and hasattr(existing, k):
+                                            setattr(existing, k, v)
+                                    updated += 1
+                                else:
+                                    db.add(AdsPerformance(**row))
+                                    created += 1
+                            db.commit()
+                            logger.info("Google Ads sync OK branch=%s — %d created, %d updated", branch.name, created, updated)
+                        except Exception as e:
+                            db.rollback()
+                            logger.warning("Google Ads sync FAIL branch=%s: %s", branch.name, e)
+
+            except Exception:
+                logger.exception("Ads sync job failed")
+            finally:
+                db.close()
+
+        scheduler.add_job(
+            _ads_sync_job,
+            trigger=CronTrigger(hour=6, minute=0),
+            id="daily_ads_sync",
+            replace_existing=True,
+        )
+
         # Nightly combo performance sync at 3:30am (after metrics)
         def _verdict_sync_job():
             db = SessionLocal()
@@ -75,6 +248,7 @@ def setup_scheduler(app):
             "Scheduler started — "
             "Cloudbeds reservation sync at 02:00 ICT, "
             "metrics compute + full-month Insights at 03:00 ICT, "
+            "Ads sync (Meta + Google) at 06:00 ICT, "
             "Insights refresh at 08:00 & 14:00 ICT, "
             "verdict sync at 03:30 ICT"
         )
