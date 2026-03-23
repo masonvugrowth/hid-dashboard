@@ -198,14 +198,14 @@ function AllBranchesTable({ data, loading }) {
                         </span>
                       : <span className="text-gray-300">{"\u2014"}</span>}
                   </td>
-                  {/* Next month forecast (adjusted if deduction active) */}
+                  {/* Next month forecast — always shows adjusted */}
                   <td className="px-3 py-3.5 text-center">
-                    {row.next_month_forecast_native != null
+                    {row.adjusted_next_forecast != null
                       ? <span className={dedPct > 0 ? "text-orange-600 font-medium" : "text-purple-700 font-medium"}>
-                          {fmt(dedPct > 0 ? row.adjusted_next_forecast : row.next_month_forecast_native, cur)}
+                          {fmt(row.adjusted_next_forecast, cur)}
                           {row.next_month_target_native
                             ? <span className="ml-1 text-xs text-gray-400 font-normal">
-                                ({Math.round((dedPct > 0 ? row.adjusted_next_forecast : row.next_month_forecast_native) / row.next_month_target_native * 100)}%)
+                                ({Math.round(row.adjusted_next_forecast / row.next_month_target_native * 100)}%)
                               </span>
                             : null}
                         </span>
