@@ -37,6 +37,9 @@ import AdCombos          from "./pages/AdCombos";
 import CreativeCopies    from "./pages/CreativeCopies";
 import CreativeMaterials from "./pages/CreativeMaterials";
 
+// CRM Dashboard
+import CRMDashboard from "./pages/CRMDashboard";
+
 export default function App() {
   return (
     <AuthProvider>
@@ -101,6 +104,9 @@ function AppRoutes() {
             <Route path="/combos"    element={<AdCombos />} />
             <Route path="/copies"    element={<CreativeCopies />} />
             <Route path="/materials" element={<CreativeMaterials />} />
+
+            {/* CRM Dashboard */}
+            <Route path="/crm" element={<CRMDashboard />} />
 
             {/* Settings & Admin */}
             <Route path="/settings" element={<Settings />} />

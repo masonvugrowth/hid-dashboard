@@ -45,6 +45,12 @@ const NAV = [
     ],
   },
   {
+    label: "CRM",
+    items: [
+      { to: "/crm", label: "CRM Dashboard", icon: "◉" },
+    ],
+  },
+  {
     label: "Reports",
     items: [
       { to: "/report", label: "Weekly Report", icon: "◻" },
