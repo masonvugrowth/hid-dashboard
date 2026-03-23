@@ -109,37 +109,93 @@ def _get_excluded_source_revenue(
     return total, room_excl, dorm_excl
 
 
+def _count_dorm_beds(room_number: str) -> int:
+    """
+    Count individual dorm beds from room_number string.
+    Dorm beds use patterns like '211-1, 211-2' (hyphenated).
+    Returns at least 1.
+    """
+    if not room_number:
+        return 1
+    parts = [p.strip() for p in room_number.split(",") if p.strip()]
+    return max(len(parts), 1)
+
+
+def _is_combo_booking(room_type: str) -> bool:
+    """
+    Detect combo bookings that mix room types (e.g. 'Superior Room, 8 Beds Dormitory').
+    These should be excluded from both Room and Dorm ADR to avoid cross-contamination.
+    """
+    rt = (room_type or "").lower()
+    room_keywords = ("superior", "balcony", "double", "twin", "single", "deluxe", "family", "private", "standard")
+    dorm_keywords = ("dorm", "bed ")
+    has_room = any(k in rt for k in room_keywords)
+    has_dorm = any(k in rt for k in dorm_keywords)
+    return has_room and has_dorm
+
+
 def _get_room_dorm_adr(
     db: Session, branch_id: UUID, first_day: date, last_day: date,
 ) -> tuple[Optional[float], Optional[float]]:
     """
     Room/Dorm ADR from reservation_daily (same source for both revenue & nights).
     Excludes: cancelled/noshow statuses + ADR-excluded sources (blogger, house use, special case).
+    For Dorm: counts per-BED (not per-reservation), excludes combo bookings.
     Returns (room_adr, dorm_adr).
     """
-    result = {}
-    for cat in ("room", "dorm"):
-        row = (
-            db.query(
-                func.coalesce(func.sum(ReservationDaily.nightly_rate), 0),
-                func.count(ReservationDaily.id),
-            )
-            .join(Reservation, ReservationDaily.reservation_id == Reservation.id)
-            .filter(
-                ReservationDaily.branch_id == branch_id,
-                ReservationDaily.date >= first_day,
-                ReservationDaily.date <= last_day,
-                func.lower(ReservationDaily.room_type_category) == cat,
-                ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
-                ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_ADR_EXCLUDED_SOURCES)),
-            )
-            .one()
+    # ── Room ADR (simple: 1 reservation-night = 1 unit sold) ──────────────
+    room_row = (
+        db.query(
+            func.coalesce(func.sum(ReservationDaily.nightly_rate), 0),
+            func.count(ReservationDaily.id),
         )
-        rev = float(row[0])
-        nights = int(row[1])
-        result[cat] = round(rev / nights, 2) if nights > 0 else None
+        .join(Reservation, ReservationDaily.reservation_id == Reservation.id)
+        .filter(
+            ReservationDaily.branch_id == branch_id,
+            ReservationDaily.date >= first_day,
+            ReservationDaily.date <= last_day,
+            func.lower(ReservationDaily.room_type_category) == "room",
+            ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
+            ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_ADR_EXCLUDED_SOURCES)),
+        )
+        .one()
+    )
+    room_rev = float(room_row[0])
+    room_nights = int(room_row[1])
+    room_adr = round(room_rev / room_nights, 2) if room_nights > 0 else None
 
-    return result["room"], result["dorm"]
+    # ── Dorm ADR (per-bed: count beds from room_number, exclude combos) ───
+    dorm_rows = (
+        db.query(
+            ReservationDaily.nightly_rate,
+            Reservation.room_number,
+            Reservation.room_type,
+        )
+        .join(Reservation, ReservationDaily.reservation_id == Reservation.id)
+        .filter(
+            ReservationDaily.branch_id == branch_id,
+            ReservationDaily.date >= first_day,
+            ReservationDaily.date <= last_day,
+            func.lower(ReservationDaily.room_type_category) == "dorm",
+            ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
+            ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_ADR_EXCLUDED_SOURCES)),
+        )
+        .all()
+    )
+
+    dorm_total_rev = 0.0
+    dorm_total_beds = 0
+    for row in dorm_rows:
+        if _is_combo_booking(row.room_type):
+            continue  # skip combo bookings — mixed room+dorm revenue can't be split
+        rate = float(row.nightly_rate or 0)
+        beds = _count_dorm_beds(row.room_number)
+        dorm_total_rev += rate
+        dorm_total_beds += beds
+
+    dorm_adr = round(dorm_total_rev / dorm_total_beds, 2) if dorm_total_beds > 0 else None
+
+    return room_adr, dorm_adr
 
 
 # ── core calculations ──────────────────────────────────────────────────────────
