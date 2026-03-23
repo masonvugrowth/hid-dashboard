@@ -342,6 +342,8 @@ def compute_next_month_forecast(
     room_adr = dorm_adr = None
     if total_room_count > 0 and total_dorm_count > 0:
         room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day_next, last_day_next)
+    elif total_room_count > 0 and total_dorm_count == 0:
+        room_adr = adr
 
     # Predicted OCC for next month
     target_row = (
@@ -464,6 +466,9 @@ def compute_kpi_summary(
     room_adr = dorm_adr = None
     if total_room_count > 0 and total_dorm_count > 0:
         room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day, last_day)
+    elif total_room_count > 0 and total_dorm_count == 0:
+        # Room-only branch (e.g. Osaka): Room ADR = Overall ADR
+        room_adr = avg_adr
 
     avg_occ = predicted_occ_pct
 
