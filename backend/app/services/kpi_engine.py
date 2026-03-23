@@ -109,6 +109,39 @@ def _get_excluded_source_revenue(
     return total, room_excl, dorm_excl
 
 
+def _get_room_dorm_adr(
+    db: Session, branch_id: UUID, first_day: date, last_day: date,
+) -> tuple[Optional[float], Optional[float]]:
+    """
+    Room/Dorm ADR from reservation_daily (same source for both revenue & nights).
+    Excludes: cancelled/noshow statuses + ADR-excluded sources (blogger, house use, special case).
+    Returns (room_adr, dorm_adr).
+    """
+    result = {}
+    for cat in ("room", "dorm"):
+        row = (
+            db.query(
+                func.coalesce(func.sum(ReservationDaily.nightly_rate), 0),
+                func.count(ReservationDaily.id),
+            )
+            .join(Reservation, ReservationDaily.reservation_id == Reservation.id)
+            .filter(
+                ReservationDaily.branch_id == branch_id,
+                ReservationDaily.date >= first_day,
+                ReservationDaily.date <= last_day,
+                func.lower(ReservationDaily.room_type_category) == cat,
+                ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
+                ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_ADR_EXCLUDED_SOURCES)),
+            )
+            .one()
+        )
+        rev = float(row[0])
+        nights = int(row[1])
+        result[cat] = round(rev / nights, 2) if nights > 0 else None
+
+    return result["room"], result["dorm"]
+
+
 # ── core calculations ──────────────────────────────────────────────────────────
 
 def get_actual_revenue(db: Session, branch_id: UUID, year: int, month: int) -> float:
@@ -217,14 +250,10 @@ def compute_next_month_forecast(
     first_day_next = date(next_year, next_month, 1)
     last_day_next = date(next_year, next_month, total_days)
 
-    # PRIMARY: ADR from daily_metrics (Cloudbeds Insights — includes future confirmed bookings)
+    # Overall ADR from daily_metrics (Cloudbeds Insights — includes future confirmed bookings)
     metrics_agg = db.query(
         func.coalesce(func.sum(DailyMetrics.revenue_native), 0),
         func.coalesce(func.sum(DailyMetrics.total_sold), 0),
-        func.coalesce(func.sum(DailyMetrics.room_revenue_native), 0),
-        func.coalesce(func.sum(DailyMetrics.dorm_revenue_native), 0),
-        func.coalesce(func.sum(DailyMetrics.rooms_sold), 0),
-        func.coalesce(func.sum(DailyMetrics.dorms_sold), 0),
     ).filter(
         DailyMetrics.branch_id == branch_id,
         DailyMetrics.date >= first_day_next,
@@ -233,18 +262,11 @@ def compute_next_month_forecast(
 
     dm_revenue = float(metrics_agg[0])
     dm_sold = int(metrics_agg[1])
-    dm_room_rev = float(metrics_agg[2])
-    dm_dorm_rev = float(metrics_agg[3])
-    dm_rooms_sold = int(metrics_agg[4])
-    dm_dorms_sold = int(metrics_agg[5])
 
     # Subtract ADR-excluded source revenue (blogger, house use, special case)
-    excl_total, excl_room, excl_dorm = _get_excluded_source_revenue(
-        db, branch_id, first_day_next, last_day_next,
-    )
+    excl_total, _, _ = _get_excluded_source_revenue(db, branch_id, first_day_next, last_day_next)
 
     # Use daily_metrics if Insights data exists for next month, else fall back to reservations
-    # ADR revenue excludes blogger/house use/special case; rooms_sold has NO exclusion
     if dm_sold > 0:
         total_revenue = dm_revenue
         total_nights = dm_sold
@@ -260,33 +282,10 @@ def compute_next_month_forecast(
         total_nights = int(rows[1] or 0)
         adr = round(total_revenue / total_nights, 2) if total_nights > 0 else None
 
-    # Room/Dorm split ADR — prefer daily_metrics, fall back to reservations
+    # Room/Dorm ADR from reservation_daily (same source for revenue & nights)
     room_adr = dorm_adr = None
     if total_room_count > 0 and total_dorm_count > 0:
-        if dm_rooms_sold > 0 or dm_dorms_sold > 0:
-            room_adr = round((dm_room_rev - excl_room) / dm_rooms_sold, 2) if dm_rooms_sold > 0 else None
-            dorm_adr = round((dm_dorm_rev - excl_dorm) / dm_dorms_sold, 2) if dm_dorms_sold > 0 else None
-        else:
-            # Fallback to reservation-based split
-            base_q = _revenue_query(db, branch_id, next_year, next_month)
-            room_rows = base_q.filter(
-                func.lower(Reservation.room_type_category) == "room"
-            ).with_entities(
-                func.sum(Reservation.grand_total_native),
-                func.sum(Reservation.nights),
-            ).one()
-            dorm_rows = base_q.filter(
-                func.lower(Reservation.room_type_category) == "dorm"
-            ).with_entities(
-                func.sum(Reservation.grand_total_native),
-                func.sum(Reservation.nights),
-            ).one()
-            room_rev = float(room_rows[0] or 0)
-            room_nights = int(room_rows[1] or 0)
-            dorm_rev = float(dorm_rows[0] or 0)
-            dorm_nights = int(dorm_rows[1] or 0)
-            room_adr = round(room_rev / room_nights, 2) if room_nights > 0 else None
-            dorm_adr = round(dorm_rev / dorm_nights, 2) if dorm_nights > 0 else None
+        room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day_next, last_day_next)
 
     # Predicted OCC for next month
     target_row = (
@@ -382,16 +381,12 @@ def compute_kpi_summary(
     )
     nights_booked = int(nights_row or 0)
 
-    # ADR from daily_metrics (Cloudbeds Insights) — full month
+    # Overall ADR from Cloudbeds Insights (full month)
     # Revenue for ADR: exclude blogger, house use, special case
-    # OCC / Rooms Sold: NO source exclusion
+    # Rooms Sold (denominator): NO source exclusion
     metrics_agg = db.query(
         func.coalesce(func.sum(DailyMetrics.revenue_native), 0),
         func.coalesce(func.sum(DailyMetrics.total_sold), 0),
-        func.coalesce(func.sum(DailyMetrics.room_revenue_native), 0),
-        func.coalesce(func.sum(DailyMetrics.dorm_revenue_native), 0),
-        func.coalesce(func.sum(DailyMetrics.rooms_sold), 0),
-        func.coalesce(func.sum(DailyMetrics.dorms_sold), 0),
     ).filter(
         DailyMetrics.branch_id == branch_id,
         DailyMetrics.date >= first_day,
@@ -399,28 +394,20 @@ def compute_kpi_summary(
     ).one()
 
     total_revenue_dm = float(metrics_agg[0])
-    total_sold_dm = int(metrics_agg[1])       # OCC denominator — no source exclusion
-    room_revenue_total = float(metrics_agg[2])
-    dorm_revenue_total = float(metrics_agg[3])
-    rooms_sold_total = int(metrics_agg[4])     # no source exclusion
-    dorms_sold_total = int(metrics_agg[5])     # no source exclusion
+    total_sold_dm = int(metrics_agg[1])       # no source exclusion
 
     # Subtract revenue from ADR-excluded sources (blogger, house use, special case)
-    excl_total, excl_room, excl_dorm = _get_excluded_source_revenue(
-        db, branch_id, first_day, last_day,
-    )
+    excl_total, _, _ = _get_excluded_source_revenue(db, branch_id, first_day, last_day)
     adr_revenue = total_revenue_dm - excl_total
-    adr_room_revenue = room_revenue_total - excl_room
-    adr_dorm_revenue = dorm_revenue_total - excl_dorm
 
-    # ADR = Revenue (excl. blogger/house use/special case) / Rooms Sold (no exclusion)
+    # Overall ADR = (Insights Revenue − excluded sources) / Insights Rooms Sold
     avg_adr = round(adr_revenue / total_sold_dm, 2) if total_sold_dm > 0 else None
 
-    # Room/Dorm ADR (same exclusion logic)
+    # Room/Dorm ADR from reservation_daily (same source for both revenue & nights)
+    # This avoids mismatch between Insights total_sold and compute_day rooms_sold/dorms_sold
     room_adr = dorm_adr = None
     if total_room_count > 0 and total_dorm_count > 0:
-        room_adr = round(adr_room_revenue / rooms_sold_total, 2) if rooms_sold_total > 0 else None
-        dorm_adr = round(adr_dorm_revenue / dorms_sold_total, 2) if dorms_sold_total > 0 else None
+        room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day, last_day)
 
     avg_occ = predicted_occ_pct
 
