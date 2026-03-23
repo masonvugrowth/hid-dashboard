@@ -1,11 +1,13 @@
 """
-KPI Engine — Phase 2 (v2.0 exclusion filters)
+KPI Engine — v2.2 (Cloudbeds Insights-based ADR)
 Calculates KPI achievement %, run-rate forecast, and OCC-based forecast.
 
-Revenue rule: sum revenue_native from daily_metrics for the month
-(per-night prorated via reservation_daily).
-Excludes: cancelled / no_show statuses and non-paying sources
-(Blogger, House Use, KOL, Special Case, Maintenance) — but NOT Day Use.
+Revenue & ADR: sourced from daily_metrics (synced from Cloudbeds Data Insights API).
+Forecast formula:
+  Current ADR = Current Revenue / Current Rooms Sold (from Cloudbeds Insights)
+  Predicted Room Sold = predicted_occ × inventory × total_days
+  Forecast = Predicted Room Sold × Current ADR
+  (Separate for Room and Dorm, then summed)
 """
 from __future__ import annotations
 
@@ -170,38 +172,73 @@ def compute_next_month_forecast(
     next_month = cur_month + 1 if cur_month < 12 else 1
     next_year  = cur_year if cur_month < 12 else cur_year + 1
     total_days = _days_in_month(next_year, next_month)
+    first_day_next = date(next_year, next_month, 1)
+    last_day_next = date(next_year, next_month, total_days)
 
-    # ADR from already-booked next-month reservations (total)
-    base_q = _revenue_query(db, branch_id, next_year, next_month)
-    rows = base_q.with_entities(
-        func.sum(Reservation.grand_total_native),
-        func.sum(Reservation.nights),
+    # PRIMARY: ADR from daily_metrics (Cloudbeds Insights — includes future confirmed bookings)
+    metrics_agg = db.query(
+        func.coalesce(func.sum(DailyMetrics.revenue_native), 0),
+        func.coalesce(func.sum(DailyMetrics.total_sold), 0),
+        func.coalesce(func.sum(DailyMetrics.room_revenue_native), 0),
+        func.coalesce(func.sum(DailyMetrics.dorm_revenue_native), 0),
+        func.coalesce(func.sum(DailyMetrics.rooms_sold), 0),
+        func.coalesce(func.sum(DailyMetrics.dorms_sold), 0),
+    ).filter(
+        DailyMetrics.branch_id == branch_id,
+        DailyMetrics.date >= first_day_next,
+        DailyMetrics.date <= last_day_next,
     ).one()
-    total_revenue = float(rows[0] or 0)
-    total_nights  = int(rows[1] or 0)
-    adr = (total_revenue / total_nights) if total_nights > 0 else None
 
-    # Room/Dorm split ADR from reservations
+    dm_revenue = float(metrics_agg[0])
+    dm_sold = int(metrics_agg[1])
+    dm_room_rev = float(metrics_agg[2])
+    dm_dorm_rev = float(metrics_agg[3])
+    dm_rooms_sold = int(metrics_agg[4])
+    dm_dorms_sold = int(metrics_agg[5])
+
+    # Use daily_metrics if Insights data exists for next month, else fall back to reservations
+    if dm_sold > 0:
+        total_revenue = dm_revenue
+        total_nights = dm_sold
+        adr = round(dm_revenue / dm_sold, 2)
+    else:
+        # FALLBACK: ADR from already-booked next-month reservations
+        base_q = _revenue_query(db, branch_id, next_year, next_month)
+        rows = base_q.with_entities(
+            func.sum(Reservation.grand_total_native),
+            func.sum(Reservation.nights),
+        ).one()
+        total_revenue = float(rows[0] or 0)
+        total_nights = int(rows[1] or 0)
+        adr = round(total_revenue / total_nights, 2) if total_nights > 0 else None
+
+    # Room/Dorm split ADR — prefer daily_metrics, fall back to reservations
     room_adr = dorm_adr = None
     if total_room_count > 0 and total_dorm_count > 0:
-        room_rows = base_q.filter(
-            func.lower(Reservation.room_type_category) == "room"
-        ).with_entities(
-            func.sum(Reservation.grand_total_native),
-            func.sum(Reservation.nights),
-        ).one()
-        dorm_rows = base_q.filter(
-            func.lower(Reservation.room_type_category) == "dorm"
-        ).with_entities(
-            func.sum(Reservation.grand_total_native),
-            func.sum(Reservation.nights),
-        ).one()
-        room_rev = float(room_rows[0] or 0)
-        room_nights = int(room_rows[1] or 0)
-        dorm_rev = float(dorm_rows[0] or 0)
-        dorm_nights = int(dorm_rows[1] or 0)
-        room_adr = round(room_rev / room_nights, 2) if room_nights > 0 else None
-        dorm_adr = round(dorm_rev / dorm_nights, 2) if dorm_nights > 0 else None
+        if dm_rooms_sold > 0 or dm_dorms_sold > 0:
+            room_adr = round(dm_room_rev / dm_rooms_sold, 2) if dm_rooms_sold > 0 else None
+            dorm_adr = round(dm_dorm_rev / dm_dorms_sold, 2) if dm_dorms_sold > 0 else None
+        else:
+            # Fallback to reservation-based split
+            base_q = _revenue_query(db, branch_id, next_year, next_month)
+            room_rows = base_q.filter(
+                func.lower(Reservation.room_type_category) == "room"
+            ).with_entities(
+                func.sum(Reservation.grand_total_native),
+                func.sum(Reservation.nights),
+            ).one()
+            dorm_rows = base_q.filter(
+                func.lower(Reservation.room_type_category) == "dorm"
+            ).with_entities(
+                func.sum(Reservation.grand_total_native),
+                func.sum(Reservation.nights),
+            ).one()
+            room_rev = float(room_rows[0] or 0)
+            room_nights = int(room_rows[1] or 0)
+            dorm_rev = float(dorm_rows[0] or 0)
+            dorm_nights = int(dorm_rows[1] or 0)
+            room_adr = round(room_rev / room_nights, 2) if room_nights > 0 else None
+            dorm_adr = round(dorm_rev / dorm_nights, 2) if dorm_nights > 0 else None
 
     # Predicted OCC for next month
     target_row = (
@@ -297,37 +334,34 @@ def compute_kpi_summary(
     )
     nights_booked = int(nights_row or 0)
 
-    # Total ADR from reservations
-    adr_res = (
-        _revenue_query(db, branch_id, year, month)
-        .with_entities(
-            func.coalesce(func.sum(Reservation.grand_total_native), 0),
-            func.coalesce(func.sum(Reservation.nights), 0),
-        )
-        .one()
-    )
-    adr_total_rev   = float(adr_res[0] or 0)
-    adr_total_nights = int(adr_res[1] or 0)
-    avg_adr = round(adr_total_rev / adr_total_nights, 2) if adr_total_nights > 0 else None
+    # All ADR from daily_metrics (sourced from Cloudbeds Insights API)
+    # Current ADR = Current Revenue / Current Rooms Sold
+    metrics_agg = db.query(
+        func.coalesce(func.sum(DailyMetrics.revenue_native), 0),
+        func.coalesce(func.sum(DailyMetrics.total_sold), 0),
+        func.coalesce(func.sum(DailyMetrics.room_revenue_native), 0),
+        func.coalesce(func.sum(DailyMetrics.dorm_revenue_native), 0),
+        func.coalesce(func.sum(DailyMetrics.rooms_sold), 0),
+        func.coalesce(func.sum(DailyMetrics.dorms_sold), 0),
+    ).filter(
+        DailyMetrics.branch_id == branch_id,
+        DailyMetrics.date >= first_day,
+        DailyMetrics.date <= last_day,
+    ).one()
 
-    # Room/Dorm ADR from daily_metrics (weighted: sum_revenue / sum_sold)
+    total_revenue_dm = float(metrics_agg[0])
+    total_sold_dm = int(metrics_agg[1])
+    room_revenue_total = float(metrics_agg[2])
+    dorm_revenue_total = float(metrics_agg[3])
+    rooms_sold_total = int(metrics_agg[4])
+    dorms_sold_total = int(metrics_agg[5])
+
+    # Overall ADR from Cloudbeds Insights revenue / rooms_sold
+    avg_adr = round(total_revenue_dm / total_sold_dm, 2) if total_sold_dm > 0 else None
+
+    # Room/Dorm ADR (weighted: sum_revenue / sum_sold from daily_metrics)
     room_adr = dorm_adr = None
-    room_revenue_total = dorm_revenue_total = 0.0
     if total_room_count > 0 and total_dorm_count > 0:
-        split_data = db.query(
-            func.coalesce(func.sum(DailyMetrics.room_revenue_native), 0),
-            func.coalesce(func.sum(DailyMetrics.dorm_revenue_native), 0),
-            func.coalesce(func.sum(DailyMetrics.rooms_sold), 0),
-            func.coalesce(func.sum(DailyMetrics.dorms_sold), 0),
-        ).filter(
-            DailyMetrics.branch_id == branch_id,
-            DailyMetrics.date >= first_day,
-            DailyMetrics.date <= last_day,
-        ).one()
-        room_revenue_total = float(split_data[0])
-        dorm_revenue_total = float(split_data[1])
-        rooms_sold_total = int(split_data[2])
-        dorms_sold_total = int(split_data[3])
         room_adr = round(room_revenue_total / rooms_sold_total, 2) if rooms_sold_total > 0 else None
         dorm_adr = round(dorm_revenue_total / dorms_sold_total, 2) if dorms_sold_total > 0 else None
 
