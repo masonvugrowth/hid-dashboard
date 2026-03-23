@@ -31,6 +31,7 @@ class KPITargetPatch(BaseModel):
     predicted_occ_pct: Optional[float] = None
     predicted_room_occ_pct: Optional[float] = None
     predicted_dorm_occ_pct: Optional[float] = None
+    deduction_pct: Optional[float] = None
 
 
 class KPITargetUpsert(BaseModel):
@@ -41,6 +42,7 @@ class KPITargetUpsert(BaseModel):
     predicted_occ_pct: Optional[float] = None
     predicted_room_occ_pct: Optional[float] = None
     predicted_dorm_occ_pct: Optional[float] = None
+    deduction_pct: Optional[float] = None
 
 
 class KPITargetOut(BaseModel):
@@ -53,11 +55,19 @@ class KPITargetOut(BaseModel):
     predicted_occ_pct: Optional[float]
     predicted_room_occ_pct: Optional[float] = None
     predicted_dorm_occ_pct: Optional[float] = None
+    deduction_pct: Optional[float] = None
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class DeductionUpdate(BaseModel):
+    branch_id: UUID
+    year: int
+    month: int
+    deduction_pct: float
 
 
 def _envelope(data):
@@ -120,6 +130,8 @@ def upsert_kpi_target(payload: KPITargetUpsert, db: Session = Depends(get_db)):
             existing.predicted_room_occ_pct = payload.predicted_room_occ_pct
         if payload.predicted_dorm_occ_pct is not None:
             existing.predicted_dorm_occ_pct = payload.predicted_dorm_occ_pct
+        if payload.deduction_pct is not None:
+            existing.deduction_pct = payload.deduction_pct
         db.commit()
         db.refresh(existing)
         return _envelope(KPITargetOut.model_validate(existing).model_dump())
@@ -133,6 +145,7 @@ def upsert_kpi_target(payload: KPITargetUpsert, db: Session = Depends(get_db)):
             predicted_occ_pct=payload.predicted_occ_pct,
             predicted_room_occ_pct=payload.predicted_room_occ_pct,
             predicted_dorm_occ_pct=payload.predicted_dorm_occ_pct,
+            deduction_pct=payload.deduction_pct or 0,
         )
         db.add(target)
         db.commit()
@@ -153,6 +166,35 @@ def update_kpi_target(target_id: UUID, payload: KPITargetPatch, db: Session = De
     db.commit()
     db.refresh(target)
     return _envelope(KPITargetOut.model_validate(target).model_dump())
+
+
+@router.put("/deduction")
+def save_deduction(payload: DeductionUpdate, db: Session = Depends(get_db)):
+    """Save deduction % for a branch/year/month. Creates KPI target if not exists."""
+    existing = (
+        db.query(KPITarget)
+        .filter_by(branch_id=payload.branch_id, year=payload.year, month=payload.month)
+        .first()
+    )
+    if existing:
+        existing.deduction_pct = max(0, min(100, payload.deduction_pct))
+        db.commit()
+        db.refresh(existing)
+        return _envelope({"saved": True, "deduction_pct": float(existing.deduction_pct)})
+    else:
+        # Create minimal target so deduction can be stored
+        target = KPITarget(
+            branch_id=payload.branch_id,
+            year=payload.year,
+            month=payload.month,
+            target_revenue_native=0,
+            target_revenue_vnd=0,
+            deduction_pct=max(0, min(100, payload.deduction_pct)),
+        )
+        db.add(target)
+        db.commit()
+        db.refresh(target)
+        return _envelope({"saved": True, "deduction_pct": float(target.deduction_pct)})
 
 
 # ── Summary Endpoints (Phase 2) ────────────────────────────────────────────────
@@ -176,6 +218,14 @@ def _branch_summary(db, branch, year, month):
     summary["currency"]    = branch.currency or branch.native_currency or "VND"
     summary["total_room_count"] = total_room_count
     summary["total_dorm_count"] = total_dorm_count
+
+    # Include saved deduction_pct from KPI target
+    target = (
+        db.query(KPITarget)
+        .filter_by(branch_id=branch.id, year=year, month=month)
+        .first()
+    )
+    summary["deduction_pct"] = float(target.deduction_pct or 0) if target else 0
 
     # Always include next-month forecast
     next_data = compute_next_month_forecast(

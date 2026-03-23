@@ -19,6 +19,7 @@ class KPITarget(Base):
     predicted_occ_pct = Column(Numeric(5, 4), nullable=True)
     predicted_room_occ_pct = Column(Numeric(5, 4), nullable=True)
     predicted_dorm_occ_pct = Column(Numeric(5, 4), nullable=True)
+    deduction_pct = Column(Numeric(5, 2), nullable=True, default=0)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))

@@ -1,9 +1,9 @@
 /**
- * Home — v1.4
- * All Branches selected → Group Summary Table with deduction % and next-month actual revenue
- * Single branch selected → KPI card + Hot country badges + OCC heatmap
+ * Home — v1.5
+ * All Branches selected → Group Summary Table with persistent deduction %
+ * Single branch selected → KPI card + OCC heatmap
  */
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import axios from "axios";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 import KPICard from "../components/KPICard";
@@ -16,17 +16,15 @@ const MONTH      = now.getMonth() + 1;
 const MONTH_NAME = now.toLocaleString("en-US", { month: "long", year: "numeric" });
 
 function fmt(value, currency) {
-  if (value == null) return "—";
+  if (value == null) return "\u2014";
   const sym = CURRENCY_SYMBOLS[currency] || currency || "";
   if (Math.abs(value) >= 1_000_000_000) return sym + (value / 1_000_000_000).toFixed(1) + "B";
   if (Math.abs(value) >= 1_000_000)     return sym + (value / 1_000_000).toFixed(1) + "M";
   return sym + Math.round(value).toLocaleString();
 }
 
-function pct(v) { return v == null ? "—" : Math.round(v) + "%"; }
-
 function AchievementBadge({ value }) {
-  if (value == null) return <span className="text-gray-400">—</span>;
+  if (value == null) return <span className="text-gray-400">{"\u2014"}</span>;
   const cls =
     value >= 100 ? "text-green-700 bg-green-50" :
     value >= 80  ? "text-yellow-700 bg-yellow-50" :
@@ -36,23 +34,62 @@ function AchievementBadge({ value }) {
 }
 
 function AllBranchesTable({ data, loading }) {
-  // Per-branch deduction % state
+  // Per-branch deduction % state — initialized from API data
   const [deductions, setDeductions] = useState({});
+  const [saving, setSaving] = useState({});
+  const saveTimers = useRef({});
+
+  // Initialize deductions from API data
+  useEffect(() => {
+    if (!data.length) return;
+    const init = {};
+    for (const row of data) {
+      init[row.branch_id] = row.deduction_pct || 0;
+    }
+    setDeductions(init);
+  }, [data]);
+
+  // Save deduction to backend (debounced)
+  const saveDeduction = useCallback((branchId, val) => {
+    const num = Math.max(0, Math.min(100, parseFloat(val) || 0));
+
+    // Clear previous timer
+    if (saveTimers.current[branchId]) {
+      clearTimeout(saveTimers.current[branchId]);
+    }
+
+    // Debounce 800ms
+    saveTimers.current[branchId] = setTimeout(() => {
+      setSaving(prev => ({ ...prev, [branchId]: true }));
+      axios.put("/api/kpi/deduction", {
+        branch_id: branchId,
+        year: YEAR,
+        month: MONTH,
+        deduction_pct: num,
+      })
+        .then(() => {
+          setSaving(prev => ({ ...prev, [branchId]: false }));
+        })
+        .catch(() => {
+          setSaving(prev => ({ ...prev, [branchId]: false }));
+        });
+    }, 800);
+  }, []);
 
   const setDeduction = (branchId, val) => {
-    // Clamp 0-100
     const num = Math.max(0, Math.min(100, parseFloat(val) || 0));
     setDeductions(prev => ({ ...prev, [branchId]: num }));
+    saveDeduction(branchId, num);
   };
 
   // Compute adjusted forecasts
   const rows = useMemo(() => {
     return data.map(row => {
-      const dedPct = deductions[row.branch_id] || 0;
+      const dedPct = deductions[row.branch_id] ?? row.deduction_pct ?? 0;
       const multiplier = 1 - dedPct / 100;
       return {
         ...row,
-        deduction_pct: dedPct,
+        deduction_pct_local: dedPct,
         adjusted_forecast: row.occ_forecast_native != null
           ? row.occ_forecast_native * multiplier
           : null,
@@ -63,40 +100,39 @@ function AllBranchesTable({ data, loading }) {
     });
   }, [data, deductions]);
 
-  if (loading) return <div className="bg-white rounded-xl border p-8 text-center text-gray-400 animate-pulse">Loading…</div>;
-  if (!data.length) return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No data — add branches and set KPI targets.</div>;
+  if (loading) return <div className="bg-white rounded-xl border p-8 text-center text-gray-400 animate-pulse">Loading\u2026</div>;
+  if (!data.length) return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No data \u2014 add branches and set KPI targets.</div>;
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="px-5 py-4 border-b border-gray-100">
-        <h2 className="font-semibold text-gray-800">Group Summary — {MONTH_NAME}</h2>
-        <p className="text-xs text-gray-400 mt-0.5">Native currency per branch · No cross-branch aggregation</p>
-        <p className="text-xs text-gray-400 mt-0.5">
-          Revenue from Cloudbeds Insights API · Excludes cancelled/no-show automatically
-        </p>
+        <h2 className="font-semibold text-gray-800">Group Summary \u2014 {MONTH_NAME}</h2>
+        <p className="text-xs text-gray-400 mt-0.5">Native currency per branch \u00b7 Revenue from Cloudbeds Insights API</p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide text-left">
               <th className="px-5 py-3">Branch</th>
-              <th className="px-3 py-3">Currency</th>
+              <th className="px-3 py-3">Cur</th>
               <th className="px-3 py-3 text-right">Revenue</th>
               <th className="px-3 py-3 text-right">Target</th>
               <th className="px-3 py-3 text-center">KPI %</th>
-              <th className="px-3 py-3 text-center">Forecast (this month)</th>
+              <th className="px-3 py-3 text-center">Forecast</th>
               <th className="px-3 py-3 text-center whitespace-nowrap">Deduct %</th>
-              <th className="px-3 py-3 text-center">Adjusted Forecast</th>
-              <th className="px-3 py-3 text-center">Revenue (next month)</th>
-              <th className="px-3 py-3 text-center">Forecast (next month)</th>
+              <th className="px-3 py-3 text-center">Adjusted</th>
+              <th className="px-3 py-3 text-center whitespace-nowrap">Next Rev</th>
+              <th className="px-3 py-3 text-center whitespace-nowrap">Next Forecast</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {rows.map((row) => {
               const cur = row.currency || "VND";
+              const dedPct = row.deduction_pct_local;
+              const isSaving = saving[row.branch_id];
               return (
                 <tr key={row.branch_id} className="hover:bg-gray-50">
                   <td className="px-5 py-3.5 font-medium text-gray-800">{row.branch_name}</td>
-                  <td className="px-3 py-3.5 text-gray-500">{cur}</td>
+                  <td className="px-3 py-3.5 text-gray-500 text-xs">{cur}</td>
                   <td className="px-3 py-3.5 text-right font-mono">{fmt(row.actual_revenue_native, cur)}</td>
                   <td className="px-3 py-3.5 text-right font-mono text-gray-500">{fmt(row.target_revenue_native, cur)}</td>
                   <td className="px-3 py-3.5 text-center"><AchievementBadge value={row.achievement_pct != null ? row.achievement_pct * 100 : null} /></td>
@@ -113,23 +149,33 @@ function AllBranchesTable({ data, loading }) {
                         </span>
                       : <span className="text-gray-300 text-xs">Enter OCC%</span>}
                   </td>
-                  {/* Deduction % input */}
+                  {/* Deduction % input — auto-saves */}
                   <td className="px-3 py-3.5 text-center">
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="1"
-                      value={row.deduction_pct || ""}
-                      onChange={e => setDeduction(row.branch_id, e.target.value)}
-                      placeholder="0"
-                      className="w-14 px-1.5 py-1 text-center text-xs border border-gray-300 rounded focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 outline-none"
-                    />
+                    <div className="relative inline-block">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={dedPct || ""}
+                        onChange={e => setDeduction(row.branch_id, e.target.value)}
+                        placeholder="0"
+                        className={
+                          "w-14 px-1.5 py-1 text-center text-xs border rounded outline-none " +
+                          (isSaving
+                            ? "border-yellow-400 bg-yellow-50"
+                            : "border-gray-300 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400")
+                        }
+                      />
+                      {isSaving && (
+                        <span className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
+                      )}
+                    </div>
                   </td>
                   {/* Adjusted forecast */}
                   <td className="px-3 py-3.5 text-center">
                     {row.adjusted_forecast != null
-                      ? <span className={row.deduction_pct > 0 ? "text-orange-600 font-medium" : "text-indigo-700 font-medium"}>
+                      ? <span className={dedPct > 0 ? "text-orange-600 font-medium" : "text-indigo-700 font-medium"}>
                           {fmt(row.adjusted_forecast, cur)}
                           {row.target_revenue_native
                             ? <span className="ml-1 text-xs text-gray-400 font-normal">
@@ -137,9 +183,9 @@ function AllBranchesTable({ data, loading }) {
                               </span>
                             : null}
                         </span>
-                      : <span className="text-gray-300">—</span>}
+                      : <span className="text-gray-300">{"\u2014"}</span>}
                   </td>
-                  {/* Next month actual revenue (booked) */}
+                  {/* Next month actual booked revenue */}
                   <td className="px-3 py-3.5 text-center">
                     {row.next_month_booked_revenue != null && row.next_month_booked_revenue > 0
                       ? <span className="text-gray-700 font-mono">
@@ -150,24 +196,20 @@ function AllBranchesTable({ data, loading }) {
                               </span>
                             : null}
                         </span>
-                      : <span className="text-gray-300">—</span>}
+                      : <span className="text-gray-300">{"\u2014"}</span>}
                   </td>
-                  {/* Next month forecast */}
+                  {/* Next month forecast (adjusted if deduction active) */}
                   <td className="px-3 py-3.5 text-center">
                     {row.next_month_forecast_native != null
-                      ? <span className="text-purple-700 font-medium">
-                          {fmt(row.adjusted_next_forecast != null && row.deduction_pct > 0
-                            ? row.adjusted_next_forecast
-                            : row.next_month_forecast_native, cur)}
+                      ? <span className={dedPct > 0 ? "text-orange-600 font-medium" : "text-purple-700 font-medium"}>
+                          {fmt(dedPct > 0 ? row.adjusted_next_forecast : row.next_month_forecast_native, cur)}
                           {row.next_month_target_native
                             ? <span className="ml-1 text-xs text-gray-400 font-normal">
-                                ({Math.round((row.deduction_pct > 0 && row.adjusted_next_forecast != null
-                                  ? row.adjusted_next_forecast
-                                  : row.next_month_forecast_native) / row.next_month_target_native * 100)}%)
+                                ({Math.round((dedPct > 0 ? row.adjusted_next_forecast : row.next_month_forecast_native) / row.next_month_target_native * 100)}%)
                               </span>
                             : null}
                         </span>
-                      : <span className="text-gray-300">—</span>}
+                      : <span className="text-gray-300">{"\u2014"}</span>}
                   </td>
                 </tr>
               );
@@ -203,21 +245,21 @@ function SingleBranchView({ branch }) {
       .finally(() => setLoading(false));
   }, [branch && branch.id]);
 
-  if (loading) return <div className="p-8 text-gray-400 animate-pulse">Loading…</div>;
+  if (loading) return <div className="p-8 text-gray-400 animate-pulse">Loading\u2026</div>;
   if (error)   return <div className="p-8 text-red-500">Error: {error}</div>;
 
   return (
     <div className="space-y-6">
       {kpi && (
         <KPICard
-          label={branch.name + " — Revenue"}
+          label={branch.name + " \u2014 Revenue"}
           actual={kpi.actual_revenue_native}
           target={kpi.target_revenue_native}
           currency={branch.currency || branch.native_currency}
           forecast={{ occ: kpi.occ_forecast_native }}
         />
       )}
-      <OCCHeatmap data={occData} title={branch.name + " — Daily OCC% (30 days)"} />
+      <OCCHeatmap data={occData} title={branch.name + " \u2014 Daily OCC% (30 days)"} />
     </div>
   );
 }
