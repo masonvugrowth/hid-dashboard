@@ -29,6 +29,8 @@ class KPITargetPatch(BaseModel):
     target_revenue_native: Optional[float] = None
     target_revenue_vnd: Optional[float] = None
     predicted_occ_pct: Optional[float] = None
+    predicted_room_occ_pct: Optional[float] = None
+    predicted_dorm_occ_pct: Optional[float] = None
 
 
 class KPITargetUpsert(BaseModel):
@@ -37,6 +39,8 @@ class KPITargetUpsert(BaseModel):
     month: int
     target_revenue_native: float
     predicted_occ_pct: Optional[float] = None
+    predicted_room_occ_pct: Optional[float] = None
+    predicted_dorm_occ_pct: Optional[float] = None
 
 
 class KPITargetOut(BaseModel):
@@ -47,6 +51,8 @@ class KPITargetOut(BaseModel):
     target_revenue_native: float
     target_revenue_vnd: float
     predicted_occ_pct: Optional[float]
+    predicted_room_occ_pct: Optional[float] = None
+    predicted_dorm_occ_pct: Optional[float] = None
     created_at: datetime
     updated_at: datetime
 
@@ -110,6 +116,10 @@ def upsert_kpi_target(payload: KPITargetUpsert, db: Session = Depends(get_db)):
         existing.target_revenue_vnd = payload.target_revenue_native  # placeholder
         if payload.predicted_occ_pct is not None:
             existing.predicted_occ_pct = payload.predicted_occ_pct
+        if payload.predicted_room_occ_pct is not None:
+            existing.predicted_room_occ_pct = payload.predicted_room_occ_pct
+        if payload.predicted_dorm_occ_pct is not None:
+            existing.predicted_dorm_occ_pct = payload.predicted_dorm_occ_pct
         db.commit()
         db.refresh(existing)
         return _envelope(KPITargetOut.model_validate(existing).model_dump())
@@ -121,6 +131,8 @@ def upsert_kpi_target(payload: KPITargetUpsert, db: Session = Depends(get_db)):
             target_revenue_native=payload.target_revenue_native,
             target_revenue_vnd=payload.target_revenue_native,
             predicted_occ_pct=payload.predicted_occ_pct,
+            predicted_room_occ_pct=payload.predicted_room_occ_pct,
+            predicted_dorm_occ_pct=payload.predicted_dorm_occ_pct,
         )
         db.add(target)
         db.commit()
@@ -146,17 +158,24 @@ def update_kpi_target(target_id: UUID, payload: KPITargetPatch, db: Session = De
 # ── Summary Endpoints (Phase 2) ────────────────────────────────────────────────
 
 def _branch_summary(db, branch, year, month):
+    total_room_count = branch.total_room_count or 0
+    total_dorm_count = branch.total_dorm_count or 0
+
     summary = compute_kpi_summary(
         db=db,
         branch_id=branch.id,
         year=year,
         month=month,
         total_rooms=branch.total_rooms or 0,
+        total_room_count=total_room_count,
+        total_dorm_count=total_dorm_count,
     )
     summary["branch_id"]   = str(branch.id)
     summary["branch_name"] = branch.name
     summary["branch_city"] = branch.city
     summary["currency"]    = branch.currency or branch.native_currency or "VND"
+    summary["total_room_count"] = total_room_count
+    summary["total_dorm_count"] = total_dorm_count
 
     # Always include next-month forecast
     next_data = compute_next_month_forecast(
@@ -165,6 +184,8 @@ def _branch_summary(db, branch, year, month):
         total_rooms=branch.total_rooms or 0,
         cur_year=year,
         cur_month=month,
+        total_room_count=total_room_count,
+        total_dorm_count=total_dorm_count,
     )
     summary.update(next_data)
     return summary

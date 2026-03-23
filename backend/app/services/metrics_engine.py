@@ -145,6 +145,8 @@ def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
 
     revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in revenue_rows), 2)
     revenue_vnd    = round(sum(float(rd.nightly_rate_vnd or 0) for rd in revenue_rows), 2)
+    room_revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in room_rev), 2)
+    dorm_revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in dorm_rev), 2)
 
     # ── OCC: traditional in-house (spanning) with OCC exclusion filter ───────
     inhouse_raw = db.query(Reservation).filter(
@@ -167,6 +169,8 @@ def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
 
     # ADR and RevPAR (in native currency) — using nightly rate revenue
     adr_native    = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
+    room_adr_native = round(room_revenue_native / rooms_sold, 2) if rooms_sold > 0 else 0.0
+    dorm_adr_native = round(dorm_revenue_native / dorms_sold, 2) if dorms_sold > 0 else 0.0
     revpar_native = round(revenue_native / total_rooms, 2) if total_rooms > 0 else 0.0
 
     # New bookings made on this date (by reservation_date)
@@ -201,14 +205,18 @@ def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
     dm.occ_pct           = occ_pct
     dm.room_occ_pct      = room_occ_pct
     dm.dorm_occ_pct      = dorm_occ_pct
-    dm.revenue_native    = revenue_native
-    dm.revenue_vnd       = revenue_vnd
-    dm.adr_native        = adr_native
-    dm.revpar_native     = revpar_native
-    dm.new_bookings      = new_bookings
-    dm.cancellations     = cancellations
-    dm.cancellation_pct  = cancellation_pct
-    dm.computed_at       = datetime.now(timezone.utc)
+    dm.revenue_native       = revenue_native
+    dm.revenue_vnd          = revenue_vnd
+    dm.room_revenue_native  = room_revenue_native
+    dm.dorm_revenue_native  = dorm_revenue_native
+    dm.adr_native           = adr_native
+    dm.room_adr_native      = room_adr_native
+    dm.dorm_adr_native      = dorm_adr_native
+    dm.revpar_native        = revpar_native
+    dm.new_bookings         = new_bookings
+    dm.cancellations        = cancellations
+    dm.cancellation_pct     = cancellation_pct
+    dm.computed_at          = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(dm)
@@ -369,7 +377,11 @@ def recompute_branch_range(
 
         revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in day_revenue_rows), 2)
         revenue_vnd    = round(sum(float(rd.nightly_rate_vnd or 0) for rd in day_revenue_rows), 2)
+        room_revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in room_rev), 2)
+        dorm_revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in dorm_rev), 2)
         adr_native     = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
+        room_adr_native = round(room_revenue_native / rooms_sold, 2) if rooms_sold > 0 else 0.0
+        dorm_adr_native = round(dorm_revenue_native / dorms_sold, 2) if dorms_sold > 0 else 0.0
         revpar_native  = round(revenue_native / total_rooms, 2) if total_rooms > 0 else 0.0
 
         # ── OCC: traditional in-house with OCC exclusion filter ──────────────
@@ -404,10 +416,14 @@ def recompute_branch_range(
         dm.occ_pct          = occ_pct
         dm.room_occ_pct     = room_occ_pct
         dm.dorm_occ_pct     = dorm_occ_pct
-        dm.revenue_native   = revenue_native
-        dm.revenue_vnd      = revenue_vnd
-        dm.adr_native       = adr_native
-        dm.revpar_native    = revpar_native
+        dm.revenue_native       = revenue_native
+        dm.revenue_vnd          = revenue_vnd
+        dm.room_revenue_native  = room_revenue_native
+        dm.dorm_revenue_native  = dorm_revenue_native
+        dm.adr_native           = adr_native
+        dm.room_adr_native      = room_adr_native
+        dm.dorm_adr_native      = dorm_adr_native
+        dm.revpar_native        = revpar_native
         dm.new_bookings     = new_bookings
         dm.cancellations    = cancellations
         dm.cancellation_pct = cancellation_pct

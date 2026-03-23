@@ -17,6 +17,8 @@ class KPITarget(Base):
     target_revenue_native = Column(Numeric(15, 2), nullable=False)
     target_revenue_vnd = Column(Numeric(18, 2), nullable=False)
     predicted_occ_pct = Column(Numeric(5, 4), nullable=True)
+    predicted_room_occ_pct = Column(Numeric(5, 4), nullable=True)
+    predicted_dorm_occ_pct = Column(Numeric(5, 4), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))

@@ -156,30 +156,52 @@ def compute_next_month_forecast(
     total_rooms: int,
     cur_year: int,
     cur_month: int,
+    total_room_count: int = 0,
+    total_dorm_count: int = 0,
 ) -> dict:
     """
     Forecast revenue for next month using:
       - ADR derived from reservations already booked with check-in in next month
         ADR = SUM(grand_total_native) / SUM(nights)  [industry-standard weighted ADR]
       - predicted_occ_pct from KPITarget for next month
-      - Forecast = predicted_occ * total_rooms * ADR * days_in_next_month
+      - If room/dorm split available: forecast = room_forecast + dorm_forecast
+      - Fallback: forecast = predicted_occ * total_rooms * ADR * days
     """
     next_month = cur_month + 1 if cur_month < 12 else 1
     next_year  = cur_year if cur_month < 12 else cur_year + 1
     total_days = _days_in_month(next_year, next_month)
 
-    # ADR from already-booked next-month reservations
-    rows = (
-        _revenue_query(db, branch_id, next_year, next_month)
-        .with_entities(
-            func.sum(Reservation.grand_total_native),
-            func.sum(Reservation.nights),
-        )
-        .one()
-    )
+    # ADR from already-booked next-month reservations (total)
+    base_q = _revenue_query(db, branch_id, next_year, next_month)
+    rows = base_q.with_entities(
+        func.sum(Reservation.grand_total_native),
+        func.sum(Reservation.nights),
+    ).one()
     total_revenue = float(rows[0] or 0)
     total_nights  = int(rows[1] or 0)
     adr = (total_revenue / total_nights) if total_nights > 0 else None
+
+    # Room/Dorm split ADR from reservations
+    room_adr = dorm_adr = None
+    if total_room_count > 0 and total_dorm_count > 0:
+        room_rows = base_q.filter(
+            func.lower(Reservation.room_type_category) == "room"
+        ).with_entities(
+            func.sum(Reservation.grand_total_native),
+            func.sum(Reservation.nights),
+        ).one()
+        dorm_rows = base_q.filter(
+            func.lower(Reservation.room_type_category) == "dorm"
+        ).with_entities(
+            func.sum(Reservation.grand_total_native),
+            func.sum(Reservation.nights),
+        ).one()
+        room_rev = float(room_rows[0] or 0)
+        room_nights = int(room_rows[1] or 0)
+        dorm_rev = float(dorm_rows[0] or 0)
+        dorm_nights = int(dorm_rows[1] or 0)
+        room_adr = round(room_rev / room_nights, 2) if room_nights > 0 else None
+        dorm_adr = round(dorm_rev / dorm_nights, 2) if dorm_nights > 0 else None
 
     # Predicted OCC for next month
     target_row = (
@@ -188,10 +210,22 @@ def compute_next_month_forecast(
         .first()
     )
     predicted_occ_next = float(target_row.predicted_occ_pct) if (target_row and target_row.predicted_occ_pct) else None
+    predicted_room_occ_next = float(target_row.predicted_room_occ_pct) if (target_row and target_row.predicted_room_occ_pct) else None
+    predicted_dorm_occ_next = float(target_row.predicted_dorm_occ_pct) if (target_row and target_row.predicted_dorm_occ_pct) else None
     next_month_target = float(target_row.target_revenue_native) if (target_row and target_row.target_revenue_native) else None
 
+    # Try split forecast first
+    room_forecast = dorm_forecast = None
     forecast = None
-    if adr and predicted_occ_next and total_rooms > 0:
+    has_split = (total_room_count > 0 and total_dorm_count > 0
+                 and predicted_room_occ_next is not None
+                 and predicted_dorm_occ_next is not None)
+
+    if has_split and room_adr and dorm_adr:
+        room_forecast = round(predicted_room_occ_next * total_room_count * room_adr * total_days, 2)
+        dorm_forecast = round(predicted_dorm_occ_next * total_dorm_count * dorm_adr * total_days, 2)
+        forecast = round(room_forecast + dorm_forecast, 2)
+    elif adr and predicted_occ_next and total_rooms > 0:
         forecast = round(predicted_occ_next * total_rooms * adr * total_days, 2)
 
     return {
@@ -199,10 +233,16 @@ def compute_next_month_forecast(
         "next_month": next_month,
         "next_month_target_native": next_month_target,
         "next_month_adr": round(adr, 2) if adr else None,
+        "next_month_room_adr": room_adr,
+        "next_month_dorm_adr": dorm_adr,
         "next_month_booked_revenue": round(total_revenue, 2),
         "next_month_booked_nights": total_nights,
         "predicted_occ_next": predicted_occ_next,
+        "predicted_room_occ_next": predicted_room_occ_next,
+        "predicted_dorm_occ_next": predicted_dorm_occ_next,
         "next_month_forecast_native": forecast,
+        "next_month_room_forecast": room_forecast,
+        "next_month_dorm_forecast": dorm_forecast,
     }
 
 
@@ -212,12 +252,17 @@ def compute_kpi_summary(
     year: int,
     month: int,
     total_rooms: int,
+    total_room_count: int = 0,
+    total_dorm_count: int = 0,
 ) -> dict:
     """
     Return full KPI summary dict for a branch/month.
+    If room/dorm split is available: forecast = room_forecast + dorm_forecast.
     """
     today = _today()
     total_days = _days_in_month(year, month)
+    first_day = date(year, month, 1)
+    last_day = date(year, month, total_days)
 
     # Days elapsed in this month (cap at total_days)
     if today.year == year and today.month == month:
@@ -237,6 +282,8 @@ def compute_kpi_summary(
     target_revenue_native = float(target_row.target_revenue_native) if target_row else None
     target_revenue_vnd = float(target_row.target_revenue_vnd) if target_row else None
     predicted_occ_pct = float(target_row.predicted_occ_pct) if (target_row and target_row.predicted_occ_pct) else None
+    predicted_room_occ = float(target_row.predicted_room_occ_pct) if (target_row and target_row.predicted_room_occ_pct) else None
+    predicted_dorm_occ = float(target_row.predicted_dorm_occ_pct) if (target_row and target_row.predicted_dorm_occ_pct) else None
 
     # Actuals
     actual_native = get_actual_revenue(db, branch_id, year, month)
@@ -250,9 +297,7 @@ def compute_kpi_summary(
     )
     nights_booked = int(nights_row or 0)
 
-    # True ADR = SUM(grand_total_native) / SUM(nights) — nightly rate (industry standard)
-    # v2.0: daily_metrics.revenue_native is now per-night (from reservation_daily),
-    # but KPI ADR still uses reservations for grand_total/nights to ensure consistency.
+    # Total ADR from reservations
     adr_res = (
         _revenue_query(db, branch_id, year, month)
         .with_entities(
@@ -265,21 +310,49 @@ def compute_kpi_summary(
     adr_total_nights = int(adr_res[1] or 0)
     avg_adr = round(adr_total_rev / adr_total_nights, 2) if adr_total_nights > 0 else None
 
-    # Actual OCC: use KPI target's predicted_occ as the best available estimate
-    # (check-in based OCC from daily_metrics is much lower than traditional OCC
-    #  and would produce wrong fallback ADR estimates)
+    # Room/Dorm ADR from daily_metrics (weighted: sum_revenue / sum_sold)
+    room_adr = dorm_adr = None
+    room_revenue_total = dorm_revenue_total = 0.0
+    if total_room_count > 0 and total_dorm_count > 0:
+        split_data = db.query(
+            func.coalesce(func.sum(DailyMetrics.room_revenue_native), 0),
+            func.coalesce(func.sum(DailyMetrics.dorm_revenue_native), 0),
+            func.coalesce(func.sum(DailyMetrics.rooms_sold), 0),
+            func.coalesce(func.sum(DailyMetrics.dorms_sold), 0),
+        ).filter(
+            DailyMetrics.branch_id == branch_id,
+            DailyMetrics.date >= first_day,
+            DailyMetrics.date <= last_day,
+        ).one()
+        room_revenue_total = float(split_data[0])
+        dorm_revenue_total = float(split_data[1])
+        rooms_sold_total = int(split_data[2])
+        dorms_sold_total = int(split_data[3])
+        room_adr = round(room_revenue_total / rooms_sold_total, 2) if rooms_sold_total > 0 else None
+        dorm_adr = round(dorm_revenue_total / dorms_sold_total, 2) if dorms_sold_total > 0 else None
+
     avg_occ = predicted_occ_pct
 
-    # Forecasts
-    occ_forecast = calculate_occ_forecast(
-        predicted_occ_pct,
-        actual_native,
-        days_elapsed,
-        total_days,
-        total_rooms,
-        avg_adr,
-        actual_avg_occ_pct=avg_occ,
-    )
+    # Forecasts — try split first, fall back to single
+    room_forecast = dorm_forecast = None
+    has_split = (total_room_count > 0 and total_dorm_count > 0
+                 and predicted_room_occ is not None
+                 and predicted_dorm_occ is not None)
+
+    if has_split and room_adr and dorm_adr:
+        room_forecast = round(predicted_room_occ * total_room_count * room_adr * total_days, 2)
+        dorm_forecast = round(predicted_dorm_occ * total_dorm_count * dorm_adr * total_days, 2)
+        occ_forecast = round(room_forecast + dorm_forecast, 2)
+    else:
+        occ_forecast = calculate_occ_forecast(
+            predicted_occ_pct,
+            actual_native,
+            days_elapsed,
+            total_days,
+            total_rooms,
+            avg_adr,
+            actual_avg_occ_pct=avg_occ,
+        )
 
     # Achievement
     achievement_pct = calculate_achievement_pct(actual_native, target_revenue_native)
@@ -294,14 +367,22 @@ def compute_kpi_summary(
         "target_revenue_native": target_revenue_native,
         "target_revenue_vnd": target_revenue_vnd,
         "predicted_occ_pct": predicted_occ_pct,
+        "predicted_room_occ_pct": predicted_room_occ,
+        "predicted_dorm_occ_pct": predicted_dorm_occ,
         # Actuals
         "actual_revenue_native": round(actual_native, 2),
         "actual_revenue_vnd": round(actual_vnd, 2),
         "avg_occ_pct": round(avg_occ, 4) if avg_occ is not None else None,
         "avg_adr_native": round(avg_adr, 2) if avg_adr is not None else None,
+        "room_adr_native": room_adr,
+        "dorm_adr_native": dorm_adr,
         "nights_booked": nights_booked,
         # KPI
         "achievement_pct": achievement_pct,
         # Forecasts
         "occ_forecast_native": occ_forecast,
+        "room_forecast_native": room_forecast,
+        "dorm_forecast_native": dorm_forecast,
+        # Room/Dorm capability flag
+        "has_room_dorm_split": has_split and room_adr is not None and dorm_adr is not None,
     }
