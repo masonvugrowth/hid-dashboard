@@ -133,6 +133,8 @@ def sync_ads(
         PURCHASE_TYPES = ("purchase", "offsite_conversion.fb_pixel_purchase", "omni_purchase", "onsite_conversion.purchase")
         leads = next((int(float(a["value"])) for a in actions if a.get("action_type") in ("lead", "onsite_conversion.lead_grouped")), 0)
         lp_views = next((int(float(a["value"])) for a in actions if a.get("action_type") in ("landing_page_view", "omni_landing_page_view")), 0)
+        add_to_cart = next((int(float(a["value"])) for a in actions if a.get("action_type") in ("add_to_cart", "offsite_conversion.fb_pixel_add_to_cart", "omni_add_to_cart")), 0)
+        initiate_checkout = next((int(float(a["value"])) for a in actions if a.get("action_type") in ("initiate_checkout", "offsite_conversion.fb_pixel_initiate_checkout", "omni_initiated_checkout")), 0)
         bookings = next((int(float(a["value"])) for a in actions if a.get("action_type") in PURCHASE_TYPES), 0)
         revenue = next((float(a["value"]) for a in action_values if a.get("action_type") in PURCHASE_TYPES), 0.0)
 
@@ -152,6 +154,8 @@ def sync_ads(
             "clicks": int(ins.get("clicks", 0)),
             "leads": leads,
             "lp_views": lp_views,
+            "add_to_cart": add_to_cart,
+            "initiate_checkout": initiate_checkout,
             "bookings": bookings,
             "revenue": revenue,
             "date_start": ins.get("date_start"),

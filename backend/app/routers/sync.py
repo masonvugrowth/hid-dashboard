@@ -621,6 +621,9 @@ def trigger_meta_sync(
             existing.clicks = ad["clicks"]
             existing.leads = ad["leads"]
             existing.bookings = ad.get("bookings", 0) or 0
+            existing.lp_views = ad.get("lp_views", 0) or 0
+            existing.add_to_cart = ad.get("add_to_cart", 0) or 0
+            existing.initiate_checkout = ad.get("initiate_checkout", 0) or 0
             existing.revenue_native = ad.get("revenue", 0.0) or 0.0
             if ad["date_start"]:
                 from datetime import date
@@ -651,6 +654,9 @@ def trigger_meta_sync(
                 clicks=ad["clicks"],
                 leads=ad["leads"],
                 bookings=ad.get("bookings", 0) or 0,
+                lp_views=ad.get("lp_views", 0) or 0,
+                add_to_cart=ad.get("add_to_cart", 0) or 0,
+                initiate_checkout=ad.get("initiate_checkout", 0) or 0,
                 revenue_native=ad.get("revenue", 0.0) or 0.0,
                 date_from=_date.fromisoformat(ad["date_start"]) if ad["date_start"] else None,
                 date_to=_date.fromisoformat(ad["date_stop"]) if ad["date_stop"] else None,

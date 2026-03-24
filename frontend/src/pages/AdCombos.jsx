@@ -12,8 +12,7 @@ import { listMaterials } from "../api/materials";
 import { listKolRecords } from "../api/kol";
 import ComboCard from "../components/ComboCard";
 import VerdictBadge from "../components/VerdictBadge";
-
-const AUDIENCES = ["Solo", "Couple", "Friend", "Friend Group", "Family", "Business", "High Intent", "High Intent Audience", "Generic"];
+import { AUDIENCES } from "../constants/audiences";
 const CHANNELS = ["Facebook", "Instagram", "TikTok", "YouTube", "Meta", "Google"];
 const LANGUAGES = ["Vietnamese", "English", "Japanese", "Korean", "Thai", "Indonesian", "Malay"];
 const COUNTRIES = ["Vietnam", "Philippines", "Indonesia", "Australia", "Taiwan", "South Korea", "Japan", "Thailand", "Malaysia", "Singapore", "United Kingdom", "United States", "India", "China"];

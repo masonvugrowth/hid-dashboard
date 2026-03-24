@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, Boolean, String, Text, DateTime, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -19,7 +19,7 @@ class CreativeAngle(Base):
     keypoint_3 = Column(String(200), nullable=True)
     keypoint_4 = Column(String(200), nullable=True)
     keypoint_5 = Column(String(200), nullable=True)
-    target_audience = Column(String(100), nullable=True)
+    target_audience = Column(ARRAY(Text), nullable=True)
     notes = Column(Text, nullable=True)
     added_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     is_active = Column(Boolean, default=True, server_default="true")

@@ -56,7 +56,7 @@ class MaterialIn(BaseModel):
     design_type: Optional[str] = None
     format_ratio: Optional[str] = None
     channel: Optional[str] = None
-    target_audience: str
+    target_audience: List[str]
     language: Optional[str] = None
     file_link: Optional[str] = None
     kol_name: Optional[str] = None
@@ -75,7 +75,7 @@ class MaterialUpdate(BaseModel):
     design_type: Optional[str] = None
     format_ratio: Optional[str] = None
     channel: Optional[str] = None
-    target_audience: Optional[str] = None
+    target_audience: Optional[List[str]] = None
     language: Optional[str] = None
     file_link: Optional[str] = None
     kol_name: Optional[str] = None
@@ -104,7 +104,7 @@ def list_materials(
     if material_type:
         q = q.filter(CreativeMaterial.material_type == material_type)
     if target_audience:
-        q = q.filter(CreativeMaterial.target_audience == target_audience)
+        q = q.filter(CreativeMaterial.target_audience.any(target_audience))
     if language:
         q = q.filter(CreativeMaterial.language == language)
     if derived_verdict:

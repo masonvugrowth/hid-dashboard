@@ -39,9 +39,10 @@ const NAV = [
   {
     label: "Creatives",
     items: [
-      { to: "/combos",    label: "Ad Combos",  icon: "◎" },
-      { to: "/copies",    label: "Copy",       icon: "◫" },
-      { to: "/materials", label: "Materials",  icon: "◰" },
+      { to: "/combos",       label: "Ad Combos",   icon: "◎" },
+      { to: "/ad-analyzer", label: "Ad Analyzer", icon: "⬡" },
+      { to: "/copies",      label: "Copy",        icon: "◫" },
+      { to: "/materials",   label: "Materials",   icon: "◰" },
     ],
   },
   {

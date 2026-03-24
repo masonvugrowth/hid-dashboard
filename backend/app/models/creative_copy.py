@@ -15,7 +15,7 @@ class CreativeCopy(Base):
     branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
     channel = Column(String(50), nullable=False)
     ad_format = Column(String(50), nullable=True)
-    target_audience = Column(String(100), nullable=False)
+    target_audience = Column(ARRAY(Text), nullable=False, server_default="{}")
     country_target = Column(String(100), nullable=True)
     language = Column(String(50), nullable=False)
     headline = Column(String(500), nullable=True)

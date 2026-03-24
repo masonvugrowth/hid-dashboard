@@ -1,6 +1,6 @@
 """Creative Angles router — strategic frameworks for the Creative Library"""
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -48,7 +48,7 @@ class AngleIn(BaseModel):
     keypoint_3: Optional[str] = None
     keypoint_4: Optional[str] = None
     keypoint_5: Optional[str] = None
-    target_audience: Optional[str] = None
+    target_audience: Optional[List[str]] = None
     notes: Optional[str] = None
 
 
@@ -60,7 +60,7 @@ class AngleUpdate(BaseModel):
     keypoint_3: Optional[str] = None
     keypoint_4: Optional[str] = None
     keypoint_5: Optional[str] = None
-    target_audience: Optional[str] = None
+    target_audience: Optional[List[str]] = None
     notes: Optional[str] = None
 
 
@@ -77,7 +77,7 @@ def list_angles(
     if hook_type:
         q = q.filter(CreativeAngle.hook_type == hook_type)
     if target_audience:
-        q = q.filter(CreativeAngle.target_audience == target_audience)
+        q = q.filter(CreativeAngle.target_audience.any(target_audience))
     return _envelope([_angle_dict(a) for a in q.order_by(CreativeAngle.created_at.desc()).all()])
 
 

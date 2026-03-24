@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, Boolean, Integer, Numeric, String, Date, Text, DateTime, ForeignKey, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -17,7 +17,7 @@ class AdCombo(Base):
     copy_id = Column(UUID(as_uuid=True), ForeignKey("creative_copies.id", ondelete="CASCADE"), nullable=False)
     material_id = Column(UUID(as_uuid=True), ForeignKey("creative_materials.id", ondelete="CASCADE"), nullable=False)
     branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
-    target_audience = Column(String(100), nullable=False)
+    target_audience = Column(ARRAY(Text), nullable=False, server_default="{}")
     channel = Column(String(50), nullable=False)
     language = Column(String(50), nullable=True)
     country_target = Column(String(100), nullable=True)
@@ -33,6 +33,9 @@ class AdCombo(Base):
     clicks = Column(Integer, nullable=True)
     leads = Column(Integer, nullable=True)
     purchases = Column(Integer, nullable=True)
+    lp_views = Column(Integer, nullable=True)
+    add_to_cart = Column(Integer, nullable=True)
+    initiate_checkout = Column(Integer, nullable=True)
     date_first_run = Column(Date, nullable=True)
     date_last_run = Column(Date, nullable=True)
     run_status = Column(String(20), nullable=True)  # Active / Paused / Ended

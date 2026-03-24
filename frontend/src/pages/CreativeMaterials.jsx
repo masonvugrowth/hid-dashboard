@@ -8,17 +8,17 @@ import { useBranch } from "../context/BranchContext";
 import { listMaterials, createMaterial, getMaterial } from "../api/materials";
 import { listAngles } from "../api/angles";
 import VerdictBadge from "../components/VerdictBadge";
+import { AUDIENCES, getTAClasses } from "../constants/audiences";
 
 const TYPES = ["image", "video", "kol_video", "gif", "carousel_set", "story_template"];
 const DESIGN_TYPES = ["Static", "Animated", "Short Video (<30s)", "Long Video (>30s)", "KOL Edit"];
 const RATIOS = ["1:1", "4:5", "9:16", "16:9"];
-const AUDIENCES = ["Solo", "Couple", "Friend Group", "Family", "Business", "High Intent", "Generic"];
 const LANGUAGES = ["Vietnamese", "English", "Japanese", "Korean", "Thai", "Indonesian", "Malay"];
 const ORDER_STATUSES = ["Briefing", "In Progress", "Done", "Cancelled"];
 
 const EMPTY = {
   angle_id: "", branch_id: "", material_type: "", design_type: "",
-  format_ratio: [], channel: "", target_audience: "", language: "",
+  format_ratio: [], channel: "", target_audience: [], language: "",
   file_link: "", kol_name: "", kol_nationality: "", paid_ads_eligible: false,
   paid_ads_channel: "", usage_rights_until: "", assigned_to: "", order_status: "", tags: "",
 };
@@ -123,7 +123,10 @@ export default function CreativeMaterials() {
                 {m.paid_ads_eligible && <span className="text-[10px] px-1 py-0.5 bg-green-100 text-green-700 rounded">Paid Ads</span>}
               </div>
               <div className="flex gap-1.5 mt-2 flex-wrap">
-                {m.target_audience && <span className="text-[10px] px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded">{m.target_audience}</span>}
+                {Array.isArray(m.target_audience) ? m.target_audience.map(ta => {
+                  const tc = getTAClasses(ta);
+                  return <span key={ta} className={`text-[10px] px-1.5 py-0.5 rounded ${tc.bg} ${tc.text}`}>{ta}</span>;
+                }) : m.target_audience && <span className="text-[10px] px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded">{m.target_audience}</span>}
                 {m.language && <span className="text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded">{m.language}</span>}
               </div>
               {m.file_link && <a href={m.file_link} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-xs text-blue-500 hover:underline mt-1 block">Open file</a>}
@@ -150,7 +153,7 @@ export default function CreativeMaterials() {
                 <div><span className="text-gray-400">Type:</span> {detail.material_type}</div>
                 <div><span className="text-gray-400">Design:</span> {detail.design_type || "—"}</div>
                 <div><span className="text-gray-400">Ratio:</span> {detail.format_ratio || "—"}</div>
-                <div><span className="text-gray-400">Audience:</span> {detail.target_audience}</div>
+                <div><span className="text-gray-400">Audience:</span> {Array.isArray(detail.target_audience) ? detail.target_audience.join(", ") : detail.target_audience}</div>
                 <div><span className="text-gray-400">Language:</span> {detail.language || "—"}</div>
                 <div><span className="text-gray-400">Channel:</span> {detail.channel || "—"}</div>
               </div>
@@ -200,9 +203,22 @@ export default function CreativeMaterials() {
                 <select value={form.design_type} onChange={e => setForm({...form, design_type: e.target.value})} className="border rounded px-3 py-2 text-sm">
                   <option value="">Design Type</option>{DESIGN_TYPES.map(d => <option key={d}>{d}</option>)}
                 </select>
-                <select value={form.target_audience} onChange={e => setForm({...form, target_audience: e.target.value})} className="border rounded px-3 py-2 text-sm" required>
-                  <option value="">Audience *</option>{AUDIENCES.map(a => <option key={a}>{a}</option>)}
-                </select>
+                <div className="border rounded px-3 py-2 text-sm col-span-2">
+                  <p className="text-xs text-gray-500 mb-1">Audience * (select one or more)</p>
+                  <div className="flex flex-wrap gap-2">
+                    {AUDIENCES.map(a => {
+                      const checked = form.target_audience.includes(a);
+                      const tc = getTAClasses(a);
+                      return (
+                        <label key={a} className={`flex items-center gap-1 text-xs px-2 py-1 rounded cursor-pointer border ${checked ? `${tc.bg} ${tc.text} ${tc.border}` : "bg-white text-gray-500 border-gray-200"}`}>
+                          <input type="checkbox" className="sr-only" checked={checked}
+                            onChange={() => setForm({...form, target_audience: checked ? form.target_audience.filter(t => t !== a) : [...form.target_audience, a]})} />
+                          {a}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
                 <select value={form.language} onChange={e => setForm({...form, language: e.target.value})} className="border rounded px-3 py-2 text-sm">
                   <option value="">Language</option>{LANGUAGES.map(l => <option key={l}>{l}</option>)}
                 </select>
@@ -256,7 +272,7 @@ export default function CreativeMaterials() {
             </div>
             <div className="flex justify-end gap-2 mt-4">
               <button onClick={() => { setShowForm(false); setForm(EMPTY); }} className="px-3 py-1.5 text-sm text-gray-600">Cancel</button>
-              <button onClick={save} disabled={!form.material_type || !form.target_audience || saving}
+              <button onClick={save} disabled={!form.material_type || form.target_audience.length === 0 || saving}
                 className="px-4 py-1.5 bg-indigo-600 text-white text-sm rounded disabled:opacity-50">
                 {saving ? "Saving..." : "Create"}
               </button>

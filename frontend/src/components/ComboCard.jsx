@@ -1,4 +1,5 @@
 import VerdictBadge from "./VerdictBadge";
+import { getTAClasses } from "../constants/audiences";
 
 const fmt = (v) => v != null ? new Intl.NumberFormat("vi-VN", { notation: "compact" }).format(v) : "—";
 
@@ -60,7 +61,10 @@ export default function ComboCard({ combo, onClick }) {
         {combo.country_target && (
           <span className="text-[10px] px-1.5 py-0.5 bg-orange-50 text-orange-600 rounded">{combo.country_target}</span>
         )}
-        {combo.target_audience && (
+        {Array.isArray(combo.target_audience) ? combo.target_audience.map(ta => {
+          const tc = getTAClasses(ta);
+          return <span key={ta} className={`text-[10px] px-1.5 py-0.5 rounded ${tc.bg} ${tc.text}`}>{ta}</span>;
+        }) : combo.target_audience && (
           <span className="text-[10px] px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded">{combo.target_audience}</span>
         )}
         {combo.language && (

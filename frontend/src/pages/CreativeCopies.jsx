@@ -7,14 +7,14 @@ import { useBranch } from "../context/BranchContext";
 import { listCopies, createCopy, getCopy } from "../api/copies";
 import { listAngles } from "../api/angles";
 import VerdictBadge from "../components/VerdictBadge";
+import { AUDIENCES, getTAClasses } from "../constants/audiences";
 
 const CHANNELS = ["Facebook", "Instagram", "TikTok", "YouTube", "Meta", "Google"];
 const FORMATS = ["Single Image", "Carousel", "Video", "Reel", "Story", "Collection", "Text"];
-const AUDIENCES = ["Solo", "Couple", "Friend Group", "Family", "Business", "High Intent", "Generic"];
 const LANGUAGES = ["Vietnamese", "English", "Japanese", "Korean", "Thai", "Indonesian", "Malay"];
 
 const EMPTY = {
-  angle_id: "", branch_id: "", channel: "", ad_format: "", target_audience: "",
+  angle_id: "", branch_id: "", channel: "", ad_format: "", target_audience: [],
   country_target: "", language: "", headline: "", primary_text: "", landing_page_url: "", tags: "",
 };
 
@@ -100,7 +100,10 @@ export default function CreativeCopies() {
               <p className="text-sm font-medium truncate">{c.headline || "No headline"}</p>
               <p className="text-xs text-gray-400 mt-0.5 truncate">{c.primary_text}</p>
               <div className="flex gap-1.5 mt-2 flex-wrap">
-                {c.target_audience && <span className="text-[10px] px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded">{c.target_audience}</span>}
+                {Array.isArray(c.target_audience) ? c.target_audience.map(ta => {
+                  const tc = getTAClasses(ta);
+                  return <span key={ta} className={`text-[10px] px-1.5 py-0.5 rounded ${tc.bg} ${tc.text}`}>{ta}</span>;
+                }) : c.target_audience && <span className="text-[10px] px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded">{c.target_audience}</span>}
                 {c.language && <span className="text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded">{c.language}</span>}
                 {c.channel && <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">{c.channel}</span>}
               </div>
@@ -127,7 +130,7 @@ export default function CreativeCopies() {
               <div><label className="text-xs text-gray-500">Primary Text</label><p className="text-sm whitespace-pre-wrap">{detail.primary_text}</p></div>
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div><span className="text-gray-400">Channel:</span> {detail.channel}</div>
-                <div><span className="text-gray-400">Audience:</span> {detail.target_audience}</div>
+                <div><span className="text-gray-400">Audience:</span> {Array.isArray(detail.target_audience) ? detail.target_audience.join(", ") : detail.target_audience}</div>
                 <div><span className="text-gray-400">Language:</span> {detail.language}</div>
                 <div><span className="text-gray-400">Country:</span> {detail.country_target || "—"}</div>
               </div>
@@ -176,9 +179,22 @@ export default function CreativeCopies() {
                 <select value={form.ad_format} onChange={e => setForm({...form, ad_format: e.target.value})} className="border rounded px-3 py-2 text-sm">
                   <option value="">Format</option>{FORMATS.map(f => <option key={f}>{f}</option>)}
                 </select>
-                <select value={form.target_audience} onChange={e => setForm({...form, target_audience: e.target.value})} className="border rounded px-3 py-2 text-sm" required>
-                  <option value="">Audience *</option>{AUDIENCES.map(a => <option key={a}>{a}</option>)}
-                </select>
+                <div className="border rounded px-3 py-2 text-sm col-span-2">
+                  <p className="text-xs text-gray-500 mb-1">Audience * (select one or more)</p>
+                  <div className="flex flex-wrap gap-2">
+                    {AUDIENCES.map(a => {
+                      const checked = form.target_audience.includes(a);
+                      const tc = getTAClasses(a);
+                      return (
+                        <label key={a} className={`flex items-center gap-1 text-xs px-2 py-1 rounded cursor-pointer border ${checked ? `${tc.bg} ${tc.text} ${tc.border}` : "bg-white text-gray-500 border-gray-200"}`}>
+                          <input type="checkbox" className="sr-only" checked={checked}
+                            onChange={() => setForm({...form, target_audience: checked ? form.target_audience.filter(t => t !== a) : [...form.target_audience, a]})} />
+                          {a}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
                 <select value={form.language} onChange={e => setForm({...form, language: e.target.value})} className="border rounded px-3 py-2 text-sm" required>
                   <option value="">Language *</option>{LANGUAGES.map(l => <option key={l}>{l}</option>)}
                 </select>
@@ -191,7 +207,7 @@ export default function CreativeCopies() {
             </div>
             <div className="flex justify-end gap-2 mt-4">
               <button onClick={() => { setShowForm(false); setForm(EMPTY); }} className="px-3 py-1.5 text-sm text-gray-600">Cancel</button>
-              <button onClick={save} disabled={!form.channel || !form.target_audience || !form.language || !form.primary_text || saving}
+              <button onClick={save} disabled={!form.channel || form.target_audience.length === 0 || !form.language || !form.primary_text || saving}
                 className="px-4 py-1.5 bg-indigo-600 text-white text-sm rounded disabled:opacity-50">
                 {saving ? "Saving..." : "Create"}
               </button>

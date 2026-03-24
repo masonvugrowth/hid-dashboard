@@ -50,6 +50,9 @@ def _combo_dict(cb: AdCombo, include_detail=False) -> dict:
         "clicks": cb.clicks,
         "leads": cb.leads,
         "purchases": cb.purchases,
+        "lp_views": cb.lp_views,
+        "add_to_cart": cb.add_to_cart,
+        "initiate_checkout": cb.initiate_checkout,
         "date_first_run": cb.date_first_run.isoformat() if cb.date_first_run else None,
         "date_last_run": cb.date_last_run.isoformat() if cb.date_last_run else None,
         "run_status": cb.run_status,
@@ -140,7 +143,7 @@ def list_combos(
     if branch_id:
         q = q.filter(AdCombo.branch_id == branch_id)
     if target_audience:
-        q = q.filter(AdCombo.target_audience == target_audience)
+        q = q.filter(AdCombo.target_audience.any(target_audience))
     if channel:
         q = q.filter(AdCombo.channel == channel)
     if language:

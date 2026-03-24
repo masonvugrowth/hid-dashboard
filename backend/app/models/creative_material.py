@@ -17,7 +17,7 @@ class CreativeMaterial(Base):
     design_type = Column(String(50), nullable=True)
     format_ratio = Column(String(50), nullable=True)  # can be multi e.g. "1:1, 4:5"
     channel = Column(String(50), nullable=True)
-    target_audience = Column(String(100), nullable=False)
+    target_audience = Column(ARRAY(Text), nullable=False, server_default="{}")
     language = Column(String(50), nullable=True)
     file_link = Column(Text, nullable=True)
     kol_name = Column(String(100), nullable=True)

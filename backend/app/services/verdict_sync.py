@@ -93,6 +93,9 @@ def sync_combo_performance(db: Session) -> int:
         combo.clicks = perf.clicks or 0
         combo.leads = getattr(perf, 'leads', None) or 0
         combo.purchases = getattr(perf, 'bookings', None) or 0
+        combo.lp_views = getattr(perf, 'lp_views', None) or 0
+        combo.add_to_cart = getattr(perf, 'add_to_cart', None) or 0
+        combo.initiate_checkout = getattr(perf, 'initiate_checkout', None) or 0
         combo.last_synced_at = datetime.now(timezone.utc)
 
         # Auto-update verdict only if not manually set

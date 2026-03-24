@@ -12,6 +12,7 @@ from app.routers import metrics, events, website_metrics, countries, branches
 from app.routers import marketing, ads, kol, angles, insights, report
 from app.routers import auth
 from app.routers import creative_angles, creative_copies, creative_materials, combos
+from app.routers import ad_analyzer
 from app.routers import crm
 from app.scheduler import setup_scheduler
 from app.database import SessionLocal
@@ -57,6 +58,7 @@ app.include_router(creative_angles.router, prefix="/api/creative-angles", tags=[
 app.include_router(creative_copies.router, prefix="/api/copies", tags=["Copies"])
 app.include_router(creative_materials.router, prefix="/api/materials", tags=["Materials"])
 app.include_router(combos.router, prefix="/api/combos", tags=["Ad Combos"])
+app.include_router(ad_analyzer.router, prefix="/api/ad-analyzer", tags=["Ad Analyzer"])
 
 # CRM Dashboard
 app.include_router(crm.router, prefix="/api/crm", tags=["CRM"])

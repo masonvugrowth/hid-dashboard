@@ -34,6 +34,7 @@ import Users     from "./pages/Users";
 
 // Phase 4 — Creative Intelligence Library
 import AdCombos          from "./pages/AdCombos";
+import AdAnalyzer        from "./pages/AdAnalyzer";
 import CreativeCopies    from "./pages/CreativeCopies";
 import CreativeMaterials from "./pages/CreativeMaterials";
 
@@ -101,8 +102,9 @@ function AppRoutes() {
             <Route path="/report"    element={<Report />} />
 
             {/* Phase 4 — Creative Intelligence Library */}
-            <Route path="/combos"    element={<AdCombos />} />
-            <Route path="/copies"    element={<CreativeCopies />} />
+            <Route path="/combos"       element={<AdCombos />} />
+            <Route path="/ad-analyzer" element={<AdAnalyzer />} />
+            <Route path="/copies"      element={<CreativeCopies />} />
             <Route path="/materials" element={<CreativeMaterials />} />
 
             {/* CRM Dashboard */}

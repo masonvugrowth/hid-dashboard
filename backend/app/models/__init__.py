@@ -16,6 +16,7 @@ from app.models.creative_angle import CreativeAngle
 from app.models.creative_copy import CreativeCopy
 from app.models.creative_material import CreativeMaterial
 from app.models.ad_combo import AdCombo
+from app.models.ad_analysis import AdAnalysisResult
 from app.models.reservation_daily import ReservationDaily
 
 __all__ = [
@@ -24,5 +25,5 @@ __all__ = [
     "MarketingActivity", "User", "BranchKeypoint", "AdCopy", "AdMaterial",
     "AdApproval", "AdName",
     "CreativeAngle", "CreativeCopy", "CreativeMaterial", "AdCombo",
-    "ReservationDaily",
+    "AdAnalysisResult", "ReservationDaily",
 ]

@@ -48,7 +48,7 @@ class CopyIn(BaseModel):
     branch_id: UUID
     channel: str
     ad_format: Optional[str] = None
-    target_audience: str
+    target_audience: List[str]
     country_target: Optional[str] = None
     language: str
     headline: Optional[str] = None
@@ -61,7 +61,7 @@ class CopyUpdate(BaseModel):
     angle_id: Optional[UUID] = None
     channel: Optional[str] = None
     ad_format: Optional[str] = None
-    target_audience: Optional[str] = None
+    target_audience: Optional[List[str]] = None
     country_target: Optional[str] = None
     language: Optional[str] = None
     headline: Optional[str] = None
@@ -90,7 +90,7 @@ def list_copies(
     if language:
         q = q.filter(CreativeCopy.language == language)
     if target_audience:
-        q = q.filter(CreativeCopy.target_audience == target_audience)
+        q = q.filter(CreativeCopy.target_audience.any(target_audience))
     if derived_verdict:
         q = q.filter(CreativeCopy.derived_verdict == derived_verdict)
     return _envelope([_copy_dict(c) for c in q.order_by(CreativeCopy.created_at.desc()).all()])
