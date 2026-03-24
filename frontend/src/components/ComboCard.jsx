@@ -24,12 +24,24 @@ export default function ComboCard({ combo, onClick }) {
         </div>
       </div>
 
+      {/* Meta Ad Name */}
+      {combo.meta_ad_name && (
+        <p className="text-xs font-medium text-gray-700 truncate mb-0.5" title={combo.meta_ad_name}>{combo.meta_ad_name}</p>
+      )}
+
       {/* Copy headline */}
       <p className="text-sm font-medium truncate">{c.headline || "No headline"}</p>
       <p className="text-xs text-gray-400 mt-0.5 truncate">{c.primary_text || ""}</p>
 
-      {/* Material info */}
-      <div className="flex items-center gap-2 mt-2 text-xs text-gray-500">
+      {/* Angle + Material info */}
+      <div className="flex items-center gap-2 mt-2 text-xs text-gray-500 flex-wrap">
+        {combo.angle ? (
+          <span className="px-1.5 py-0.5 bg-violet-50 text-violet-700 rounded font-medium">
+            {combo.angle.angle_code} · {combo.angle.name}
+          </span>
+        ) : (
+          <span className="px-1.5 py-0.5 bg-gray-50 text-gray-400 rounded italic">No angle</span>
+        )}
         <span className="px-1.5 py-0.5 bg-gray-100 rounded">{m.material_type || "—"}</span>
         {m.kol_name && <span className="text-purple-600">KOL: {m.kol_name}</span>}
       </div>

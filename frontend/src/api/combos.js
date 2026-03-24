@@ -12,3 +12,4 @@ export const submitForApproval = (id, data) => axios.post(`${BASE}/${id}/submit-
 export const reviewCombo = (id, data) => axios.patch(`${BASE}/${id}/review`, data).then(r => r.data.data);
 export const listPending = (params = {}) => axios.get(`${BASE}/pending`, { params }).then(r => r.data.data);
 export const listUsers = () => axios.get("/api/auth/users").then(r => r.data.data);
+export const autoClassifyAngles = (data = {}) => axios.post(`${BASE}/auto-classify-angles`, data).then(r => r.data.data);

@@ -17,7 +17,9 @@ from app.services.id_generator import generate_code
 from app.services.verdict_sync import sync_combo_performance, compute_derived_verdicts
 from app.services.creative_sync import import_meta_creatives, import_all_branches
 from app.services.email_service import send_approval_email
+from app.services import angle_classifier
 from app.models.user import User
+from app.models.creative_angle import CreativeAngle
 
 router = APIRouter()
 
@@ -482,3 +484,93 @@ def import_from_meta(
         raise HTTPException(422, str(e))
     except Exception as e:
         raise HTTPException(500, f"Meta import failed: {str(e)}")
+
+
+class AutoClassifyRequest(BaseModel):
+    branch_id: Optional[UUID] = None
+    force: Optional[bool] = False  # re-classify even if angle already set
+
+
+@router.post("/auto-classify-angles")
+def auto_classify_angles(body: AutoClassifyRequest = AutoClassifyRequest(), db: Session = Depends(get_db)):
+    """AI reads copy content and auto-assigns creative_angle to combos without one.
+
+    Uses Claude Haiku to detect hook_type, then matches to existing CreativeAngle
+    or creates a new one. Sets angle_id on both the combo and its copy.
+    """
+    from app.config import settings
+    from app.services.id_generator import generate_code as gen_code
+
+    if not settings.ANTHROPIC_API_KEY:
+        raise HTTPException(400, "ANTHROPIC_API_KEY not configured")
+
+    q = db.query(AdCombo).filter(AdCombo.is_active == True)
+    if body.branch_id:
+        q = q.filter(AdCombo.branch_id == body.branch_id)
+    if not body.force:
+        q = q.filter(AdCombo.angle_id.is_(None))
+
+    combos = q.all()
+    if not combos:
+        return _envelope({"classified": 0, "message": "No combos need classification"})
+
+    classified = 0
+    skipped = 0
+
+    for combo in combos:
+        copy = combo.copy
+        if not copy or (not copy.primary_text and not copy.headline):
+            skipped += 1
+            continue
+
+        body_text = f"{copy.headline or ''}\n{copy.primary_text or ''}"
+        result = angle_classifier.classify(body_text, settings.ANTHROPIC_API_KEY)
+
+        if not result["hook_type"]:
+            skipped += 1
+            continue
+
+        hook = result["hook_type"]
+        keypoints = result["keypoints"]
+
+        # Find existing CreativeAngle with same hook_type in same branch
+        angle = db.query(CreativeAngle).filter(
+            CreativeAngle.branch_id == combo.branch_id,
+            CreativeAngle.hook_type == hook,
+            CreativeAngle.is_active == True,
+        ).first()
+
+        if not angle:
+            # Create new CreativeAngle
+            angle_code = gen_code(db, "ANG", "creative_angles", "angle_code")
+            from app.models.branch import Branch
+            branch = db.query(Branch).filter(Branch.id == combo.branch_id).first()
+            branch_label = branch.name if branch else "Unknown"
+
+            angle = CreativeAngle(
+                angle_code=angle_code,
+                branch_id=combo.branch_id,
+                name=f"{hook} — {branch_label}",
+                hook_type=hook,
+                keypoint_1=keypoints[0] if len(keypoints) > 0 else None,
+                keypoint_2=keypoints[1] if len(keypoints) > 1 else None,
+                keypoint_3=keypoints[2] if len(keypoints) > 2 else None,
+                keypoint_4=keypoints[3] if len(keypoints) > 3 else None,
+                keypoint_5=keypoints[4] if len(keypoints) > 4 else None,
+            )
+            db.add(angle)
+            db.flush()
+
+        # Assign angle to combo and its copy
+        combo.angle_id = angle.id
+        if copy and not copy.angle_id:
+            copy.angle_id = angle.id
+        classified += 1
+
+    db.commit()
+    return _envelope({
+        "classified": classified,
+        "skipped": skipped,
+        "total": len(combos),
+        "message": f"AI classified {classified} combos, skipped {skipped}",
+    })

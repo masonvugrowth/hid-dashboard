@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useBranch } from "../context/BranchContext";
 import { useAuth } from "../context/AuthContext";
-import { listCombos, getCombo, createCombo, updateCombo, deleteCombo, triggerSync, comboInsights, importFromMeta, submitForApproval, reviewCombo, listPending, listUsers } from "../api/combos";
+import { listCombos, getCombo, createCombo, updateCombo, deleteCombo, triggerSync, comboInsights, importFromMeta, submitForApproval, reviewCombo, listPending, listUsers, autoClassifyAngles } from "../api/combos";
 import { listCopies } from "../api/copies";
 import { listMaterials } from "../api/materials";
 import { listAngles } from "../api/angles";
@@ -120,6 +120,23 @@ export default function AdCombos() {
                 className="px-3 py-1.5 text-xs border border-blue-300 rounded text-blue-600 hover:bg-blue-50 disabled:opacity-50"
               >
                 {importing ? "Importing..." : "Import from Meta"}
+              </button>
+              <button
+                onClick={() => {
+                  setImporting(true);
+                  autoClassifyAngles({
+                    branch_id: !isAll ? selected : undefined,
+                  }).then(r => {
+                    setImportResult(r);
+                    load();
+                  }).catch(err => {
+                    setImportResult({ error: err.response?.data?.detail || "Classification failed" });
+                  }).finally(() => setImporting(false));
+                }}
+                disabled={importing}
+                className="px-3 py-1.5 text-xs border border-violet-300 rounded text-violet-600 hover:bg-violet-50 disabled:opacity-50"
+              >
+                {importing ? "Classifying..." : "AI Detect Angles"}
               </button>
             </>
           )}
