@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from app.database import get_db
@@ -41,13 +41,21 @@ def _result_dict(r: AdAnalysisResult) -> dict:
         "combo_code": r.combo.combo_code if r.combo else None,
         "combo": {
             "combo_code": r.combo.combo_code,
+            "meta_ad_name": r.combo.meta_ad_name,
             "target_audience": r.combo.target_audience,
+            "channel": r.combo.channel,
             "roas": float(r.combo.roas) if r.combo.roas else None,
             "spend_vnd": float(r.combo.spend_vnd) if r.combo.spend_vnd else None,
+            "revenue_vnd": float(r.combo.revenue_vnd) if r.combo.revenue_vnd else None,
             "impressions": r.combo.impressions,
+            "clicks": r.combo.clicks,
             "purchases": r.combo.purchases,
+            "lp_views": r.combo.lp_views,
+            "add_to_cart": r.combo.add_to_cart,
             "verdict": r.combo.verdict,
+            "run_status": r.combo.run_status,
             "copy_headline": r.combo.copy.headline if r.combo.copy else None,
+            "copy_primary_text": (r.combo.copy.primary_text[:150] + "...") if r.combo.copy and r.combo.copy.primary_text and len(r.combo.copy.primary_text) > 150 else (r.combo.copy.primary_text if r.combo.copy else None),
             "material_type": r.combo.material.material_type if r.combo.material else None,
             "material_link": r.combo.material.file_link if r.combo.material else None,
         } if r.combo else None,
@@ -190,7 +198,14 @@ def list_results(
     """Get analysis results with search + filters."""
     from app.models.creative_copy import CreativeCopy
 
-    q = db.query(AdAnalysisResult).join(AdCombo)
+    q = (db.query(AdAnalysisResult)
+         .join(AdCombo)
+         .options(
+             joinedload(AdAnalysisResult.combo)
+             .joinedload(AdCombo.copy),
+             joinedload(AdAnalysisResult.combo)
+             .joinedload(AdCombo.material),
+         ))
     if branch_id:
         q = q.filter(AdCombo.branch_id == branch_id)
     if combo_id:
@@ -221,7 +236,10 @@ def analyzer_insights(
     db: Session = Depends(get_db),
 ):
     """Aggregated insights for charts: angle performance, TA×Angle matrix, funnel summary."""
-    q = db.query(AdAnalysisResult).join(AdCombo).filter(AdCombo.is_active == True)
+    q = (db.query(AdAnalysisResult)
+         .join(AdCombo)
+         .options(joinedload(AdAnalysisResult.combo))
+         .filter(AdCombo.is_active == True))
     if branch_id:
         q = q.filter(AdCombo.branch_id == branch_id)
     results = q.all()
