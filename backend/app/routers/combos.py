@@ -512,23 +512,40 @@ def auto_classify_angles(body: AutoClassifyRequest = AutoClassifyRequest(), db: 
 
     combos = q.all()
     if not combos:
-        return _envelope({"classified": 0, "message": "No combos need classification"})
+        return _envelope({"classified": 0, "skipped": 0, "total": 0, "message": "No combos need classification"})
+
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info("Auto-classify: processing %d combos", len(combos))
 
     classified = 0
     skipped = 0
+    errors = []
 
     for combo in combos:
         copy = combo.copy
         if not copy or (not copy.primary_text and not copy.headline):
             skipped += 1
+            errors.append(f"{combo.combo_code}: no copy text")
             continue
 
-        body_text = f"{copy.headline or ''}\n{copy.primary_text or ''}"
-        result = angle_classifier.classify(body_text, settings.ANTHROPIC_API_KEY)
+        text_for_ai = f"{copy.headline or ''}\n{copy.primary_text or ''}"
+        logger.info("Classifying %s: %s", combo.combo_code, text_for_ai[:80])
+
+        try:
+            result = angle_classifier.classify(text_for_ai, settings.ANTHROPIC_API_KEY)
+        except Exception as e:
+            skipped += 1
+            errors.append(f"{combo.combo_code}: AI error — {str(e)[:100]}")
+            logger.error("Classify error for %s: %s", combo.combo_code, e)
+            continue
 
         if not result["hook_type"]:
             skipped += 1
+            errors.append(f"{combo.combo_code}: AI returned no hook_type (text length: {len(text_for_ai)})")
             continue
+
+        logger.info("Classified %s → %s", combo.combo_code, result["hook_type"])
 
         hook = result["hook_type"]
         keypoints = result["keypoints"]
@@ -568,9 +585,11 @@ def auto_classify_angles(body: AutoClassifyRequest = AutoClassifyRequest(), db: 
         classified += 1
 
     db.commit()
+    logger.info("Auto-classify done: %d classified, %d skipped out of %d", classified, skipped, len(combos))
     return _envelope({
         "classified": classified,
         "skipped": skipped,
         "total": len(combos),
+        "errors": errors[:10],  # first 10 errors for debugging
         "message": f"AI classified {classified} combos, skipped {skipped}",
     })

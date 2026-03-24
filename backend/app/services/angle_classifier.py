@@ -27,7 +27,7 @@ Return ONLY valid JSON (no markdown, no explanation):
 
 def classify(body: str, api_key: str) -> dict:
     """Returns {hook_type, keypoints: list[str]} or empty defaults on failure."""
-    if not body or len(body.strip()) < 30:
+    if not body or len(body.strip()) < 10:
         return {"hook_type": None, "keypoints": []}
 
     client = anthropic.Anthropic(api_key=api_key)

@@ -152,6 +152,13 @@ export default function AdCombos() {
         }`}>
           {importResult.error ? (
             <span>{importResult.error}</span>
+          ) : importResult.classified != null ? (
+            <span>
+              AI Angles: {importResult.classified} classified, {importResult.skipped} skipped out of {importResult.total}
+              {importResult.errors?.length > 0 && (
+                <span className="text-xs text-gray-500 ml-2">({importResult.errors[0]})</span>
+              )}
+            </span>
           ) : (
             <span>
               Meta Import: {importResult.stats?.ads_fetched || 0} ads fetched
