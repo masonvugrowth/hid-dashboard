@@ -9,6 +9,7 @@ import { useAuth } from "../context/AuthContext";
 import { listCombos, getCombo, createCombo, updateCombo, deleteCombo, triggerSync, comboInsights, importFromMeta, submitForApproval, reviewCombo, listPending, listUsers } from "../api/combos";
 import { listCopies } from "../api/copies";
 import { listMaterials } from "../api/materials";
+import { listAngles } from "../api/angles";
 import { listKolRecords } from "../api/kol";
 import ComboCard from "../components/ComboCard";
 import VerdictBadge from "../components/VerdictBadge";
@@ -34,6 +35,7 @@ export default function AdCombos() {
   const [tab, setTab] = useState("all"); // "all" | "pending"
   const [pendingCombos, setPendingCombos] = useState([]);
   const [pendingLoading, setPendingLoading] = useState(false);
+  const [angles, setAngles] = useState([]);
 
   // Filters from URL params
   const f = {
@@ -41,6 +43,7 @@ export default function AdCombos() {
     channel: searchParams.get("channel") || "",
     language: searchParams.get("language") || "",
     country_target: searchParams.get("country_target") || "",
+    angle_id: searchParams.get("angle_id") || "",
     verdict: searchParams.get("verdict") || "",
     run_status: searchParams.get("run_status") || "",
   };
@@ -59,9 +62,11 @@ export default function AdCombos() {
     Promise.all([
       listCombos(p),
       comboInsights({ branch_id: !isAll ? selected : undefined }),
-    ]).then(([c, ins]) => {
+      listAngles({ branch_id: !isAll ? selected : undefined }),
+    ]).then(([c, ins, ang]) => {
       setCombos(c);
       setInsights(ins);
+      setAngles(ang || []);
     }).finally(() => setLoading(false));
   };
   const loadPending = () => {
@@ -238,6 +243,11 @@ export default function AdCombos() {
             {opts.map(o => <option key={o} value={o}>{o}</option>)}
           </select>
         ))}
+        <select value={f.angle_id} onChange={e => setFilter("angle_id", e.target.value)}
+          className="border rounded px-2 py-1 text-sm">
+          <option value="">All Angles</option>
+          {angles.map(a => <option key={a.id} value={a.id}>{a.angle_code} — {a.name}</option>)}
+        </select>
       </div>
 
       {/* Combo Cards */}
