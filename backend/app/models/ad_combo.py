@@ -22,7 +22,7 @@ class AdCombo(Base):
     language = Column(String(50), nullable=True)
     country_target = Column(String(100), nullable=True)
     angle_id = Column(UUID(as_uuid=True), ForeignKey("creative_angles.id", ondelete="SET NULL"), nullable=True)
-    meta_ad_name = Column(String(500), unique=True, nullable=True)
+    meta_ad_name = Column(String(500), nullable=True)  # Exact name from Meta — not unique (same ad can map multiple combos)
     verdict = Column(String(30), nullable=True)  # winning / good / neutral / underperformer / kill
     verdict_source = Column(String(20), nullable=True)  # manual / auto_meta
     verdict_notes = Column(Text, nullable=True)

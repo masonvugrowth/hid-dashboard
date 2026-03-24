@@ -129,12 +129,16 @@ def _find_or_create_copy(
     language = _detect_language(primary_text or headline)
     ad_format = _detect_ad_format(ad)
 
+    # target_audience is now TEXT[] — wrap in list
+    ta_raw = ad.get("target_audience") or "Generic"
+    ta_list = [ta_raw] if isinstance(ta_raw, str) else ta_raw
+
     copy = CreativeCopy(
         copy_code=code,
         branch_id=branch_id,
         channel="Meta",
         ad_format=ad_format,
-        target_audience=ad.get("target_audience") or "Generic",
+        target_audience=ta_list,
         country_target=ad.get("country"),
         language=language,
         headline=headline[:500] if headline else None,
@@ -191,13 +195,17 @@ def _find_or_create_material(
     mat_type = _detect_material_type(ad)
     language = _detect_language(ad.get("primary_text", ""))
 
+    # target_audience is now TEXT[] — wrap in list
+    ta_raw = ad.get("target_audience") or "Generic"
+    ta_list = [ta_raw] if isinstance(ta_raw, str) else ta_raw
+
     material = CreativeMaterial(
         material_code=code,
         branch_id=branch_id,
         material_type=mat_type,
         design_type="Short Video (<30s)" if mat_type == "video" else "Static",
         channel="Meta",
-        target_audience=ad.get("target_audience") or "Generic",
+        target_audience=ta_list,
         language=language,
         file_link=file_url,
         tags=["meta-import"],
@@ -227,15 +235,8 @@ def _find_or_create_combo(
             existing.updated_at = datetime.now(timezone.utc)
         return None  # signal: not newly created
 
-    # Also check if meta_ad_name already used by another combo
-    if ad_name:
-        existing_by_name = db.query(AdCombo).filter(
-            AdCombo.meta_ad_name == ad_name,
-        ).first()
-        if existing_by_name:
-            # Same ad name but different copy+material — append ad_id suffix
-            ad_name = f"{ad_name} #{copy.copy_code}"
-
+    # Keep the exact Meta ad name — never modify it.
+    # Multiple combos can share the same ad_name (same ad, different dedup match).
     code = generate_code(db, "CMB", "ad_combos", "combo_code")
     combo = AdCombo(
         combo_code=code,
