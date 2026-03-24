@@ -49,6 +49,7 @@ const NAV = [
     label: "CRM",
     items: [
       { to: "/crm", label: "CRM Dashboard", icon: "◉" },
+      { to: "/email-marketing", label: "Email Marketing", icon: "◈" },
     ],
   },
   {

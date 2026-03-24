@@ -18,6 +18,8 @@ from app.models.creative_material import CreativeMaterial
 from app.models.ad_combo import AdCombo
 from app.models.ad_analysis import AdAnalysisResult
 from app.models.reservation_daily import ReservationDaily
+from app.models.email_event import EmailEvent
+from app.models.email_campaign_stats import EmailCampaignStats
 
 __all__ = [
     "Branch", "KPITarget", "Reservation", "DailyMetrics", "Event",
@@ -26,4 +28,5 @@ __all__ = [
     "AdApproval", "AdName",
     "CreativeAngle", "CreativeCopy", "CreativeMaterial", "AdCombo",
     "AdAnalysisResult", "ReservationDaily",
+    "EmailEvent", "EmailCampaignStats",
 ]

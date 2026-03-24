@@ -243,6 +243,30 @@ def setup_scheduler(app):
             replace_existing=True,
         )
 
+        # Nightly email stats aggregation at 4:00am (after verdict sync)
+        def _email_stats_job():
+            from app.services.email_stats import aggregate_email_stats
+            from datetime import date, timedelta
+            db = SessionLocal()
+            try:
+                count = aggregate_email_stats(
+                    db,
+                    date.today() - timedelta(days=7),
+                    date.today(),
+                )
+                logger.info("Email stats aggregation complete — %d rows", count)
+            except Exception:
+                logger.exception("Email stats aggregation failed")
+            finally:
+                db.close()
+
+        scheduler.add_job(
+            _email_stats_job,
+            trigger=CronTrigger(hour=4, minute=0),
+            id="nightly_email_stats",
+            replace_existing=True,
+        )
+
         scheduler.start()
         logger.info(
             "Scheduler started — "
@@ -250,7 +274,8 @@ def setup_scheduler(app):
             "metrics compute + full-month Insights at 03:00 ICT, "
             "Ads sync (Meta + Google) at 06:00 ICT, "
             "Insights refresh at 08:00 & 14:00 ICT, "
-            "verdict sync at 03:30 ICT"
+            "verdict sync at 03:30 ICT, "
+            "email stats at 04:00 ICT"
         )
 
     @app.on_event("shutdown")

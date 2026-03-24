@@ -41,6 +41,9 @@ import CreativeMaterials from "./pages/CreativeMaterials";
 // CRM Dashboard
 import CRMDashboard from "./pages/CRMDashboard";
 
+// Email Marketing (GHL)
+import EmailMarketing from "./pages/EmailMarketing";
+
 export default function App() {
   return (
     <AuthProvider>
@@ -109,6 +112,7 @@ function AppRoutes() {
 
             {/* CRM Dashboard */}
             <Route path="/crm" element={<CRMDashboard />} />
+            <Route path="/email-marketing" element={<EmailMarketing />} />
 
             {/* Settings & Admin */}
             <Route path="/settings" element={<Settings />} />

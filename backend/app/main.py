@@ -14,6 +14,7 @@ from app.routers import auth
 from app.routers import creative_angles, creative_copies, creative_materials, combos
 from app.routers import ad_analyzer
 from app.routers import crm
+from app.routers import email_marketing
 from app.scheduler import setup_scheduler
 from app.database import SessionLocal
 from app.models.branch import Branch
@@ -62,6 +63,9 @@ app.include_router(ad_analyzer.router, prefix="/api/ad-analyzer", tags=["Ad Anal
 
 # CRM Dashboard
 app.include_router(crm.router, prefix="/api/crm", tags=["CRM"])
+
+# Email Marketing (GHL)
+app.include_router(email_marketing.router, prefix="/api/email-marketing", tags=["Email Marketing"])
 
 setup_scheduler(app)
 

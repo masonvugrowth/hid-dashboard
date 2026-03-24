@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     SECRET_KEY: str = "changeme"
 
+    # GoHighLevel (GHL) — Email Marketing
+    GHL_LOCATION_ID: str = ""
+    GHL_API_KEY: str = ""
+    GHL_WEBHOOK_SECRET: str = ""
+    GHL_BASE_URL: str = "https://services.leadconnectorhq.com"
+
     # Per-property Cloudbeds keys (loaded from .env CB_API_KEY_* and CB_PROPERTY_ID_*)
     CB_API_KEY_TAIPEI: str = ""
     CB_PROPERTY_ID_TAIPEI: str = ""
