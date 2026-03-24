@@ -256,8 +256,11 @@ export default function AdAnalyzer() {
                 {/* Card Header */}
                 <div className="p-4 cursor-pointer">
                   <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-indigo-600 text-xs font-medium">{r.combo_code}</span>
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <span className="font-mono text-indigo-600 text-[10px]">{r.combo_code}</span>
+                      {r.combo?.meta_ad_name && (
+                        <span className="text-xs font-medium text-gray-800 truncate" title={r.combo.meta_ad_name}>{r.combo.meta_ad_name}</span>
+                      )}
                       {perfVerdict && (
                         <span className={`text-[10px] px-2 py-0.5 rounded font-semibold ${VERDICT_COLORS[perfVerdict] || "bg-gray-100"}`}>
                           {perfVerdict}
