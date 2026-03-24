@@ -181,9 +181,15 @@ def list_results(
     branch_id: Optional[UUID] = Query(None),
     combo_id: Optional[UUID] = Query(None),
     recommendation_type: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    detected_angle: Optional[str] = Query(None),
+    detected_ta: Optional[str] = Query(None),
+    verdict: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """Get analysis results with optional filters."""
+    """Get analysis results with search + filters."""
+    from app.models.creative_copy import CreativeCopy
+
     q = db.query(AdAnalysisResult).join(AdCombo)
     if branch_id:
         q = q.filter(AdCombo.branch_id == branch_id)
@@ -191,6 +197,20 @@ def list_results(
         q = q.filter(AdAnalysisResult.combo_id == combo_id)
     if recommendation_type:
         q = q.filter(AdAnalysisResult.recommendation_type == recommendation_type)
+    if verdict:
+        q = q.filter(AdCombo.verdict == verdict)
+    if detected_angle:
+        q = q.filter(AdAnalysisResult.detected_angles.any(detected_angle))
+    if detected_ta:
+        q = q.filter(AdAnalysisResult.detected_ta.any(detected_ta))
+    if search:
+        pattern = f"%{search}%"
+        q = q.outerjoin(CreativeCopy, AdCombo.copy_id == CreativeCopy.id).filter(
+            (AdCombo.combo_code.ilike(pattern)) |
+            (AdCombo.meta_ad_name.ilike(pattern)) |
+            (CreativeCopy.headline.ilike(pattern)) |
+            (AdAnalysisResult.ai_recommendation.ilike(pattern))
+        )
     results = q.order_by(AdAnalysisResult.analyzed_at.desc()).all()
     return _envelope([_result_dict(r) for r in results])
 

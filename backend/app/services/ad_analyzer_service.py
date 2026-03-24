@@ -114,10 +114,12 @@ def analyze_combo_with_ai(
     material_type: str,
     image_url: str | None,
     funnel: dict,
+    benchmark: float | None = None,
 ) -> dict:
-    """Call Claude API to analyze ad creative content.
+    """Call Claude API to evaluate ad performance and provide optimization recommendations.
 
-    Returns dict with: detected_angles, detected_ta, keypoints, visual_summary
+    Returns dict with: detected_angles, detected_ta, keypoints, visual_summary,
+    performance_evaluation, optimization_actions, confidence
     """
     if not settings.ANTHROPIC_API_KEY:
         logger.warning("ANTHROPIC_API_KEY not set — skipping AI analysis")
@@ -125,29 +127,84 @@ def analyze_combo_with_ai(
 
     client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-    prompt = f"""Analyze this hotel ad creative and provide structured analysis.
+    roas = float(combo.roas) if combo.roas else 0
+    spend = float(combo.spend_vnd) if combo.spend_vnd else 0
+    revenue = float(combo.revenue_vnd) if combo.revenue_vnd else 0
+    cpc = round(spend / combo.clicks, 0) if combo.clicks and combo.clicks > 0 else 0
+    cpa = round(spend / combo.purchases, 0) if combo.purchases and combo.purchases > 0 else 0
 
-HEADLINE: {headline or '(none)'}
-PRIMARY TEXT: {copy_text or '(none)'}
-MATERIAL TYPE: {material_type}
+    prompt = f"""You are a senior hotel performance marketer. Evaluate this ad campaign based on real data from the last 14 days and provide actionable optimization recommendations.
 
-FUNNEL DATA:
-- Impressions: {funnel['impressions']:,}
-- CTR: {funnel['ctr']}%
-- LP Views: {funnel['lp_views']:,} ({funnel['lp_view_rate']}% of clicks)
-- Add to Cart: {funnel['add_to_cart']:,} ({funnel['atc_rate']}% of LP views)
-- Checkout: {funnel['checkout']:,} ({funnel['checkout_rate']}% of ATC)
-- Purchases: {funnel['purchases']:,} ({funnel['purchase_rate']}% of checkout)
+═══ AD CREATIVE ═══
+Headline: {headline or '(none)'}
+Primary Text: {copy_text or '(none)'}
+Material Type: {material_type}
+Meta Ad Name: {combo.meta_ad_name or '(not linked)'}
+
+═══ PERFORMANCE METRICS (Last 14 days) ═══
+Spend: {spend:,.0f} VND
+Revenue: {revenue:,.0f} VND
+ROAS: {roas:.2f}x {f'(Branch benchmark: {benchmark}x)' if benchmark else '(no benchmark)'}
+Impressions: {funnel['impressions']:,}
+Clicks: {funnel['clicks']:,}
+CTR: {funnel['ctr']}%
+CPC: {cpc:,.0f} VND
+Purchases: {combo.purchases or 0}
+CPA: {cpa:,.0f} VND per purchase
+
+═══ CONVERSION FUNNEL ═══
+Impressions: {funnel['impressions']:,}
+  → Clicks: {funnel['clicks']:,} (CTR: {funnel['ctr']}%)
+    → Landing Page Views: {funnel['lp_views']:,} ({funnel['lp_view_rate']}% of clicks)
+      → Add to Cart: {funnel['add_to_cart']:,} ({funnel['atc_rate']}% of LP views)
+        → Checkout: {funnel['checkout']:,} ({funnel['checkout_rate']}% of ATC)
+          → Purchase: {funnel['purchases']:,} ({funnel['purchase_rate']}% of checkout)
+
+═══ INDUSTRY BENCHMARKS FOR HOTEL ADS ═══
+Good CTR: >1.5%  |  Great CTR: >3%
+Good LP View Rate: >70%  |  Concern: <50%
+Good ATC Rate: >8%  |  Concern: <3%
+Good Checkout Rate: >60%  |  Concern: <40%
+Good Purchase Rate: >70%  |  Concern: <50%
 
 Respond in JSON format:
 {{
-  "detected_angles": ["angle1", "angle2"],  // from: Location, Aesthetic, Experience, Price, Community, Eco, Digital Nomad. Can add new if none fit.
-  "detected_ta": ["ta1", "ta2"],  // from: Solo, Couple, Friend Group, Family, Business, Digital Nomad, High Intent, Generic
-  "keypoints": ["point1", "point2", "point3"],  // 3-5 key selling points in the ad
-  "visual_summary": "Brief description of what the ad communicates",
-  "confidence": 0.85  // 0.0-1.0 how confident in analysis
+  "detected_angles": ["angle1"],
+  "detected_ta": ["ta1"],
+  "keypoints": ["selling point 1", "selling point 2", "selling point 3"],
+  "visual_summary": "What this ad communicates in 1 sentence",
+
+  "performance_verdict": "STRONG|MODERATE|WEAK|INSUFFICIENT_DATA",
+  "performance_summary": "2-3 sentence overall performance assessment comparing to benchmarks",
+
+  "funnel_diagnosis": "Which funnel stage is the biggest bottleneck and why (1-2 sentences)",
+
+  "optimization_actions": [
+    {{
+      "priority": "HIGH|MEDIUM|LOW",
+      "area": "Creative|Targeting|Landing Page|Budget|Bidding|Funnel",
+      "action": "Specific actionable recommendation (1-2 sentences)",
+      "expected_impact": "What improvement to expect (e.g. +0.5% CTR, +20% conversions)"
+    }}
+  ],
+
+  "budget_recommendation": "SCALE_UP|MAINTAIN|REDUCE|PAUSE",
+  "budget_reasoning": "Why this budget action (1 sentence)",
+
+  "testing_suggestions": [
+    "Specific A/B test idea 1",
+    "Specific A/B test idea 2"
+  ],
+
+  "confidence": 0.85
 }}
 
+Rules:
+- Give 3-5 optimization_actions sorted by priority (HIGH first)
+- Be specific to THIS ad — reference the actual headline/copy content
+- If data is insufficient (<5K impressions), say so and recommend waiting
+- Compare metrics against the benchmarks provided
+- For hotel ads: focus on booking conversions, not just clicks
 Only return valid JSON, no markdown."""
 
     # Build messages — use image if available
@@ -166,7 +223,7 @@ Only return valid JSON, no markdown."""
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1024,
+            max_tokens=2048,
             messages=[{"role": "user", "content": messages_content}],
         )
         text = response.content[0].text.strip()
@@ -194,13 +251,29 @@ def run_analysis(combo, db_session, benchmark: float | None = None) -> dict:
     # Step 1: Build funnel analysis
     funnel = build_funnel_analysis(combo)
 
-    # Step 2: AI analysis (angles, TA, keypoints)
+    # Step 2: AI analysis (angles, TA, keypoints, performance eval, optimization)
     ai_result = analyze_combo_with_ai(
-        combo, copy_text, headline, material_type, image_url, funnel,
+        combo, copy_text, headline, material_type, image_url, funnel, benchmark,
     )
 
-    # Step 3: Generate recommendation
+    # Step 3: Generate recommendation — prefer AI's budget_recommendation if available
     rec_type, rec_message = build_recommendation(combo, funnel, benchmark)
+    # Override with AI recommendation if present
+    ai_budget = ai_result.get("budget_recommendation", "").lower().replace("_", "_")
+    if ai_budget in ("scale_up", "maintain", "reduce", "pause"):
+        rec_type = ai_budget
+    ai_summary = ai_result.get("performance_summary", "")
+    if ai_summary:
+        rec_message = ai_summary
+
+    # Merge AI optimization data into funnel_analysis for frontend display
+    funnel["performance_verdict"] = ai_result.get("performance_verdict", "")
+    funnel["performance_summary"] = ai_result.get("performance_summary", "")
+    funnel["funnel_diagnosis"] = ai_result.get("funnel_diagnosis", "")
+    funnel["optimization_actions"] = ai_result.get("optimization_actions", [])
+    funnel["budget_recommendation"] = ai_result.get("budget_recommendation", "")
+    funnel["budget_reasoning"] = ai_result.get("budget_reasoning", "")
+    funnel["testing_suggestions"] = ai_result.get("testing_suggestions", [])
 
     return {
         "combo_id": combo.id,
