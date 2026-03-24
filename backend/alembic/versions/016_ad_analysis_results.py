@@ -16,6 +16,14 @@ depends_on = None
 
 
 def upgrade():
+    # Guard: skip if table already exists
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.tables WHERE table_name='ad_analysis_results'"
+    ))
+    if result.fetchone():
+        return
+
     op.create_table(
         "ad_analysis_results",
         sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),

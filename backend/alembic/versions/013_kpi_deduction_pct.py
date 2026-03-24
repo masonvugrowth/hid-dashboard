@@ -15,10 +15,17 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column(
-        "kpi_targets",
-        sa.Column("deduction_pct", sa.Numeric(5, 2), nullable=True, server_default="0"),
-    )
+    # Guard: column may already exist if migration was applied outside alembic
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='kpi_targets' AND column_name='deduction_pct'"
+    ))
+    if not result.fetchone():
+        op.add_column(
+            "kpi_targets",
+            sa.Column("deduction_pct", sa.Numeric(5, 2), nullable=True, server_default="0"),
+        )
 
 
 def downgrade():

@@ -17,7 +17,23 @@ branch_labels = None
 depends_on = None
 
 
+def _is_array_type(conn, table, column):
+    """Check if a column is already an array type."""
+    result = conn.execute(sa.text(
+        "SELECT data_type FROM information_schema.columns "
+        f"WHERE table_name='{table}' AND column_name='{column}'"
+    ))
+    row = result.fetchone()
+    return row and row[0] == "ARRAY"
+
+
 def upgrade():
+    conn = op.get_bind()
+
+    # Skip if already migrated (idempotent)
+    if _is_array_type(conn, "creative_angles", "target_audience"):
+        return
+
     # --- creative_angles: nullable VARCHAR -> nullable TEXT[] ---
     op.execute(
         "ALTER TABLE creative_angles "

@@ -16,16 +16,20 @@ branch_labels = None
 depends_on = None
 
 
-def upgrade():
-    # ads_performance — add funnel columns
-    op.add_column("ads_performance", sa.Column("lp_views", sa.Integer(), nullable=True))
-    op.add_column("ads_performance", sa.Column("add_to_cart", sa.Integer(), nullable=True))
-    op.add_column("ads_performance", sa.Column("initiate_checkout", sa.Integer(), nullable=True))
+def _col_exists(table, column):
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        f"SELECT 1 FROM information_schema.columns "
+        f"WHERE table_name='{table}' AND column_name='{column}'"
+    ))
+    return result.fetchone() is not None
 
-    # ad_combos — add funnel columns
-    op.add_column("ad_combos", sa.Column("lp_views", sa.Integer(), nullable=True))
-    op.add_column("ad_combos", sa.Column("add_to_cart", sa.Integer(), nullable=True))
-    op.add_column("ad_combos", sa.Column("initiate_checkout", sa.Integer(), nullable=True))
+
+def upgrade():
+    for table in ("ads_performance", "ad_combos"):
+        for col in ("lp_views", "add_to_cart", "initiate_checkout"):
+            if not _col_exists(table, col):
+                op.add_column(table, sa.Column(col, sa.Integer(), nullable=True))
 
 
 def downgrade():
