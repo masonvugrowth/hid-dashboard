@@ -22,6 +22,7 @@ def send_approval_email(
     approval_deadline: str | None = None,
     material_link: str | None = None,
     kol_name: str | None = None,
+    submitter_email: str | None = None,
 ) -> bool:
     """Send approval request email to reviewer via Gmail SMTP.
 
@@ -96,12 +97,20 @@ def send_approval_email(
     msg["Subject"] = f"[HiD] Approval Request — {combo_code} ({branch_name})"
     msg["From"] = settings.GMAIL_USER
     msg["To"] = reviewer_email
+    # CC the submitter so they know the request was sent
+    if submitter_email and submitter_email.lower() != reviewer_email.lower():
+        msg["Cc"] = submitter_email
     msg.attach(MIMEText(html, "html"))
+
+    # Build recipient list: reviewer + submitter (if different)
+    recipients = [reviewer_email]
+    if submitter_email and submitter_email.lower() != reviewer_email.lower():
+        recipients.append(submitter_email)
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
             server.login(settings.GMAIL_USER, settings.GMAIL_APP_PASSWORD)
-            server.sendmail(settings.GMAIL_USER, [reviewer_email], msg.as_string())
+            server.sendmail(settings.GMAIL_USER, recipients, msg.as_string())
         logger.info("Approval email sent to %s for combo %s", reviewer_email, combo_code)
         return True
     except Exception as e:

@@ -229,6 +229,10 @@ def create_combo(body: ComboIn, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(obj)
 
+            # Look up submitter email for CC
+            submitter_user = db.query(User).filter(User.name == obj.submitted_by).first()
+            submitter_email = submitter_user.email if submitter_user else None
+
             # Send email in background thread so it doesn't block the response
             import threading
             threading.Thread(
@@ -244,6 +248,7 @@ def create_combo(body: ComboIn, db: Session = Depends(get_db)):
                     "approval_deadline": deadline,
                     "material_link": material.file_link,
                     "kol_name": material.kol_name,
+                    "submitter_email": submitter_email,
                 },
                 daemon=True,
             ).start()
@@ -322,6 +327,10 @@ def submit_for_approval(combo_id: UUID, body: SubmitApprovalBody, db: Session = 
     db.commit()
     db.refresh(obj)
 
+    # Look up submitter email for CC
+    submitter_user = db.query(User).filter(User.name == body.submitted_by).first()
+    submitter_email = submitter_user.email if submitter_user else None
+
     # Send email in background thread so it doesn't block the response
     mat = obj.material
     import threading
@@ -338,6 +347,7 @@ def submit_for_approval(combo_id: UUID, body: SubmitApprovalBody, db: Session = 
             "approval_deadline": body.approval_deadline,
             "material_link": mat.file_link if mat else None,
             "kol_name": mat.kol_name if mat else None,
+            "submitter_email": submitter_email,
         },
         daemon=True,
     ).start()
