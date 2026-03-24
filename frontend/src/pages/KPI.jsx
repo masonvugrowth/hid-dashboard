@@ -156,8 +156,8 @@ export default function KPI() {
                   <p className="font-semibold text-indigo-600 mt-0.5">{fmt(b.occ_forecast_native)}</p>
                   {split && b.room_forecast_native != null ? (
                     <div className="text-xs text-gray-400 mt-1 space-y-0.5">
-                      <p>Room: {fmt(b.room_forecast_native)} <span className="text-gray-300">·</span> ADR {fmt(b.room_adr_native)}</p>
-                      <p>Dorm: {fmt(b.dorm_forecast_native)} <span className="text-gray-300">·</span> ADR {fmt(b.dorm_adr_native)}</p>
+                      <p>Room: {fmt(b.room_forecast_native)} <span className="text-gray-300">·</span> ADR {fmt(b.forecast_room_adr ?? b.room_adr_native)}</p>
+                      <p>Dorm: {fmt(b.dorm_forecast_native)} <span className="text-gray-300">·</span> ADR {fmt(b.forecast_dorm_adr ?? b.dorm_adr_native)}</p>
                     </div>
                   ) : b.avg_adr_native ? (
                     <p className="text-xs text-gray-400 mt-0.5">
@@ -172,8 +172,8 @@ export default function KPI() {
                   <p className="font-semibold text-emerald-600 mt-0.5">{fmt(b.next_month_forecast_native)}</p>
                   {split && b.next_month_room_forecast != null ? (
                     <div className="text-xs text-gray-400 mt-1 space-y-0.5">
-                      <p>Room: {fmt(b.next_month_room_forecast)} <span className="text-gray-300">·</span> ADR {fmt(b.next_month_room_adr)}</p>
-                      <p>Dorm: {fmt(b.next_month_dorm_forecast)} <span className="text-gray-300">·</span> ADR {fmt(b.next_month_dorm_adr)}</p>
+                      <p>Room: {fmt(b.next_month_room_forecast)} <span className="text-gray-300">·</span> ADR {fmt(b.next_month_forecast_room_adr ?? b.next_month_room_adr)}</p>
+                      <p>Dorm: {fmt(b.next_month_dorm_forecast)} <span className="text-gray-300">·</span> ADR {fmt(b.next_month_forecast_dorm_adr ?? b.next_month_dorm_adr)}</p>
                     </div>
                   ) : b.next_month_adr ? (
                     <p className="text-xs text-gray-400 mt-0.5">

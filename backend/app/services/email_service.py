@@ -99,7 +99,7 @@ def send_approval_email(
     msg.attach(MIMEText(html, "html"))
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
             server.login(settings.GMAIL_USER, settings.GMAIL_APP_PASSWORD)
             server.sendmail(settings.GMAIL_USER, [reviewer_email], msg.as_string())
         logger.info("Approval email sent to %s for combo %s", reviewer_email, combo_code)

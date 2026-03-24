@@ -130,7 +130,7 @@ def me(current: User = Depends(get_current_user)):
 
 @router.get("/users")
 def list_users(
-    _admin: User = Depends(require_admin),
+    _current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     users = db.query(User).order_by(User.created_at).all()

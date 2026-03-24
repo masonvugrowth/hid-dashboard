@@ -110,6 +110,7 @@ class ComboIn(BaseModel):
     submit_approval: Optional[bool] = False
     reviewer_id: Optional[UUID] = None
     approval_deadline: Optional[str] = None
+    submitted_by: Optional[str] = None
 
 
 class ComboUpdate(BaseModel):
@@ -228,19 +229,24 @@ def create_combo(body: ComboIn, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(obj)
 
-            # Send email
-            send_approval_email(
-                reviewer_email=reviewer.email,
-                reviewer_name=reviewer.name,
-                combo_code=combo_code,
-                combo_id=str(obj.id),
-                branch_name=branch.name if branch else "Unknown",
-                material_type=material.material_type,
-                submitted_by=obj.submitted_by,
-                approval_deadline=deadline,
-                material_link=material.file_link,
-                kol_name=material.kol_name,
-            )
+            # Send email in background thread so it doesn't block the response
+            import threading
+            threading.Thread(
+                target=send_approval_email,
+                kwargs={
+                    "reviewer_email": reviewer.email,
+                    "reviewer_name": reviewer.name,
+                    "combo_code": combo_code,
+                    "combo_id": str(obj.id),
+                    "branch_name": branch.name if branch else "Unknown",
+                    "material_type": material.material_type,
+                    "submitted_by": obj.submitted_by,
+                    "approval_deadline": deadline,
+                    "material_link": material.file_link,
+                    "kol_name": material.kol_name,
+                },
+                daemon=True,
+            ).start()
 
     return _envelope(_combo_dict(obj))
 
@@ -316,20 +322,25 @@ def submit_for_approval(combo_id: UUID, body: SubmitApprovalBody, db: Session = 
     db.commit()
     db.refresh(obj)
 
-    # Send email
+    # Send email in background thread so it doesn't block the response
     mat = obj.material
-    send_approval_email(
-        reviewer_email=reviewer.email,
-        reviewer_name=reviewer.name,
-        combo_code=obj.combo_code,
-        combo_id=str(obj.id),
-        branch_name=branch.name if branch else "Unknown",
-        material_type=mat.material_type if mat else "Unknown",
-        submitted_by=body.submitted_by,
-        approval_deadline=body.approval_deadline,
-        material_link=mat.file_link if mat else None,
-        kol_name=mat.kol_name if mat else None,
-    )
+    import threading
+    threading.Thread(
+        target=send_approval_email,
+        kwargs={
+            "reviewer_email": reviewer.email,
+            "reviewer_name": reviewer.name,
+            "combo_code": obj.combo_code,
+            "combo_id": str(obj.id),
+            "branch_name": branch.name if branch else "Unknown",
+            "material_type": mat.material_type if mat else "Unknown",
+            "submitted_by": body.submitted_by,
+            "approval_deadline": body.approval_deadline,
+            "material_link": mat.file_link if mat else None,
+            "kol_name": mat.kol_name if mat else None,
+        },
+        daemon=True,
+    ).start()
     return _envelope(_combo_dict(obj, include_detail=True))
 
 

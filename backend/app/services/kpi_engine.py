@@ -136,15 +136,18 @@ def _is_combo_booking(room_type: str) -> bool:
 
 def _get_room_dorm_adr(
     db: Session, branch_id: UUID, first_day: date, last_day: date,
+    exclude_adr_sources: bool = True,
 ) -> tuple[Optional[float], Optional[float]]:
     """
     Room/Dorm ADR from reservation_daily (same source for both revenue & nights).
-    Excludes: cancelled/noshow statuses + ADR-excluded sources (blogger, house use, special case).
+    Excludes: cancelled/noshow statuses.
+    When exclude_adr_sources=True (default, for display): also excludes blogger, house use, special case.
+    When exclude_adr_sources=False (for forecast): includes all sources so ADR matches OCC scope.
     For Dorm: counts per-BED (not per-reservation), excludes combo bookings.
     Returns (room_adr, dorm_adr).
     """
     # ── Room ADR (simple: 1 reservation-night = 1 unit sold) ──────────────
-    room_row = (
+    room_q = (
         db.query(
             func.coalesce(func.sum(ReservationDaily.nightly_rate), 0),
             func.count(ReservationDaily.id),
@@ -156,16 +159,19 @@ def _get_room_dorm_adr(
             ReservationDaily.date <= last_day,
             func.lower(ReservationDaily.room_type_category) == "room",
             ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
+        )
+    )
+    if exclude_adr_sources:
+        room_q = room_q.filter(
             ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_ADR_EXCLUDED_SOURCES)),
         )
-        .one()
-    )
+    room_row = room_q.one()
     room_rev = float(room_row[0])
     room_nights = int(room_row[1])
     room_adr = round(room_rev / room_nights, 2) if room_nights > 0 else None
 
     # ── Dorm ADR (per-bed: count beds from room_number, exclude combos) ───
-    dorm_rows = (
+    dorm_q = (
         db.query(
             ReservationDaily.nightly_rate,
             Reservation.room_number,
@@ -178,10 +184,13 @@ def _get_room_dorm_adr(
             ReservationDaily.date <= last_day,
             func.lower(ReservationDaily.room_type_category) == "dorm",
             ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
+        )
+    )
+    if exclude_adr_sources:
+        dorm_q = dorm_q.filter(
             ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_ADR_EXCLUDED_SOURCES)),
         )
-        .all()
-    )
+    dorm_rows = dorm_q.all()
 
     dorm_total_rev = 0.0
     dorm_total_beds = 0
@@ -339,11 +348,16 @@ def compute_next_month_forecast(
         adr = round(total_revenue / total_nights, 2) if total_nights > 0 else None
 
     # Room/Dorm ADR from reservation_daily (same source for revenue & nights)
+    # Display ADR: excludes blogger/house-use/special-case (paying-guest ADR)
+    # Forecast ADR: includes all sources so ADR scope matches OCC scope
     room_adr = dorm_adr = None
+    forecast_room_adr = forecast_dorm_adr = None
     if total_room_count > 0 and total_dorm_count > 0:
-        room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day_next, last_day_next)
+        room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day_next, last_day_next, exclude_adr_sources=True)
+        forecast_room_adr, forecast_dorm_adr = _get_room_dorm_adr(db, branch_id, first_day_next, last_day_next, exclude_adr_sources=False)
     elif total_room_count > 0 and total_dorm_count == 0:
         room_adr = adr
+        forecast_room_adr = adr
 
     # Predicted OCC for next month
     target_row = (
@@ -356,16 +370,16 @@ def compute_next_month_forecast(
     predicted_dorm_occ_next = float(target_row.predicted_dorm_occ_pct) if (target_row and target_row.predicted_dorm_occ_pct) else None
     next_month_target = float(target_row.target_revenue_native) if (target_row and target_row.target_revenue_native) else None
 
-    # Try split forecast first
+    # Try split forecast first — use forecast ADR (no source exclusion)
     room_forecast = dorm_forecast = None
     forecast = None
     has_split = (total_room_count > 0 and total_dorm_count > 0
                  and predicted_room_occ_next is not None
                  and predicted_dorm_occ_next is not None)
 
-    if has_split and room_adr and dorm_adr:
-        room_forecast = round(predicted_room_occ_next * total_room_count * room_adr * total_days, 2)
-        dorm_forecast = round(predicted_dorm_occ_next * total_dorm_count * dorm_adr * total_days, 2)
+    if has_split and forecast_room_adr and forecast_dorm_adr:
+        room_forecast = round(predicted_room_occ_next * total_room_count * forecast_room_adr * total_days, 2)
+        dorm_forecast = round(predicted_dorm_occ_next * total_dorm_count * forecast_dorm_adr * total_days, 2)
         forecast = round(room_forecast + dorm_forecast, 2)
     elif adr and predicted_occ_next and total_rooms > 0:
         forecast = round(predicted_occ_next * total_rooms * adr * total_days, 2)
@@ -385,6 +399,8 @@ def compute_next_month_forecast(
         "next_month_forecast_native": forecast,
         "next_month_room_forecast": room_forecast,
         "next_month_dorm_forecast": dorm_forecast,
+        "next_month_forecast_room_adr": forecast_room_adr,
+        "next_month_forecast_dorm_adr": forecast_dorm_adr,
     }
 
 
@@ -462,25 +478,30 @@ def compute_kpi_summary(
     avg_adr = round(adr_revenue / total_sold_dm, 2) if total_sold_dm > 0 else None
 
     # Room/Dorm ADR from reservation_daily (same source for both revenue & nights)
-    # This avoids mismatch between Insights total_sold and compute_day rooms_sold/dorms_sold
+    # Display ADR: excludes blogger/house-use/special-case (shows paying-guest ADR)
+    # Forecast ADR: includes all sources so ADR scope matches OCC scope (which includes comped stays)
     room_adr = dorm_adr = None
+    forecast_room_adr = forecast_dorm_adr = None
     if total_room_count > 0 and total_dorm_count > 0:
-        room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day, last_day)
+        room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day, last_day, exclude_adr_sources=True)
+        forecast_room_adr, forecast_dorm_adr = _get_room_dorm_adr(db, branch_id, first_day, last_day, exclude_adr_sources=False)
     elif total_room_count > 0 and total_dorm_count == 0:
         # Room-only branch (e.g. Osaka): Room ADR = Overall ADR
         room_adr = avg_adr
+        forecast_room_adr = avg_adr
 
     avg_occ = predicted_occ_pct
 
     # Forecasts — try split first, fall back to single
+    # Use forecast ADR (no source exclusion) so forecast matches OCC scope
     room_forecast = dorm_forecast = None
     has_split = (total_room_count > 0 and total_dorm_count > 0
                  and predicted_room_occ is not None
                  and predicted_dorm_occ is not None)
 
-    if has_split and room_adr and dorm_adr:
-        room_forecast = round(predicted_room_occ * total_room_count * room_adr * total_days, 2)
-        dorm_forecast = round(predicted_dorm_occ * total_dorm_count * dorm_adr * total_days, 2)
+    if has_split and forecast_room_adr and forecast_dorm_adr:
+        room_forecast = round(predicted_room_occ * total_room_count * forecast_room_adr * total_days, 2)
+        dorm_forecast = round(predicted_dorm_occ * total_dorm_count * forecast_dorm_adr * total_days, 2)
         occ_forecast = round(room_forecast + dorm_forecast, 2)
     else:
         occ_forecast = calculate_occ_forecast(
@@ -522,6 +543,8 @@ def compute_kpi_summary(
         "occ_forecast_native": occ_forecast,
         "room_forecast_native": room_forecast,
         "dorm_forecast_native": dorm_forecast,
+        "forecast_room_adr": forecast_room_adr,
+        "forecast_dorm_adr": forecast_dorm_adr,
         # Room/Dorm capability flag
         "has_room_dorm_split": has_split and room_adr is not None and dorm_adr is not None,
     }
