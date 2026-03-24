@@ -221,8 +221,8 @@ def _find_or_create_combo(
         AdCombo.material_id == material.id,
     ).first()
     if existing:
-        # Update meta_ad_name if not set yet
-        if not existing.meta_ad_name and ad_name:
+        # Always sync meta_ad_name from Meta (source of truth)
+        if ad_name and existing.meta_ad_name != ad_name:
             existing.meta_ad_name = ad_name
             existing.updated_at = datetime.now(timezone.utc)
         return None  # signal: not newly created
