@@ -22,4 +22,4 @@ COPY --from=frontend-builder /frontend/dist /app/frontend_dist
 
 EXPOSE 8000
 
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
