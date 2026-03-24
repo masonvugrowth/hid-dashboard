@@ -19,21 +19,16 @@ depends_on = None
 
 
 def upgrade():
-    # Drop unique index/constraint on meta_ad_name (may be named differently)
+    # Safe idempotent drop — constraint may already be gone
     conn = op.get_bind()
-    # Check which constraint/index name exists
-    result = conn.execute(sa.text(
-        "SELECT indexname FROM pg_indexes "
-        "WHERE tablename='ad_combos' AND indexdef LIKE '%meta_ad_name%'"
-    ))
-    for row in result:
-        op.drop_index(row[0], table_name="ad_combos")
 
-    # Also try dropping constraint directly (in case it's a table constraint)
-    try:
+    # Check if constraint still exists before trying to drop
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.table_constraints "
+        "WHERE table_name='ad_combos' AND constraint_name='ad_combos_meta_ad_name_key'"
+    ))
+    if result.fetchone():
         op.drop_constraint("ad_combos_meta_ad_name_key", "ad_combos", type_="unique")
-    except Exception:
-        pass  # Already dropped via index
 
 
 def downgrade():
