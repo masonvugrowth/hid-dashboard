@@ -1,6 +1,7 @@
 """
 Email Marketing router — GHL email performance analytics.
-Pulls cumulative stats from GoHighLevel API via daily cron sync.
+Pulls stats from GoHighLevel API via daily cron sync.
+Supports both workflow campaigns and bulk email campaigns.
 """
 import logging
 from datetime import date, datetime, timedelta, timezone
@@ -27,22 +28,38 @@ def _envelope(data):
     }
 
 
+def _apply_filters(q, date_from, date_to, campaign_type=None, workflow_id=None):
+    """Apply common filters to a query."""
+    q = q.filter(EmailCampaignStats.stat_date.between(date_from, date_to))
+    if campaign_type:
+        q = q.filter(EmailCampaignStats.campaign_type == campaign_type)
+    if workflow_id:
+        q = q.filter(EmailCampaignStats.workflow_id == workflow_id)
+    return q
+
+
+def _default_dates(date_from, date_to):
+    today = datetime.now(timezone.utc).date()
+    if date_to is None:
+        date_to = today
+    if date_from is None:
+        date_from = date_to - timedelta(days=90)
+    return date_from, date_to
+
+
 # ── Summary KPIs ─────────────────────────────────────────────────────────────
 
 @router.get("/summary")
 def email_summary(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
+    campaign_type: Optional[str] = Query(None, description="'workflow' or 'bulk'"),
     workflow_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     """Overall email marketing KPIs."""
     try:
-        today = datetime.now(timezone.utc).date()
-        if date_to is None:
-            date_to = today
-        if date_from is None:
-            date_from = date_to - timedelta(days=30)
+        date_from, date_to = _default_dates(date_from, date_to)
 
         q = db.query(
             func.coalesce(func.sum(EmailCampaignStats.total_sent), 0).label("total_sent"),
@@ -54,11 +71,8 @@ def email_summary(
             func.coalesce(func.sum(EmailCampaignStats.total_bounced), 0).label("total_bounced"),
             func.coalesce(func.sum(EmailCampaignStats.total_unsubscribed), 0).label("total_unsubscribed"),
             func.coalesce(func.sum(EmailCampaignStats.total_complained), 0).label("total_complained"),
-        ).filter(
-            EmailCampaignStats.stat_date.between(date_from, date_to),
         )
-        if workflow_id:
-            q = q.filter(EmailCampaignStats.workflow_id == workflow_id)
+        q = _apply_filters(q, date_from, date_to, campaign_type, workflow_id)
 
         row = q.one()
         sent = int(row.total_sent)
@@ -92,16 +106,13 @@ def email_summary(
 def email_daily(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
+    campaign_type: Optional[str] = Query(None),
     workflow_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     """Daily email stats trend."""
     try:
-        today = datetime.now(timezone.utc).date()
-        if date_to is None:
-            date_to = today
-        if date_from is None:
-            date_from = date_to - timedelta(days=30)
+        date_from, date_to = _default_dates(date_from, date_to)
 
         q = db.query(
             EmailCampaignStats.stat_date,
@@ -111,12 +122,8 @@ def email_daily(
             func.sum(EmailCampaignStats.total_clicked).label("clicked"),
             func.sum(EmailCampaignStats.total_bounced).label("bounced"),
             func.sum(EmailCampaignStats.total_unsubscribed).label("unsubscribed"),
-        ).filter(
-            EmailCampaignStats.stat_date.between(date_from, date_to),
         )
-        if workflow_id:
-            q = q.filter(EmailCampaignStats.workflow_id == workflow_id)
-
+        q = _apply_filters(q, date_from, date_to, campaign_type, workflow_id)
         q = q.group_by(EmailCampaignStats.stat_date).order_by(EmailCampaignStats.stat_date)
         rows = q.all()
 
@@ -125,14 +132,13 @@ def email_daily(
             sent = int(r.sent or 0)
             opened = int(r.opened or 0)
             clicked = int(r.clicked or 0)
-            bounced = int(r.bounced or 0)
             data.append({
                 "date": r.stat_date.isoformat(),
                 "sent": sent,
                 "delivered": int(r.delivered or 0),
                 "opened": opened,
                 "clicked": clicked,
-                "bounced": bounced,
+                "bounced": int(r.bounced or 0),
                 "unsubscribed": int(r.unsubscribed or 0),
                 "open_rate": round(opened / sent, 4) if sent > 0 else 0,
                 "click_rate": round(clicked / sent, 4) if sent > 0 else 0,
@@ -145,25 +151,23 @@ def email_daily(
                 "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
-# ── By Workflow ──────────────────────────────────────────────────────────────
+# ── By Campaign (workflow + bulk combined) ───────────────────────────────────
 
-@router.get("/by-workflow")
-def email_by_workflow(
+@router.get("/by-campaign")
+def email_by_campaign(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
+    campaign_type: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """Per-workflow breakdown of email stats."""
+    """Per-campaign breakdown with campaign_type."""
     try:
-        today = datetime.now(timezone.utc).date()
-        if date_to is None:
-            date_to = today
-        if date_from is None:
-            date_from = date_to - timedelta(days=30)
+        date_from, date_to = _default_dates(date_from, date_to)
 
         q = db.query(
             EmailCampaignStats.workflow_id,
             func.max(EmailCampaignStats.workflow_name).label("workflow_name"),
+            func.max(EmailCampaignStats.campaign_type).label("campaign_type"),
             func.sum(EmailCampaignStats.total_sent).label("sent"),
             func.sum(EmailCampaignStats.total_delivered).label("delivered"),
             func.sum(EmailCampaignStats.total_opened).label("opened"),
@@ -172,11 +176,9 @@ def email_by_workflow(
             func.sum(EmailCampaignStats.unique_clicked).label("unique_clicked"),
             func.sum(EmailCampaignStats.total_bounced).label("bounced"),
             func.sum(EmailCampaignStats.total_unsubscribed).label("unsubscribed"),
-        ).filter(
-            EmailCampaignStats.stat_date.between(date_from, date_to),
-        ).group_by(
-            EmailCampaignStats.workflow_id,
-        ).order_by(desc("sent"))
+        )
+        q = _apply_filters(q, date_from, date_to, campaign_type)
+        q = q.group_by(EmailCampaignStats.workflow_id).order_by(desc("sent"))
 
         rows = q.all()
         data = []
@@ -189,6 +191,7 @@ def email_by_workflow(
             data.append({
                 "workflow_id": r.workflow_id,
                 "workflow_name": r.workflow_name or r.workflow_id,
+                "campaign_type": r.campaign_type,
                 "sent": sent,
                 "delivered": int(r.delivered or 0),
                 "opened": int(r.opened or 0),
@@ -205,26 +208,38 @@ def email_by_workflow(
 
         return _envelope(data)
     except Exception as e:
-        logger.exception("email_by_workflow failed")
+        logger.exception("email_by_campaign failed")
         return {"success": False, "data": None, "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
-# ── GHL API Sync (pull stats from GHL) ────────────────────────────────────────
+# Keep legacy endpoint for backward compat
+@router.get("/by-workflow")
+def email_by_workflow(
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    campaign_type: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Alias for /by-campaign."""
+    return email_by_campaign(date_from, date_to, campaign_type, db)
+
+
+# ── GHL API Sync ─────────────────────────────────────────────────────────────
 
 @router.post("/sync-ghl")
 def sync_from_ghl(
     secret: str = Query(""),
     db: Session = Depends(get_db),
 ):
-    """Manually trigger GHL email stats sync (pulls from GHL API)."""
+    """Manually trigger GHL email stats sync (workflows + bulk campaigns)."""
     try:
         if settings.GHL_WEBHOOK_SECRET and secret != settings.GHL_WEBHOOK_SECRET:
             raise HTTPException(status_code=401, detail="Invalid secret")
 
         from app.services.ghl_email_sync import sync_ghl_email_stats
         count = sync_ghl_email_stats(db)
-        return _envelope({"workflows_synced": count})
+        return _envelope({"items_synced": count})
     except HTTPException:
         raise
     except Exception as e:

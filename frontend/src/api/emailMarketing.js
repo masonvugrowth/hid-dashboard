@@ -7,5 +7,5 @@ export const getEmailSummary = (params = {}) =>
 export const getEmailDaily = (params = {}) =>
   axios.get(`${BASE}/daily`, { params }).then(r => r.data.data);
 
-export const getEmailByWorkflow = (params = {}) =>
-  axios.get(`${BASE}/by-workflow`, { params }).then(r => r.data.data);
+export const getEmailByCampaign = (params = {}) =>
+  axios.get(`${BASE}/by-campaign`, { params }).then(r => r.data.data);

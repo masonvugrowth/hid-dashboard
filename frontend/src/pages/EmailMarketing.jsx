@@ -1,12 +1,12 @@
 /**
  * Email Marketing Dashboard — GHL email performance analytics.
- * Daily sync from GoHighLevel API tracks cumulative stats per workflow.
+ * Shows both Workflow campaigns (automated) and Bulk campaigns (one-time blasts).
  */
 import { useEffect, useState } from "react";
 import {
   getEmailSummary,
   getEmailDaily,
-  getEmailByWorkflow,
+  getEmailByCampaign,
 } from "../api/emailMarketing";
 import TrendChart from "../components/TrendChart";
 
@@ -29,24 +29,33 @@ function badRate(rate, thresholds = [0.02, 0.05, 0.10]) {
   return "text-red-700 bg-red-50";
 }
 
-const TABS = ["overview", "workflows"];
-const TAB_LABELS = { overview: "Overview", workflows: "Workflows" };
+const TYPE_BADGE = {
+  workflow: "bg-indigo-50 text-indigo-700 border-indigo-200",
+  bulk: "bg-amber-50 text-amber-700 border-amber-200",
+};
+
+const TABS = ["overview", "campaigns"];
+const TAB_LABELS = { overview: "Overview", campaigns: "Campaigns" };
+const TYPE_FILTERS = ["", "workflow", "bulk"];
+const TYPE_LABELS = { "": "All", workflow: "Workflow", bulk: "Bulk" };
 
 export default function EmailMarketing() {
   const today = new Date().toISOString().slice(0, 10);
   const [dateFrom, setDateFrom] = useState(() => {
-    const d = new Date(); d.setDate(d.getDate() - 29);
+    const d = new Date(); d.setMonth(d.getMonth() - 3);
     return d.toISOString().slice(0, 10);
   });
   const [dateTo, setDateTo] = useState(today);
   const [tab, setTab] = useState("overview");
+  const [typeFilter, setTypeFilter] = useState("");
 
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState(null);
   const [daily, setDaily] = useState([]);
-  const [workflows, setWorkflows] = useState([]);
+  const [campaigns, setCampaigns] = useState([]);
 
   const params = { date_from: dateFrom, date_to: dateTo };
+  if (typeFilter) params.campaign_type = typeFilter;
 
   useEffect(() => {
     setLoading(true);
@@ -55,22 +64,22 @@ export default function EmailMarketing() {
       Promise.all([
         getEmailSummary(params),
         getEmailDaily(params),
-        getEmailByWorkflow(params),
+        getEmailByCampaign(params),
       ])
-        .then(([s, d, w]) => {
+        .then(([s, d, c]) => {
           setSummary(s);
           setDaily(d || []);
-          setWorkflows(w || []);
+          setCampaigns(c || []);
         })
         .catch(console.error)
         .finally(() => setLoading(false));
-    } else if (tab === "workflows") {
-      getEmailByWorkflow(params)
-        .then(w => setWorkflows(w || []))
+    } else if (tab === "campaigns") {
+      getEmailByCampaign(params)
+        .then(c => setCampaigns(c || []))
         .catch(console.error)
         .finally(() => setLoading(false));
     }
-  }, [tab, dateFrom, dateTo]);
+  }, [tab, dateFrom, dateTo, typeFilter]);
 
   return (
     <div className="space-y-6">
@@ -78,7 +87,7 @@ export default function EmailMarketing() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-800">Email Marketing</h1>
-          <p className="text-sm text-gray-500">GHL workflow email performance (Saigon)</p>
+          <p className="text-sm text-gray-500">GHL email performance — Saigon</p>
         </div>
         <div className="flex gap-2 items-center text-sm">
           <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
@@ -89,31 +98,46 @@ export default function EmailMarketing() {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
-        {TABS.map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              tab === t ? "bg-white text-gray-800 shadow-sm" : "text-gray-500 hover:text-gray-700"
-            }`}>
-            {TAB_LABELS[t]}
-          </button>
-        ))}
+      {/* Tabs + Type Filter */}
+      <div className="flex items-center gap-4 flex-wrap">
+        <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+          {TABS.map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                tab === t ? "bg-white text-gray-800 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              }`}>
+              {TAB_LABELS[t]}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex gap-1">
+          {TYPE_FILTERS.map(f => (
+            <button key={f} onClick={() => setTypeFilter(f)}
+              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                typeFilter === f
+                  ? "bg-gray-800 text-white border-gray-800"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+              }`}>
+              {TYPE_LABELS[f]}
+            </button>
+          ))}
+        </div>
       </div>
 
       {loading ? (
         <div className="text-gray-400 animate-pulse">Loading...</div>
       ) : tab === "overview" ? (
-        <OverviewTab summary={summary} daily={daily} workflows={workflows} />
+        <OverviewTab summary={summary} daily={daily} campaigns={campaigns} />
       ) : (
-        <WorkflowsTab workflows={workflows} />
+        <CampaignsTab campaigns={campaigns} />
       )}
     </div>
   );
 }
 
 /* ── Overview Tab ────────────────────────────────────────────────────────── */
-function OverviewTab({ summary, daily, workflows }) {
+function OverviewTab({ summary, daily, campaigns }) {
   if (!summary || summary.total_sent === 0) {
     return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No email data for this range.</div>;
   }
@@ -127,6 +151,12 @@ function OverviewTab({ summary, daily, workflows }) {
     { label: "Unsub Rate", value: pct(summary.unsubscribe_rate), color: badRate(summary.unsubscribe_rate) },
   ];
 
+  // Split campaigns by type for summary cards
+  const workflowCampaigns = campaigns.filter(c => c.campaign_type === "workflow");
+  const bulkCampaigns = campaigns.filter(c => c.campaign_type === "bulk");
+  const wfSent = workflowCampaigns.reduce((s, c) => s + c.sent, 0);
+  const bulkSent = bulkCampaigns.reduce((s, c) => s + c.sent, 0);
+
   return (
     <div className="space-y-6">
       {/* KPI Cards */}
@@ -137,6 +167,26 @@ function OverviewTab({ summary, daily, workflows }) {
             <p className={`text-lg font-bold ${k.color} px-2 py-0.5 rounded inline-block`}>{k.value}</p>
           </div>
         ))}
+      </div>
+
+      {/* Type Breakdown */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="px-2 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">Workflow</span>
+            <span className="text-xs text-gray-400">Automated nurture flows</span>
+          </div>
+          <p className="text-2xl font-bold text-gray-800">{wfSent.toLocaleString()} <span className="text-sm font-normal text-gray-500">emails</span></p>
+          <p className="text-xs text-gray-500 mt-1">{workflowCampaigns.length} workflows active</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">Bulk</span>
+            <span className="text-xs text-gray-400">One-time blast campaigns</span>
+          </div>
+          <p className="text-2xl font-bold text-gray-800">{bulkSent.toLocaleString()} <span className="text-sm font-normal text-gray-500">emails</span></p>
+          <p className="text-xs text-gray-500 mt-1">{bulkCampaigns.length} campaigns sent</p>
+        </div>
       </div>
 
       {/* Charts */}
@@ -161,14 +211,15 @@ function OverviewTab({ summary, daily, workflows }) {
         />
       </div>
 
-      {/* Top Workflows */}
-      {workflows.length > 0 && (
+      {/* Top Campaigns */}
+      {campaigns.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
-          <p className="px-4 pt-4 text-sm font-semibold text-gray-700">Top Workflows</p>
+          <p className="px-4 pt-4 text-sm font-semibold text-gray-700">Top Campaigns</p>
           <table className="w-full text-sm mt-2">
             <thead>
               <tr className="text-xs text-gray-500 uppercase tracking-wide border-b border-gray-100">
-                <th className="px-4 py-2 text-left">Workflow</th>
+                <th className="px-4 py-2 text-left">Campaign</th>
+                <th className="px-4 py-2 text-left">Type</th>
                 <th className="px-4 py-2 text-right">Sent</th>
                 <th className="px-4 py-2 text-right">Opens</th>
                 <th className="px-4 py-2 text-right">Open%</th>
@@ -178,23 +229,36 @@ function OverviewTab({ summary, daily, workflows }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {workflows.slice(0, 10).map(w => (
+              {campaigns.slice(0, 15).map(w => (
                 <tr key={w.workflow_id} className="hover:bg-gray-50">
                   <td className="px-4 py-2 text-gray-700 font-medium text-xs truncate max-w-[250px]">
                     {w.workflow_name}
                   </td>
+                  <td className="px-4 py-2">
+                    <span className={`px-2 py-0.5 rounded text-xs font-medium border ${TYPE_BADGE[w.campaign_type] || "bg-gray-50 text-gray-600"}`}>
+                      {w.campaign_type}
+                    </span>
+                  </td>
                   <td className="px-4 py-2 text-right tabular-nums">{w.sent.toLocaleString()}</td>
                   <td className="px-4 py-2 text-right tabular-nums text-green-700">{w.unique_opened.toLocaleString()}</td>
                   <td className="px-4 py-2 text-right">
-                    <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${rateBand(w.open_rate, [0.25, 0.15, 0.08])}`}>
-                      {pct(w.open_rate)}
-                    </span>
+                    {w.campaign_type === "bulk" && w.open_rate === 0 ? (
+                      <span className="text-xs text-gray-400">n/a</span>
+                    ) : (
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${rateBand(w.open_rate, [0.25, 0.15, 0.08])}`}>
+                        {pct(w.open_rate)}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-right tabular-nums text-purple-700">{w.unique_clicked.toLocaleString()}</td>
                   <td className="px-4 py-2 text-right">
-                    <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${rateBand(w.click_rate, [0.05, 0.02, 0.01])}`}>
-                      {pct(w.click_rate)}
-                    </span>
+                    {w.campaign_type === "bulk" && w.click_rate === 0 ? (
+                      <span className="text-xs text-gray-400">n/a</span>
+                    ) : (
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${rateBand(w.click_rate, [0.05, 0.02, 0.01])}`}>
+                        {pct(w.click_rate)}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-right">
                     <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${badRate(w.bounce_rate)}`}>
@@ -211,10 +275,10 @@ function OverviewTab({ summary, daily, workflows }) {
   );
 }
 
-/* ── Workflows Tab ───────────────────────────────────────────────────────── */
-function WorkflowsTab({ workflows }) {
-  if (workflows.length === 0) {
-    return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No workflow data.</div>;
+/* ── Campaigns Tab ───────────────────────────────────────────────────────── */
+function CampaignsTab({ campaigns }) {
+  if (campaigns.length === 0) {
+    return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No campaign data.</div>;
   }
 
   return (
@@ -222,7 +286,8 @@ function WorkflowsTab({ workflows }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="text-xs text-gray-500 uppercase tracking-wide border-b border-gray-100">
-            <th className="px-4 py-3 text-left">Workflow</th>
+            <th className="px-4 py-3 text-left">Campaign</th>
+            <th className="px-4 py-3 text-left">Type</th>
             <th className="px-4 py-3 text-right">Sent</th>
             <th className="px-4 py-3 text-right">Delivered</th>
             <th className="px-4 py-3 text-right">Opens</th>
@@ -232,28 +297,40 @@ function WorkflowsTab({ workflows }) {
             <th className="px-4 py-3 text-right">Bounces</th>
             <th className="px-4 py-3 text-right">Bounce%</th>
             <th className="px-4 py-3 text-right">Unsubs</th>
-            <th className="px-4 py-3 text-right">Unsub%</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-50">
-          {workflows.map(w => (
+          {campaigns.map(w => (
             <tr key={w.workflow_id} className="hover:bg-gray-50">
               <td className="px-4 py-2.5 text-gray-700 font-medium text-xs truncate max-w-[250px]">
                 {w.workflow_name}
+              </td>
+              <td className="px-4 py-2.5">
+                <span className={`px-2 py-0.5 rounded text-xs font-medium border ${TYPE_BADGE[w.campaign_type] || "bg-gray-50 text-gray-600"}`}>
+                  {w.campaign_type}
+                </span>
               </td>
               <td className="px-4 py-2.5 text-right tabular-nums">{w.sent.toLocaleString()}</td>
               <td className="px-4 py-2.5 text-right tabular-nums">{w.delivered.toLocaleString()}</td>
               <td className="px-4 py-2.5 text-right tabular-nums text-green-700">{w.unique_opened.toLocaleString()}</td>
               <td className="px-4 py-2.5 text-right">
-                <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${rateBand(w.open_rate, [0.25, 0.15, 0.08])}`}>
-                  {pct(w.open_rate)}
-                </span>
+                {w.campaign_type === "bulk" && w.open_rate === 0 ? (
+                  <span className="text-xs text-gray-400">n/a</span>
+                ) : (
+                  <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${rateBand(w.open_rate, [0.25, 0.15, 0.08])}`}>
+                    {pct(w.open_rate)}
+                  </span>
+                )}
               </td>
               <td className="px-4 py-2.5 text-right tabular-nums text-purple-700">{w.unique_clicked.toLocaleString()}</td>
               <td className="px-4 py-2.5 text-right">
-                <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${rateBand(w.click_rate, [0.05, 0.02, 0.01])}`}>
-                  {pct(w.click_rate)}
-                </span>
+                {w.campaign_type === "bulk" && w.click_rate === 0 ? (
+                  <span className="text-xs text-gray-400">n/a</span>
+                ) : (
+                  <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${rateBand(w.click_rate, [0.05, 0.02, 0.01])}`}>
+                    {pct(w.click_rate)}
+                  </span>
+                )}
               </td>
               <td className="px-4 py-2.5 text-right tabular-nums text-red-600">{w.bounced.toLocaleString()}</td>
               <td className="px-4 py-2.5 text-right">
@@ -262,11 +339,6 @@ function WorkflowsTab({ workflows }) {
                 </span>
               </td>
               <td className="px-4 py-2.5 text-right tabular-nums text-orange-600">{w.unsubscribed.toLocaleString()}</td>
-              <td className="px-4 py-2.5 text-right">
-                <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${badRate(w.unsubscribe_rate)}`}>
-                  {pct(w.unsubscribe_rate)}
-                </span>
-              </td>
             </tr>
           ))}
         </tbody>
