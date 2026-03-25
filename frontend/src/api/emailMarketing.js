@@ -9,12 +9,3 @@ export const getEmailDaily = (params = {}) =>
 
 export const getEmailByWorkflow = (params = {}) =>
   axios.get(`${BASE}/by-workflow`, { params }).then(r => r.data.data);
-
-export const getEmailEvents = (params = {}) =>
-  axios.get(`${BASE}/events`, { params }).then(r => r.data.data);
-
-export const getEmailWorkflowEvents = (workflowId, params = {}) =>
-  axios.get(`${BASE}/workflow/${workflowId}/events`, { params }).then(r => r.data.data);
-
-export const triggerAggregation = (params = {}) =>
-  axios.post(`${BASE}/aggregate`, null, { params }).then(r => r.data.data);

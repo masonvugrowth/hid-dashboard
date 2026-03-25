@@ -1,13 +1,12 @@
 /**
  * Email Marketing Dashboard — GHL email performance analytics.
- * Tracks sends, opens, clicks, bounces, unsubscribes from GoHighLevel workflows.
+ * Daily sync from GoHighLevel API tracks cumulative stats per workflow.
  */
 import { useEffect, useState } from "react";
 import {
   getEmailSummary,
   getEmailDaily,
   getEmailByWorkflow,
-  getEmailEvents,
 } from "../api/emailMarketing";
 import TrendChart from "../components/TrendChart";
 
@@ -30,18 +29,8 @@ function badRate(rate, thresholds = [0.02, 0.05, 0.10]) {
   return "text-red-700 bg-red-50";
 }
 
-const EVENT_COLORS = {
-  sent: "bg-gray-100 text-gray-700",
-  delivered: "bg-blue-50 text-blue-700",
-  opened: "bg-green-50 text-green-700",
-  clicked: "bg-purple-50 text-purple-700",
-  bounced: "bg-red-50 text-red-700",
-  unsubscribed: "bg-orange-50 text-orange-700",
-  complained: "bg-red-100 text-red-800",
-};
-
-const TABS = ["overview", "workflows", "events"];
-const TAB_LABELS = { overview: "Overview", workflows: "Workflows", events: "Events" };
+const TABS = ["overview", "workflows"];
+const TAB_LABELS = { overview: "Overview", workflows: "Workflows" };
 
 export default function EmailMarketing() {
   const today = new Date().toISOString().slice(0, 10);
@@ -56,9 +45,6 @@ export default function EmailMarketing() {
   const [summary, setSummary] = useState(null);
   const [daily, setDaily] = useState([]);
   const [workflows, setWorkflows] = useState([]);
-  const [events, setEvents] = useState({ total: 0, events: [] });
-  const [eventFilter, setEventFilter] = useState("");
-  const [eventsPage, setEventsPage] = useState(0);
 
   const params = { date_from: dateFrom, date_to: dateTo };
 
@@ -83,15 +69,8 @@ export default function EmailMarketing() {
         .then(w => setWorkflows(w || []))
         .catch(console.error)
         .finally(() => setLoading(false));
-    } else if (tab === "events") {
-      const ep = { ...params, limit: 50, offset: eventsPage * 50 };
-      if (eventFilter) ep.event_type = eventFilter;
-      getEmailEvents(ep)
-        .then(e => setEvents(e || { total: 0, events: [] }))
-        .catch(console.error)
-        .finally(() => setLoading(false));
     }
-  }, [tab, dateFrom, dateTo, eventFilter, eventsPage]);
+  }, [tab, dateFrom, dateTo]);
 
   return (
     <div className="space-y-6">
@@ -99,7 +78,7 @@ export default function EmailMarketing() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-800">Email Marketing</h1>
-          <p className="text-sm text-gray-500">GHL workflow email performance tracking</p>
+          <p className="text-sm text-gray-500">GHL workflow email performance (Saigon)</p>
         </div>
         <div className="flex gap-2 items-center text-sm">
           <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
@@ -113,7 +92,7 @@ export default function EmailMarketing() {
       {/* Tabs */}
       <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
         {TABS.map(t => (
-          <button key={t} onClick={() => { setTab(t); setEventsPage(0); }}
+          <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
               tab === t ? "bg-white text-gray-800 shadow-sm" : "text-gray-500 hover:text-gray-700"
             }`}>
@@ -126,16 +105,8 @@ export default function EmailMarketing() {
         <div className="text-gray-400 animate-pulse">Loading...</div>
       ) : tab === "overview" ? (
         <OverviewTab summary={summary} daily={daily} workflows={workflows} />
-      ) : tab === "workflows" ? (
-        <WorkflowsTab workflows={workflows} />
       ) : (
-        <EventsTab
-          events={events}
-          eventFilter={eventFilter}
-          setEventFilter={setEventFilter}
-          page={eventsPage}
-          setPage={setEventsPage}
-        />
+        <WorkflowsTab workflows={workflows} />
       )}
     </div>
   );
@@ -143,7 +114,7 @@ export default function EmailMarketing() {
 
 /* ── Overview Tab ────────────────────────────────────────────────────────── */
 function OverviewTab({ summary, daily, workflows }) {
-  if (!summary) {
+  if (!summary || summary.total_sent === 0) {
     return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No email data for this range.</div>;
   }
 
@@ -300,85 +271,6 @@ function WorkflowsTab({ workflows }) {
           ))}
         </tbody>
       </table>
-    </div>
-  );
-}
-
-/* ── Events Tab ──────────────────────────────────────────────────────────── */
-function EventsTab({ events, eventFilter, setEventFilter, page, setPage }) {
-  const { total, events: items } = events;
-  const EVENT_TYPES = ["", "sent", "delivered", "opened", "clicked", "bounced", "unsubscribed", "complained"];
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-3 flex-wrap">
-        <p className="text-sm text-gray-500">{total} total events</p>
-        <select value={eventFilter} onChange={e => { setEventFilter(e.target.value); setPage(0); }}
-          className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm">
-          <option value="">All Types</option>
-          {EVENT_TYPES.filter(Boolean).map(t => (
-            <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
-          ))}
-        </select>
-      </div>
-
-      {items.length === 0 ? (
-        <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No events found.</div>
-      ) : (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-xs text-gray-500 uppercase tracking-wide border-b border-gray-100">
-                <th className="px-4 py-3 text-left">Timestamp</th>
-                <th className="px-4 py-3 text-left">Type</th>
-                <th className="px-4 py-3 text-left">Contact</th>
-                <th className="px-4 py-3 text-left">Email</th>
-                <th className="px-4 py-3 text-left">Workflow</th>
-                <th className="px-4 py-3 text-left">Subject</th>
-                <th className="px-4 py-3 text-left">Details</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {items.map(e => (
-                <tr key={e.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-2 text-gray-600 tabular-nums text-xs whitespace-nowrap">
-                    {e.event_timestamp ? new Date(e.event_timestamp).toLocaleString("vi-VN") : "—"}
-                  </td>
-                  <td className="px-4 py-2">
-                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${EVENT_COLORS[e.event_type] || "bg-gray-100 text-gray-600"}`}>
-                      {e.event_type}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2 text-gray-700 text-xs">{e.contact_name || "—"}</td>
-                  <td className="px-4 py-2 text-gray-600 text-xs truncate max-w-[150px]">{e.contact_email || "—"}</td>
-                  <td className="px-4 py-2 text-gray-600 text-xs truncate max-w-[200px]">{e.workflow_name || "—"}</td>
-                  <td className="px-4 py-2 text-gray-600 text-xs truncate max-w-[200px]">{e.email_subject || "—"}</td>
-                  <td className="px-4 py-2 text-gray-500 text-xs truncate max-w-[150px]">
-                    {e.link_url || e.bounce_reason || "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Pagination */}
-      {total > 50 && (
-        <div className="flex items-center gap-2 justify-center">
-          <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0}
-            className="px-3 py-1 rounded border text-sm disabled:opacity-40">
-            Prev
-          </button>
-          <span className="text-sm text-gray-500">
-            Page {page + 1} of {Math.ceil(total / 50)}
-          </span>
-          <button onClick={() => setPage(page + 1)} disabled={(page + 1) * 50 >= total}
-            className="px-3 py-1 rounded border text-sm disabled:opacity-40">
-            Next
-          </button>
-        </div>
-      )}
     </div>
   );
 }
