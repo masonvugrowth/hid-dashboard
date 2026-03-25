@@ -326,10 +326,26 @@ def compute_next_month_forecast(
         db, branch_id, next_year, next_month,
     )
 
-    # Room/Dorm split still from reservation_daily (Insights doesn't split)
+    # Room/Dorm split: use reservation_daily for the RATIO, then scale to Insights ADR
     if has_split:
-        room_adr, dorm_adr, room_rev, room_sold, dorm_rev, dorm_sold = \
+        raw_room_adr, raw_dorm_adr, room_rev, room_sold, dorm_rev, dorm_sold = \
             _get_room_dorm_adr_from_daily(db, branch_id, first_day_next, last_day_next)
+
+        daily_total_rev = room_rev + dorm_rev
+        if daily_total_rev > 0 and total_adr and raw_room_adr and raw_dorm_adr:
+            # Scale reservation_daily ADRs so weighted avg = Insights ADR
+            daily_total_sold = room_sold + dorm_sold
+            daily_avg_adr = daily_total_rev / daily_total_sold if daily_total_sold else 1
+            scale = total_adr / daily_avg_adr if daily_avg_adr else 1
+            room_adr = round(raw_room_adr * scale, 2)
+            dorm_adr = round(raw_dorm_adr * scale, 2)
+            logger.info(
+                "Room/Dorm ADR scaled: raw_room=%s raw_dorm=%s → room=%s dorm=%s (scale=%.4f)",
+                raw_room_adr, raw_dorm_adr, room_adr, dorm_adr, scale,
+            )
+        else:
+            room_adr = raw_room_adr
+            dorm_adr = raw_dorm_adr
 
     # For rooms-only branches, room_adr = total_adr
     if total_room_count > 0 and total_dorm_count == 0:
@@ -435,7 +451,7 @@ def compute_kpi_summary(
     vnd_rate = get_cached_rate(branch_obj.currency or "USD", "VND") if branch_obj else None
     actual_vnd = round(actual_native * vnd_rate, 2) if vnd_rate and actual_native else 0.0
 
-    # Room/Dorm split ADR — still from reservation_daily (Insights doesn't split)
+    # Room/Dorm split ADR: use reservation_daily for RATIO, scale to Insights ADR
     room_adr = dorm_adr = None
     has_split = total_room_count > 0 and total_dorm_count > 0
 
@@ -443,8 +459,19 @@ def compute_kpi_summary(
     room_sold = dorm_sold = 0
 
     if has_split:
-        room_adr, dorm_adr, room_rev, room_sold, dorm_rev, dorm_sold = \
+        raw_room_adr, raw_dorm_adr, room_rev, room_sold, dorm_rev, dorm_sold = \
             _get_room_dorm_adr_from_daily(db, branch_id, first_day, last_day)
+
+        daily_total_rev = room_rev + dorm_rev
+        if daily_total_rev > 0 and avg_adr and raw_room_adr and raw_dorm_adr:
+            daily_total_sold = room_sold + dorm_sold
+            daily_avg_adr = daily_total_rev / daily_total_sold if daily_total_sold else 1
+            scale = avg_adr / daily_avg_adr if daily_avg_adr else 1
+            room_adr = round(raw_room_adr * scale, 2)
+            dorm_adr = round(raw_dorm_adr * scale, 2)
+        else:
+            room_adr = raw_room_adr
+            dorm_adr = raw_dorm_adr
     elif total_room_count > 0 and total_dorm_count == 0:
         room_adr = avg_adr
 
