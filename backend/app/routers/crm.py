@@ -27,11 +27,12 @@ def _envelope(data):
 
 
 def _crm_filter():
-    """Filter for CRM-related room types: CRM, MEANDER'S FRIEND, Travel guide."""
+    """Filter for CRM-related room types: CRM, MEANDER'S FRIEND, Travel guide, Grand Open."""
     return or_(
         Reservation.room_type.ilike("%CRM%"),
         Reservation.room_type.ilike("%MEANDER'S FRIEND%"),
         Reservation.room_type.ilike("%Travel guide%"),
+        Reservation.room_type.ilike("%Grand Open%"),
     )
 
 
