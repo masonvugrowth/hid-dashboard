@@ -267,6 +267,25 @@ def setup_scheduler(app):
             replace_existing=True,
         )
 
+        # Daily GHL email stats sync at 5:00am (after aggregation)
+        def _ghl_email_sync_job():
+            from app.services.ghl_email_sync import sync_ghl_email_stats
+            db = SessionLocal()
+            try:
+                count = sync_ghl_email_stats(db)
+                logger.info("GHL email sync complete — %d workflows", count)
+            except Exception:
+                logger.exception("GHL email sync failed")
+            finally:
+                db.close()
+
+        scheduler.add_job(
+            _ghl_email_sync_job,
+            trigger=CronTrigger(hour=5, minute=0),
+            id="daily_ghl_email_sync",
+            replace_existing=True,
+        )
+
         scheduler.start()
         logger.info(
             "Scheduler started — "
@@ -275,7 +294,8 @@ def setup_scheduler(app):
             "Ads sync (Meta + Google) at 06:00 ICT, "
             "Insights refresh at 08:00 & 14:00 ICT, "
             "verdict sync at 03:30 ICT, "
-            "email stats at 04:00 ICT"
+            "email stats at 04:00 ICT, "
+            "GHL email sync at 05:00 ICT"
         )
 
     @app.on_event("shutdown")

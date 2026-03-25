@@ -457,6 +457,29 @@ def trigger_aggregation(
                 "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+# ── GHL API Sync (pull stats from GHL) ────────────────────────────────────────
+
+@router.post("/sync-ghl")
+def sync_from_ghl(
+    secret: str = Query(""),
+    db: Session = Depends(get_db),
+):
+    """Manually trigger GHL email stats sync (pulls from GHL API)."""
+    try:
+        if settings.GHL_WEBHOOK_SECRET and secret != settings.GHL_WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Invalid secret")
+
+        from app.services.ghl_email_sync import sync_ghl_email_stats
+        count = sync_ghl_email_stats(db)
+        return _envelope({"workflows_synced": count})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("GHL sync failed")
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
 # ── Cleanup (admin) ──────────────────────────────────────────────────────────
 
 @router.delete("/cleanup-test")
