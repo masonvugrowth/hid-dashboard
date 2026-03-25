@@ -457,6 +457,134 @@ def trigger_aggregation(
                 "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+# ── Cleanup (admin) ──────────────────────────────────────────────────────────
+
+@router.delete("/cleanup-test")
+def cleanup_test_data(
+    secret: str = Query(""),
+    db: Session = Depends(get_db),
+):
+    """Remove test data (contact_email=test@example.com or event_type=test_cleanup)."""
+    try:
+        if settings.GHL_WEBHOOK_SECRET and secret != settings.GHL_WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Invalid secret")
+
+        deleted = db.query(EmailEvent).filter(
+            (EmailEvent.contact_email == "test@example.com") |
+            (EmailEvent.event_type == "test_cleanup")
+        ).delete(synchronize_session=False)
+        db.commit()
+        return _envelope({"deleted": deleted})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("cleanup failed")
+        db.rollback()
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+# ── Seed Historical Data ─────────────────────────────────────────────────────
+
+@router.post("/seed-stats")
+def seed_campaign_stats(
+    request: Request,
+    secret: str = Query(""),
+    db: Session = Depends(get_db),
+):
+    """Seed email_campaign_stats with historical data (admin only).
+
+    Body: array of {workflow_id, workflow_name, stat_date, total_sent, total_delivered,
+    total_opened, unique_opened, total_clicked, unique_clicked, total_bounced,
+    total_unsubscribed, total_complained}
+    """
+    import asyncio
+    try:
+        if settings.GHL_WEBHOOK_SECRET and secret != settings.GHL_WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Invalid secret")
+
+        # Sync read of body
+        loop = asyncio.get_event_loop()
+        import json
+        # Use a sync approach
+        return {"success": False, "data": None, "error": "Use /seed-stats-sync instead",
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("seed failed")
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@router.post("/seed-stats-sync")
+async def seed_campaign_stats_sync(
+    request: Request,
+    secret: str = Query(""),
+    db: Session = Depends(get_db),
+):
+    """Seed email_campaign_stats with historical data.
+
+    Body: array of objects with workflow stats per date.
+    """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    try:
+        if settings.GHL_WEBHOOK_SECRET and secret != settings.GHL_WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Invalid secret")
+
+        rows = await request.json()
+        if not isinstance(rows, list):
+            return {"success": False, "data": None, "error": "Body must be a JSON array",
+                    "timestamp": datetime.now(timezone.utc).isoformat()}
+
+        count = 0
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            total_sent = row.get("total_sent", 0)
+            unique_opened = row.get("unique_opened", row.get("total_opened", 0))
+            unique_clicked = row.get("unique_clicked", row.get("total_clicked", 0))
+            total_bounced = row.get("total_bounced", 0)
+            total_unsub = row.get("total_unsubscribed", 0)
+
+            values = {
+                "workflow_id": row["workflow_id"],
+                "workflow_name": row.get("workflow_name"),
+                "stat_date": row["stat_date"],
+                "total_sent": total_sent,
+                "total_delivered": row.get("total_delivered", 0),
+                "total_opened": row.get("total_opened", 0),
+                "unique_opened": unique_opened,
+                "total_clicked": row.get("total_clicked", 0),
+                "unique_clicked": unique_clicked,
+                "total_bounced": total_bounced,
+                "total_unsubscribed": total_unsub,
+                "total_complained": row.get("total_complained", 0),
+                "open_rate": round(unique_opened / total_sent, 4) if total_sent > 0 else 0,
+                "click_rate": round(unique_clicked / total_sent, 4) if total_sent > 0 else 0,
+                "bounce_rate": round(total_bounced / total_sent, 4) if total_sent > 0 else 0,
+                "unsubscribe_rate": round(total_unsub / total_sent, 4) if total_sent > 0 else 0,
+                "computed_at": now,
+            }
+
+            stmt = pg_insert(EmailCampaignStats).values(**values)
+            stmt = stmt.on_conflict_do_update(
+                constraint="uq_email_stats_workflow_date",
+                set_={k: v for k, v in values.items() if k not in ("workflow_id", "stat_date")},
+            )
+            db.execute(stmt)
+            count += 1
+
+        db.commit()
+        return _envelope({"rows_seeded": count})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("seed failed")
+        db.rollback()
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
 # ── GHL Webhook Registration ─────────────────────────────────────────────────
 
 @router.post("/register-webhook")
