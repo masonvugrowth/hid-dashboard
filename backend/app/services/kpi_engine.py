@@ -211,13 +211,17 @@ def _get_room_dorm_adr(
 
 def get_actual_revenue(db: Session, branch_id: UUID, year: int, month: int) -> float:
     """
-    Full-month revenue using daily_metrics (per-night prorated).
-    Covers all days in the month — including future days already in DB
-    from upcoming confirmed reservations — so current month shows the
-    full-month total, not just MTD.
+    MTD revenue using daily_metrics (per-night prorated).
+    For current month: only sums up to today (not future confirmed bookings).
+    For past months: sums full month.
     """
+    today = _today()
     first_day = date(year, month, 1)
     last_day = date(year, month, _days_in_month(year, month))
+
+    # For current month, cap at today to avoid counting future bookings as actual
+    if year == today.year and month == today.month:
+        last_day = today
 
     result = db.query(
         func.coalesce(func.sum(DailyMetrics.revenue_native), 0)
@@ -230,9 +234,13 @@ def get_actual_revenue(db: Session, branch_id: UUID, year: int, month: int) -> f
 
 
 def get_actual_revenue_vnd(db: Session, branch_id: UUID, year: int, month: int) -> float:
-    """Full-month revenue in VND using daily_metrics (per-night prorated)."""
+    """MTD revenue in VND using daily_metrics (per-night prorated)."""
+    today = _today()
     first_day = date(year, month, 1)
     last_day = date(year, month, _days_in_month(year, month))
+
+    if year == today.year and month == today.month:
+        last_day = today
 
     result = db.query(
         func.coalesce(func.sum(DailyMetrics.revenue_vnd), 0)
@@ -315,46 +323,50 @@ def compute_next_month_forecast(
     first_day_next = date(next_year, next_month, 1)
     last_day_next = date(next_year, next_month, total_days)
 
-    # Overall ADR from daily_metrics (Cloudbeds Insights — includes future confirmed bookings)
-    metrics_agg = db.query(
+    # ── Current-month ADR (MTD, as baseline for fallback) ─────────────────
+    today = _today()
+    cur_first = date(cur_year, cur_month, 1)
+    cur_last_adr = min(date(cur_year, cur_month, _days_in_month(cur_year, cur_month)), today)
+    cur_dm = db.query(
         func.coalesce(func.sum(DailyMetrics.revenue_native), 0),
         func.coalesce(func.sum(DailyMetrics.total_sold), 0),
     ).filter(
         DailyMetrics.branch_id == branch_id,
-        DailyMetrics.date >= first_day_next,
-        DailyMetrics.date <= last_day_next,
+        DailyMetrics.date >= cur_first,
+        DailyMetrics.date <= cur_last_adr,
     ).one()
+    cur_dm_rev = float(cur_dm[0])
+    cur_dm_sold = int(cur_dm[1])
+    cur_excl, _, _ = _get_excluded_source_revenue(db, branch_id, cur_first, cur_last_adr)
+    cur_month_adr = round((cur_dm_rev - cur_excl) / cur_dm_sold, 2) if cur_dm_sold > 0 else None
 
-    dm_revenue = float(metrics_agg[0])
-    dm_sold = int(metrics_agg[1])
+    cur_room_adr = cur_dorm_adr = None
+    cur_fc_room_adr = cur_fc_dorm_adr = None
+    if total_room_count > 0 and total_dorm_count > 0:
+        cur_room_adr, cur_dorm_adr = _get_room_dorm_adr(db, branch_id, cur_first, cur_last_adr, exclude_adr_sources=True)
+        cur_fc_room_adr, cur_fc_dorm_adr = _get_room_dorm_adr(db, branch_id, cur_first, cur_last_adr, exclude_adr_sources=False)
 
-    # Subtract ADR-excluded source revenue (blogger, house use, special case)
-    excl_total, _, _ = _get_excluded_source_revenue(db, branch_id, first_day_next, last_day_next)
+    # ── Next-month booked revenue (for display) ────────────────────────
+    base_q = _revenue_query(db, branch_id, next_year, next_month)
+    rev_row = base_q.with_entities(
+        func.sum(Reservation.grand_total_native),
+        func.sum(Reservation.nights),
+    ).one()
+    total_revenue = float(rev_row[0] or 0)
+    total_nights = int(rev_row[1] or 0)
 
-    # Use daily_metrics if Insights data exists for next month, else fall back to reservations
-    if dm_sold > 0:
-        total_revenue = dm_revenue
-        total_nights = dm_sold
-        adr = round((dm_revenue - excl_total) / dm_sold, 2)
-    else:
-        # FALLBACK: ADR from already-booked next-month reservations
-        base_q = _revenue_query(db, branch_id, next_year, next_month)
-        rows = base_q.with_entities(
-            func.sum(Reservation.grand_total_native),
-            func.sum(Reservation.nights),
-        ).one()
-        total_revenue = float(rows[0] or 0)
-        total_nights = int(rows[1] or 0)
-        adr = round(total_revenue / total_nights, 2) if total_nights > 0 else None
+    # ── Next-month ADR: use current-month ADR as best estimate ─────────
+    # Current month has complete data; next month bookings are sparse/stale.
+    adr = cur_month_adr
 
-    # Room/Dorm ADR from reservation_daily (same source for revenue & nights)
-    # Display ADR: excludes blogger/house-use/special-case (paying-guest ADR)
-    # Forecast ADR: includes all sources so ADR scope matches OCC scope
+    # Room/Dorm ADR: use current-month ADR (reliable) for forecast
     room_adr = dorm_adr = None
     forecast_room_adr = forecast_dorm_adr = None
     if total_room_count > 0 and total_dorm_count > 0:
-        room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day_next, last_day_next, exclude_adr_sources=True)
-        forecast_room_adr, forecast_dorm_adr = _get_room_dorm_adr(db, branch_id, first_day_next, last_day_next, exclude_adr_sources=False)
+        room_adr = cur_room_adr
+        dorm_adr = cur_dorm_adr
+        forecast_room_adr = cur_fc_room_adr
+        forecast_dorm_adr = cur_fc_dorm_adr
     elif total_room_count > 0 and total_dorm_count == 0:
         room_adr = adr
         forecast_room_adr = adr
@@ -455,38 +467,35 @@ def compute_kpi_summary(
     )
     nights_booked = int(nights_row or 0)
 
-    # Overall ADR from Cloudbeds Insights (full month)
-    # Revenue for ADR: exclude blogger, house use, special case
-    # Rooms Sold (denominator): NO source exclusion
+    # ADR from Cloudbeds Insights — MTD only (up to today) for current month
+    # This ensures forecast ADR reflects actual selling rates, not future bookings
+    adr_last_day = min(last_day, today) if (year == today.year and month == today.month) else last_day
     metrics_agg = db.query(
         func.coalesce(func.sum(DailyMetrics.revenue_native), 0),
         func.coalesce(func.sum(DailyMetrics.total_sold), 0),
     ).filter(
         DailyMetrics.branch_id == branch_id,
         DailyMetrics.date >= first_day,
-        DailyMetrics.date <= last_day,
+        DailyMetrics.date <= adr_last_day,
     ).one()
 
     total_revenue_dm = float(metrics_agg[0])
     total_sold_dm = int(metrics_agg[1])       # no source exclusion
 
     # Subtract revenue from ADR-excluded sources (blogger, house use, special case)
-    excl_total, _, _ = _get_excluded_source_revenue(db, branch_id, first_day, last_day)
+    excl_total, _, _ = _get_excluded_source_revenue(db, branch_id, first_day, adr_last_day)
     adr_revenue = total_revenue_dm - excl_total
 
     # Overall ADR = (Insights Revenue − excluded sources) / Insights Rooms Sold
     avg_adr = round(adr_revenue / total_sold_dm, 2) if total_sold_dm > 0 else None
 
-    # Room/Dorm ADR from reservation_daily (same source for both revenue & nights)
-    # Display ADR: excludes blogger/house-use/special-case (shows paying-guest ADR)
-    # Forecast ADR: includes all sources so ADR scope matches OCC scope (which includes comped stays)
+    # Room/Dorm ADR from reservation_daily — MTD only for current month
     room_adr = dorm_adr = None
     forecast_room_adr = forecast_dorm_adr = None
     if total_room_count > 0 and total_dorm_count > 0:
-        room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day, last_day, exclude_adr_sources=True)
-        forecast_room_adr, forecast_dorm_adr = _get_room_dorm_adr(db, branch_id, first_day, last_day, exclude_adr_sources=False)
+        room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day, adr_last_day, exclude_adr_sources=True)
+        forecast_room_adr, forecast_dorm_adr = _get_room_dorm_adr(db, branch_id, first_day, adr_last_day, exclude_adr_sources=False)
     elif total_room_count > 0 and total_dorm_count == 0:
-        # Room-only branch (e.g. Osaka): Room ADR = Overall ADR
         room_adr = avg_adr
         forecast_room_adr = avg_adr
 
