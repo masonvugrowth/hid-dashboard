@@ -197,12 +197,15 @@ def sync_ghl_email_stats(db: Session) -> int:
 
     with httpx.Client(timeout=30) as client:
         for loc in locations:
-            logger.info("GHL email sync starting for %s (location=%s)", loc["name"], loc["location_id"])
-            wf_count = _sync_workflows(client, db, loc, today, now)
-            bulk_count = _sync_bulk_campaigns(client, db, loc, today, now)
-            loc_total = wf_count + bulk_count
-            total += loc_total
-            logger.info("GHL [%s]: %d workflows + %d bulk = %d", loc["name"], wf_count, bulk_count, loc_total)
+            try:
+                logger.info("GHL email sync starting for %s (location=%s)", loc["name"], loc["location_id"])
+                wf_count = _sync_workflows(client, db, loc, today, now)
+                bulk_count = _sync_bulk_campaigns(client, db, loc, today, now)
+                loc_total = wf_count + bulk_count
+                total += loc_total
+                logger.info("GHL [%s]: %d workflows + %d bulk = %d", loc["name"], wf_count, bulk_count, loc_total)
+            except Exception:
+                logger.exception("GHL sync failed for %s, continuing with next location", loc["name"])
 
     db.commit()
     logger.info("GHL email sync complete: %d total items across %d locations", total, len(locations))
