@@ -2,7 +2,7 @@
 import logging
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import func, case, text
+from sqlalchemy import func, case, text, Date
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
 
@@ -11,17 +11,23 @@ from app.models.email_campaign_stats import EmailCampaignStats
 
 logger = logging.getLogger(__name__)
 
+# Helper: cast timestamp to date for GROUP BY
+_event_date = func.cast(EmailEvent.event_timestamp, Date)
+
 
 def aggregate_email_stats(db: Session, date_from: date, date_to: date) -> int:
     """Compute daily stats from email_events and upsert into email_campaign_stats.
 
     Returns the number of rows upserted.
     """
+    dt_from = datetime.combine(date_from, datetime.min.time()).replace(tzinfo=timezone.utc)
+    dt_to = datetime.combine(date_to + timedelta(days=1), datetime.min.time()).replace(tzinfo=timezone.utc)
+
     rows = (
         db.query(
             EmailEvent.ghl_workflow_id.label("workflow_id"),
             func.max(EmailEvent.workflow_name).label("workflow_name"),
-            func.cast(EmailEvent.event_timestamp, type_=func.date if hasattr(func, 'date') else None).label("stat_date"),
+            _event_date.label("stat_date"),
             func.count(case((EmailEvent.event_type == "sent", 1))).label("total_sent"),
             func.count(case((EmailEvent.event_type == "delivered", 1))).label("total_delivered"),
             func.count(case((EmailEvent.event_type == "opened", 1))).label("total_opened"),
@@ -32,16 +38,12 @@ def aggregate_email_stats(db: Session, date_from: date, date_to: date) -> int:
         )
         .filter(
             EmailEvent.ghl_workflow_id.isnot(None),
-            func.cast(EmailEvent.event_timestamp, db.bind.dialect.type_descriptor(type(None))).between(date_from, date_to)
-            if False else
-            EmailEvent.event_timestamp >= datetime.combine(date_from, datetime.min.time()).replace(tzinfo=timezone.utc),
-        )
-        .filter(
-            EmailEvent.event_timestamp < datetime.combine(date_to + timedelta(days=1), datetime.min.time()).replace(tzinfo=timezone.utc),
+            EmailEvent.event_timestamp >= dt_from,
+            EmailEvent.event_timestamp < dt_to,
         )
         .group_by(
             EmailEvent.ghl_workflow_id,
-            func.date(EmailEvent.event_timestamp),
+            _event_date,
         )
         .all()
     )
