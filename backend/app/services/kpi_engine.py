@@ -207,6 +207,64 @@ def _get_room_dorm_adr(
     return room_adr, dorm_adr
 
 
+def _get_room_dorm_adr_from_reservations(
+    db: Session, branch_id: UUID, year: int, month: int,
+    total_dorm_count: int,
+) -> tuple[Optional[float], Optional[float]]:
+    """
+    Room/Dorm ADR from Reservations table (grand_total / nights).
+    Uses room_type_category on Reservation for the split.
+    For Dorm: ADR per BED = (grand_total / nights) / avg_beds_per_booking.
+    Always complete (no sparse data issue like reservation_daily for future months).
+    """
+    base = _revenue_query(db, branch_id, year, month)
+
+    # Room ADR
+    room_row = base.filter(
+        func.lower(Reservation.room_type_category) == "room",
+    ).with_entities(
+        func.coalesce(func.sum(Reservation.grand_total_native), 0),
+        func.coalesce(func.sum(Reservation.nights), 0),
+    ).one()
+    room_rev = float(room_row[0])
+    room_nights = int(room_row[1])
+    room_adr = round(room_rev / room_nights, 2) if room_nights > 0 else None
+
+    # Dorm ADR (per-bed: divide by average beds per dorm booking)
+    dorm_row = base.filter(
+        func.lower(Reservation.room_type_category) == "dorm",
+    ).with_entities(
+        func.coalesce(func.sum(Reservation.grand_total_native), 0),
+        func.coalesce(func.sum(Reservation.nights), 0),
+        func.count(Reservation.id),
+    ).one()
+    dorm_rev = float(dorm_row[0])
+    dorm_nights = int(dorm_row[1])
+
+    if dorm_nights > 0:
+        # Count total beds from room_number to get per-bed ADR
+        dorm_bookings = base.filter(
+            func.lower(Reservation.room_type_category) == "dorm",
+        ).with_entities(
+            Reservation.room_number,
+            Reservation.nights,
+            Reservation.grand_total_native,
+        ).all()
+
+        total_bed_nights = 0
+        total_dorm_rev = 0.0
+        for booking in dorm_bookings:
+            beds = _count_dorm_beds(booking.room_number)
+            total_bed_nights += beds * int(booking.nights or 1)
+            total_dorm_rev += float(booking.grand_total_native or 0)
+
+        dorm_adr = round(total_dorm_rev / total_bed_nights, 2) if total_bed_nights > 0 else None
+    else:
+        dorm_adr = None
+
+    return room_adr, dorm_adr
+
+
 # ── core calculations ──────────────────────────────────────────────────────────
 
 def get_actual_revenue(db: Session, branch_id: UUID, year: int, month: int) -> float:
@@ -312,33 +370,18 @@ def compute_next_month_forecast(
     total_revenue = float(rev_row[0] or 0)
     total_nights = int(rev_row[1] or 0)
 
-    # ── Next-month ADR from reservation_daily (always fresh, each month uses its own ADR) ──
-    # Overall ADR from reservation_daily
-    overall_rd = (
-        db.query(
-            func.coalesce(func.sum(ReservationDaily.nightly_rate), 0),
-            func.count(ReservationDaily.id),
-        )
-        .join(Reservation, ReservationDaily.reservation_id == Reservation.id)
-        .filter(
-            ReservationDaily.branch_id == branch_id,
-            ReservationDaily.date >= first_day_next,
-            ReservationDaily.date <= last_day_next,
-            ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
-            ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES)),
-        )
-        .one()
-    )
-    rd_rev = float(overall_rd[0])
-    rd_nights = int(overall_rd[1])
-    adr = round(rd_rev / rd_nights, 2) if rd_nights > 0 else None
+    # ── Next-month ADR from Reservations (grand_total / nights — always complete) ──
+    adr = round(total_revenue / total_nights, 2) if total_nights > 0 else None
 
-    # Room/Dorm ADR from reservation_daily for next month
+    # Room/Dorm split ADR from Reservations (using room_type_category)
     room_adr = dorm_adr = None
     forecast_room_adr = forecast_dorm_adr = None
     if total_room_count > 0 and total_dorm_count > 0:
-        room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day_next, last_day_next, exclude_adr_sources=True)
-        forecast_room_adr, forecast_dorm_adr = _get_room_dorm_adr(db, branch_id, first_day_next, last_day_next, exclude_adr_sources=False)
+        room_adr, dorm_adr = _get_room_dorm_adr_from_reservations(
+            db, branch_id, next_year, next_month, total_dorm_count,
+        )
+        forecast_room_adr = room_adr
+        forecast_dorm_adr = dorm_adr
     elif total_room_count > 0 and total_dorm_count == 0:
         room_adr = adr
         forecast_room_adr = adr
@@ -439,33 +482,28 @@ def compute_kpi_summary(
     )
     nights_booked = int(nights_row or 0)
 
-    # ADR from reservation_daily (same source as revenue, always consistent)
-    # For current month: full month (includes future confirmed bookings for ADR accuracy)
-    overall_rd = (
-        db.query(
-            func.coalesce(func.sum(ReservationDaily.nightly_rate), 0),
-            func.count(ReservationDaily.id),
-        )
-        .join(Reservation, ReservationDaily.reservation_id == Reservation.id)
-        .filter(
-            ReservationDaily.branch_id == branch_id,
-            ReservationDaily.date >= first_day,
-            ReservationDaily.date <= last_day,
-            ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
-            ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES)),
+    # ADR from Reservations (grand_total / nights — always complete, matches Cloudbeds)
+    rev_adr_row = (
+        _revenue_query(db, branch_id, year, month)
+        .with_entities(
+            func.coalesce(func.sum(Reservation.grand_total_native), 0),
+            func.coalesce(func.sum(Reservation.nights), 0),
         )
         .one()
     )
-    rd_rev = float(overall_rd[0])
-    rd_nights = int(overall_rd[1])
-    avg_adr = round(rd_rev / rd_nights, 2) if rd_nights > 0 else None
+    adr_total_rev = float(rev_adr_row[0])
+    adr_total_nights = int(rev_adr_row[1])
+    avg_adr = round(adr_total_rev / adr_total_nights, 2) if adr_total_nights > 0 else None
 
-    # Room/Dorm ADR from reservation_daily
+    # Room/Dorm ADR from Reservations (using room_type_category)
     room_adr = dorm_adr = None
     forecast_room_adr = forecast_dorm_adr = None
     if total_room_count > 0 and total_dorm_count > 0:
-        room_adr, dorm_adr = _get_room_dorm_adr(db, branch_id, first_day, last_day, exclude_adr_sources=True)
-        forecast_room_adr, forecast_dorm_adr = _get_room_dorm_adr(db, branch_id, first_day, last_day, exclude_adr_sources=False)
+        room_adr, dorm_adr = _get_room_dorm_adr_from_reservations(
+            db, branch_id, year, month, total_dorm_count,
+        )
+        forecast_room_adr = room_adr
+        forecast_dorm_adr = dorm_adr
     elif total_room_count > 0 and total_dorm_count == 0:
         room_adr = avg_adr
         forecast_room_adr = avg_adr
