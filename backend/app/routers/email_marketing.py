@@ -28,13 +28,15 @@ def _envelope(data):
     }
 
 
-def _apply_filters(q, date_from, date_to, campaign_type=None, workflow_id=None):
+def _apply_filters(q, date_from, date_to, campaign_type=None, workflow_id=None, branch_name=None):
     """Apply common filters to a query."""
     q = q.filter(EmailCampaignStats.stat_date.between(date_from, date_to))
     if campaign_type:
         q = q.filter(EmailCampaignStats.campaign_type == campaign_type)
     if workflow_id:
         q = q.filter(EmailCampaignStats.workflow_id == workflow_id)
+    if branch_name:
+        q = q.filter(EmailCampaignStats.branch_name == branch_name)
     return q
 
 
@@ -54,6 +56,7 @@ def email_summary(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     campaign_type: Optional[str] = Query(None, description="'workflow' or 'bulk'"),
+    branch_name: Optional[str] = Query(None, description="e.g. 'Saigon' or '1948'"),
     workflow_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
@@ -72,7 +75,7 @@ def email_summary(
             func.coalesce(func.sum(EmailCampaignStats.total_unsubscribed), 0).label("total_unsubscribed"),
             func.coalesce(func.sum(EmailCampaignStats.total_complained), 0).label("total_complained"),
         )
-        q = _apply_filters(q, date_from, date_to, campaign_type, workflow_id)
+        q = _apply_filters(q, date_from, date_to, campaign_type, workflow_id, branch_name)
 
         row = q.one()
         sent = int(row.total_sent)
@@ -107,6 +110,7 @@ def email_daily(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     campaign_type: Optional[str] = Query(None),
+    branch_name: Optional[str] = Query(None),
     workflow_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
@@ -123,7 +127,7 @@ def email_daily(
             func.sum(EmailCampaignStats.total_bounced).label("bounced"),
             func.sum(EmailCampaignStats.total_unsubscribed).label("unsubscribed"),
         )
-        q = _apply_filters(q, date_from, date_to, campaign_type, workflow_id)
+        q = _apply_filters(q, date_from, date_to, campaign_type, workflow_id, branch_name)
         q = q.group_by(EmailCampaignStats.stat_date).order_by(EmailCampaignStats.stat_date)
         rows = q.all()
 
@@ -158,9 +162,10 @@ def email_by_campaign(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     campaign_type: Optional[str] = Query(None),
+    branch_name: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """Per-campaign breakdown with campaign_type."""
+    """Per-campaign breakdown with campaign_type and branch_name."""
     try:
         date_from, date_to = _default_dates(date_from, date_to)
 
@@ -168,6 +173,7 @@ def email_by_campaign(
             EmailCampaignStats.workflow_id,
             func.max(EmailCampaignStats.workflow_name).label("workflow_name"),
             func.max(EmailCampaignStats.campaign_type).label("campaign_type"),
+            func.max(EmailCampaignStats.branch_name).label("branch_name"),
             func.sum(EmailCampaignStats.total_sent).label("sent"),
             func.sum(EmailCampaignStats.total_delivered).label("delivered"),
             func.sum(EmailCampaignStats.total_opened).label("opened"),
@@ -177,7 +183,7 @@ def email_by_campaign(
             func.sum(EmailCampaignStats.total_bounced).label("bounced"),
             func.sum(EmailCampaignStats.total_unsubscribed).label("unsubscribed"),
         )
-        q = _apply_filters(q, date_from, date_to, campaign_type)
+        q = _apply_filters(q, date_from, date_to, campaign_type, branch_name=branch_name)
         q = q.group_by(EmailCampaignStats.workflow_id).order_by(desc("sent"))
 
         rows = q.all()
@@ -192,6 +198,7 @@ def email_by_campaign(
                 "workflow_id": r.workflow_id,
                 "workflow_name": r.workflow_name or r.workflow_id,
                 "campaign_type": r.campaign_type,
+                "branch_name": r.branch_name,
                 "sent": sent,
                 "delivered": int(r.delivered or 0),
                 "opened": int(r.opened or 0),
@@ -219,10 +226,11 @@ def email_by_workflow(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     campaign_type: Optional[str] = Query(None),
+    branch_name: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     """Alias for /by-campaign."""
-    return email_by_campaign(date_from, date_to, campaign_type, db)
+    return email_by_campaign(date_from, date_to, campaign_type, branch_name, db)
 
 
 # ── GHL API Sync ─────────────────────────────────────────────────────────────

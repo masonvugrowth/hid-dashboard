@@ -45,11 +45,32 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     SECRET_KEY: str = "changeme"
 
-    # GoHighLevel (GHL) — Email Marketing
-    GHL_LOCATION_ID: str = ""
-    GHL_API_KEY: str = ""
+    # GoHighLevel (GHL) — Email Marketing (per-branch)
+    GHL_LOCATION_ID_SAIGON: str = ""
+    GHL_API_KEY_SAIGON: str = ""
+    GHL_LOCATION_ID_1948: str = ""
+    GHL_API_KEY_1948: str = ""
     GHL_WEBHOOK_SECRET: str = ""
     GHL_BASE_URL: str = "https://services.leadconnectorhq.com"
+    # Legacy single-location (kept for backward compat)
+    GHL_LOCATION_ID: str = ""
+    GHL_API_KEY: str = ""
+
+    @property
+    def ghl_locations(self) -> list:
+        """Return list of configured GHL locations [{name, location_id, api_key}]."""
+        locations = []
+        pairs = [
+            ("Saigon", self.GHL_LOCATION_ID_SAIGON, self.GHL_API_KEY_SAIGON),
+            ("1948", self.GHL_LOCATION_ID_1948, self.GHL_API_KEY_1948),
+        ]
+        for name, loc_id, api_key in pairs:
+            if loc_id and api_key:
+                locations.append({"name": name, "location_id": loc_id, "api_key": api_key})
+        # Fallback to legacy single-location config
+        if not locations and self.GHL_LOCATION_ID and self.GHL_API_KEY:
+            locations.append({"name": "Saigon", "location_id": self.GHL_LOCATION_ID, "api_key": self.GHL_API_KEY})
+        return locations
 
     # Per-property Cloudbeds keys (loaded from .env CB_API_KEY_* and CB_PROPERTY_ID_*)
     CB_API_KEY_TAIPEI: str = ""

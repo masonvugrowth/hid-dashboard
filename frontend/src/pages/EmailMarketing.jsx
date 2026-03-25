@@ -37,7 +37,12 @@ const TYPE_BADGE = {
 const TABS = ["overview", "campaigns"];
 const TAB_LABELS = { overview: "Overview", campaigns: "Campaigns" };
 const TYPE_FILTERS = ["", "workflow", "bulk"];
-const TYPE_LABELS = { "": "All", workflow: "Workflow", bulk: "Bulk" };
+const TYPE_LABELS = { "": "All Types", workflow: "Workflow", bulk: "Bulk" };
+const BRANCH_FILTERS = ["", "Saigon", "1948"];
+const BRANCH_BADGE = {
+  Saigon: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  "1948": "bg-sky-50 text-sky-700 border-sky-200",
+};
 
 export default function EmailMarketing() {
   const today = new Date().toISOString().slice(0, 10);
@@ -48,6 +53,7 @@ export default function EmailMarketing() {
   const [dateTo, setDateTo] = useState(today);
   const [tab, setTab] = useState("overview");
   const [typeFilter, setTypeFilter] = useState("");
+  const [branchFilter, setBranchFilter] = useState("");
 
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState(null);
@@ -56,6 +62,7 @@ export default function EmailMarketing() {
 
   const params = { date_from: dateFrom, date_to: dateTo };
   if (typeFilter) params.campaign_type = typeFilter;
+  if (branchFilter) params.branch_name = branchFilter;
 
   useEffect(() => {
     setLoading(true);
@@ -79,7 +86,7 @@ export default function EmailMarketing() {
         .catch(console.error)
         .finally(() => setLoading(false));
     }
-  }, [tab, dateFrom, dateTo, typeFilter]);
+  }, [tab, dateFrom, dateTo, typeFilter, branchFilter]);
 
   return (
     <div className="space-y-6">
@@ -120,6 +127,19 @@ export default function EmailMarketing() {
                   : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
               }`}>
               {TYPE_LABELS[f]}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex gap-1">
+          {BRANCH_FILTERS.map(f => (
+            <button key={f} onClick={() => setBranchFilter(f)}
+              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                branchFilter === f
+                  ? "bg-gray-800 text-white border-gray-800"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+              }`}>
+              {f || "All Branches"}
             </button>
           ))}
         </div>
@@ -219,6 +239,7 @@ function OverviewTab({ summary, daily, campaigns }) {
             <thead>
               <tr className="text-xs text-gray-500 uppercase tracking-wide border-b border-gray-100">
                 <th className="px-4 py-2 text-left">Campaign</th>
+                <th className="px-4 py-2 text-left">Branch</th>
                 <th className="px-4 py-2 text-left">Type</th>
                 <th className="px-4 py-2 text-right">Sent</th>
                 <th className="px-4 py-2 text-right">Opens</th>
@@ -233,6 +254,11 @@ function OverviewTab({ summary, daily, campaigns }) {
                 <tr key={w.workflow_id} className="hover:bg-gray-50">
                   <td className="px-4 py-2 text-gray-700 font-medium text-xs truncate max-w-[250px]">
                     {w.workflow_name}
+                  </td>
+                  <td className="px-4 py-2">
+                    <span className={`px-2 py-0.5 rounded text-xs font-medium border ${BRANCH_BADGE[w.branch_name] || "bg-gray-50 text-gray-600 border-gray-200"}`}>
+                      {w.branch_name || "—"}
+                    </span>
                   </td>
                   <td className="px-4 py-2">
                     <span className={`px-2 py-0.5 rounded text-xs font-medium border ${TYPE_BADGE[w.campaign_type] || "bg-gray-50 text-gray-600"}`}>
@@ -287,6 +313,7 @@ function CampaignsTab({ campaigns }) {
         <thead>
           <tr className="text-xs text-gray-500 uppercase tracking-wide border-b border-gray-100">
             <th className="px-4 py-3 text-left">Campaign</th>
+            <th className="px-4 py-3 text-left">Branch</th>
             <th className="px-4 py-3 text-left">Type</th>
             <th className="px-4 py-3 text-right">Sent</th>
             <th className="px-4 py-3 text-right">Delivered</th>
@@ -304,6 +331,11 @@ function CampaignsTab({ campaigns }) {
             <tr key={w.workflow_id} className="hover:bg-gray-50">
               <td className="px-4 py-2.5 text-gray-700 font-medium text-xs truncate max-w-[250px]">
                 {w.workflow_name}
+              </td>
+              <td className="px-4 py-2.5">
+                <span className={`px-2 py-0.5 rounded text-xs font-medium border ${BRANCH_BADGE[w.branch_name] || "bg-gray-50 text-gray-600 border-gray-200"}`}>
+                  {w.branch_name || "—"}
+                </span>
               </td>
               <td className="px-4 py-2.5">
                 <span className={`px-2 py-0.5 rounded text-xs font-medium border ${TYPE_BADGE[w.campaign_type] || "bg-gray-50 text-gray-600"}`}>
