@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     GHL_API_KEY_1948: str = ""
     GHL_LOCATION_ID_TAIPEI: str = ""
     GHL_API_KEY_TAIPEI: str = ""
+    GHL_LOCATION_ID_OANI: str = ""
+    GHL_API_KEY_OANI: str = ""
     GHL_WEBHOOK_SECRET: str = ""
     GHL_BASE_URL: str = "https://services.leadconnectorhq.com"
     # Legacy single-location (kept for backward compat)
@@ -66,6 +68,7 @@ class Settings(BaseSettings):
             ("Saigon", self.GHL_LOCATION_ID_SAIGON, self.GHL_API_KEY_SAIGON),
             ("1948", self.GHL_LOCATION_ID_1948, self.GHL_API_KEY_1948),
             ("Taipei", self.GHL_LOCATION_ID_TAIPEI, self.GHL_API_KEY_TAIPEI),
+            ("Oani", self.GHL_LOCATION_ID_OANI, self.GHL_API_KEY_OANI),
         ]
         for name, loc_id, api_key in pairs:
             if loc_id and api_key:

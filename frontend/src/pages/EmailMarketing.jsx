@@ -38,11 +38,12 @@ const TABS = ["overview", "campaigns"];
 const TAB_LABELS = { overview: "Overview", campaigns: "Campaigns" };
 const TYPE_FILTERS = ["", "workflow", "bulk"];
 const TYPE_LABELS = { "": "All Types", workflow: "Workflow", bulk: "Bulk" };
-const BRANCH_FILTERS = ["", "Saigon", "1948", "Taipei"];
+const BRANCH_FILTERS = ["", "Saigon", "1948", "Taipei", "Oani"];
 const BRANCH_BADGE = {
   Saigon: "bg-emerald-50 text-emerald-700 border-emerald-200",
   "1948": "bg-sky-50 text-sky-700 border-sky-200",
   Taipei: "bg-violet-50 text-violet-700 border-violet-200",
+  Oani: "bg-rose-50 text-rose-700 border-rose-200",
 };
 
 export default function EmailMarketing() {
