@@ -346,10 +346,11 @@ def get_ota_trend_endpoint(
 def get_rates_trend_endpoint(
     mode: str = Query("daily", pattern="^(daily|weekly|monthly)$"),
     branch_id: Optional[UUID] = Query(None),
+    date_type: str = Query("check_in", pattern="^(check_in|booked)$"),
     db: Session = Depends(get_db),
 ):
     """Cancel rate & check-in rate pivot per channel × period."""
-    result = get_rates_trend(db, branch_id, mode)
+    result = get_rates_trend(db, branch_id, mode, date_type)
     return _envelope(result)
 
 

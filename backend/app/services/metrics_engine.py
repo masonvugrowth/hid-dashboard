@@ -758,14 +758,19 @@ def get_rates_trend(
     db: Session,
     branch_id: Optional[UUID],
     mode: str = "daily",
+    date_type: str = "check_in",
 ) -> dict:
     """Cancel rate & check-in rate pivot: per channel × per time period.
     mode: daily (last 7 days) | weekly (last 7 weeks) | monthly (last 3 months)
+    date_type: check_in (by check-in date) | booked (by reservation/booking date)
     """
     from collections import defaultdict
     from sqlalchemy import case as sa_case
 
     today = date.today()
+
+    # Pick the date column based on date_type
+    date_col = Reservation.reservation_date if date_type == "booked" else Reservation.check_in_date
 
     if mode == "daily":
         date_from = today - timedelta(days=6)
@@ -779,11 +784,11 @@ def get_rates_trend(
         date_from = date(y, m, 1)
 
     if mode == "daily":
-        period_expr = Reservation.check_in_date
+        period_expr = date_col
     elif mode == "weekly":
-        period_expr = func.date_trunc("week", Reservation.check_in_date)
+        period_expr = func.date_trunc("week", date_col)
     else:
-        period_expr = func.date_trunc("month", Reservation.check_in_date)
+        period_expr = func.date_trunc("month", date_col)
 
     q = db.query(
         period_expr.label("period"),
@@ -794,8 +799,9 @@ def get_rates_trend(
         func.sum(sa_case((Reservation.status.in_(["no_show", "noshow"]), 1), else_=0)).label("no_show"),
         func.sum(sa_case((Reservation.status.in_(["checked_in", "checked_out"]), 1), else_=0)).label("checked_in"),
     ).filter(
-        Reservation.check_in_date >= date_from,
-        Reservation.check_in_date <= today,
+        date_col >= date_from,
+        date_col <= today,
+        date_col.isnot(None),
         func.lower(Reservation.source).notin_(list(EXCLUDED_SOURCES)),
     )
     if branch_id:
