@@ -20,6 +20,7 @@ from app.models.ad_analysis import AdAnalysisResult
 from app.models.reservation_daily import ReservationDaily
 from app.models.email_event import EmailEvent
 from app.models.email_campaign_stats import EmailCampaignStats
+from app.models.gov_visitor import GovVisitorData
 
 __all__ = [
     "Branch", "KPITarget", "Reservation", "DailyMetrics", "Event",
@@ -29,4 +30,5 @@ __all__ = [
     "CreativeAngle", "CreativeCopy", "CreativeMaterial", "AdCombo",
     "AdAnalysisResult", "ReservationDaily",
     "EmailEvent", "EmailCampaignStats",
+    "GovVisitorData",
 ]

@@ -151,40 +151,84 @@ function AdsBadge({ ad }) {
   );
 }
 
+const GOV_MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+const GOV_MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+function GovDataBadge({ gov }) {
+  if (!gov) return null;
+  const months = GOV_MONTHS.map((m) => gov[m] || 0);
+  const maxVal = Math.max(...months, 1);
+  return (
+    <div className="bg-blue-50 border border-blue-200 rounded p-3 text-xs">
+      <div className="flex items-center justify-between mb-2">
+        <div className="font-semibold text-blue-800">
+          Gov Data: {gov.source_country} → {gov.destination}
+        </div>
+        <div className="text-blue-600 font-mono font-bold">{fmt(gov.total)} visitors/yr</div>
+      </div>
+      <div className="flex items-end gap-0.5 h-10">
+        {months.map((v, i) => (
+          <div key={i} className="flex-1 flex flex-col items-center">
+            <div
+              className="w-full bg-blue-400 rounded-t"
+              style={{ height: `${Math.max((v / maxVal) * 100, 2)}%` }}
+              title={`${GOV_MONTH_LABELS[i]}: ${fmt(v)}`}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-0.5 mt-0.5">
+        {GOV_MONTH_LABELS.map((m) => (
+          <div key={m} className="flex-1 text-center text-[8px] text-blue-400">{m}</div>
+        ))}
+      </div>
+      {gov.rank && (
+        <div className="text-blue-500 mt-1">Rank #{gov.rank} source market for {gov.destination}</div>
+      )}
+    </div>
+  );
+}
+
 function CoverageDetail({ item }) {
   const hasKol = !item.kol_gap;
   const hasAds = !item.ads_gap;
+  const hasGov = !!item.gov_visitor_data;
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
-      <div>
-        <div className="text-xs font-semibold text-gray-500 uppercase mb-2">KOL Coverage</div>
-        {hasKol ? (
-          <div className="space-y-2">
-            {item.kol_coverage.map((k) => <KolBadge key={k.kol_name} kol={k} />)}
-          </div>
-        ) : (
-          <div className="bg-orange-50 border border-orange-200 rounded p-3 text-xs text-orange-700">
-            <div className="font-semibold mb-1">Action needed</div>
-            {item.action_items.filter((a) => a.includes("KOL")).map((a, i) => (
-              <div key={i}>→ {a}</div>
-            ))}
-          </div>
-        )}
-      </div>
-      <div>
-        <div className="text-xs font-semibold text-gray-500 uppercase mb-2">Paid Ads Coverage</div>
-        {hasAds ? (
-          <div className="space-y-2">
-            {item.ads_coverage.map((ad, i) => <AdsBadge key={i} ad={ad} />)}
-          </div>
-        ) : (
-          <div className="bg-orange-50 border border-orange-200 rounded p-3 text-xs text-orange-700">
-            <div className="font-semibold mb-1">Action needed</div>
-            {item.action_items.filter((a) => a.includes("Ads")).map((a, i) => (
-              <div key={i}>→ {a}</div>
-            ))}
-          </div>
-        )}
+    <div className="space-y-4 mt-2">
+      {hasGov && (
+        <GovDataBadge gov={item.gov_visitor_data} />
+      )}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <div className="text-xs font-semibold text-gray-500 uppercase mb-2">KOL Coverage</div>
+          {hasKol ? (
+            <div className="space-y-2">
+              {item.kol_coverage.map((k) => <KolBadge key={k.kol_name} kol={k} />)}
+            </div>
+          ) : (
+            <div className="bg-orange-50 border border-orange-200 rounded p-3 text-xs text-orange-700">
+              <div className="font-semibold mb-1">Action needed</div>
+              {item.action_items.filter((a) => a.includes("KOL")).map((a, i) => (
+                <div key={i}>→ {a}</div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <div className="text-xs font-semibold text-gray-500 uppercase mb-2">Paid Ads Coverage</div>
+          {hasAds ? (
+            <div className="space-y-2">
+              {item.ads_coverage.map((ad, i) => <AdsBadge key={i} ad={ad} />)}
+            </div>
+          ) : (
+            <div className="bg-orange-50 border border-orange-200 rounded p-3 text-xs text-orange-700">
+              <div className="font-semibold mb-1">Action needed</div>
+              {item.action_items.filter((a) => a.includes("Ads")).map((a, i) => (
+                <div key={i}>→ {a}</div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -204,6 +248,11 @@ function VolumeRow({ item }) {
           <div className="flex items-center gap-2">
             <span className="text-base">{FLAG(item.country_code)}</span>
             <span className="text-sm font-medium text-gray-800">{item.country}</span>
+            {item.gov_visitor_data && (
+              <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-600 text-[10px] font-medium" title={`Gov rank #${item.gov_visitor_data.rank} · ${fmt(item.gov_visitor_data.total)} visitors/yr`}>
+                GOV #{item.gov_visitor_data.rank}
+              </span>
+            )}
           </div>
         </td>
         <td className="px-3 py-2 text-sm text-right font-mono text-gray-700">{item.booking_count}</td>
@@ -269,6 +318,11 @@ function GrowthRow({ item }) {
           <div className="flex items-center gap-2">
             <span className="text-base">{FLAG(item.country_code)}</span>
             <span className="text-sm font-medium text-gray-800">{item.country}</span>
+            {item.gov_visitor_data && (
+              <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-600 text-[10px] font-medium" title={`Gov rank #${item.gov_visitor_data.rank} · ${fmt(item.gov_visitor_data.total)} visitors/yr`}>
+                GOV #{item.gov_visitor_data.rank}
+              </span>
+            )}
           </div>
         </td>
         <td className="px-3 py-2 text-sm text-right font-mono text-gray-700">{item.recent_bookings}</td>
@@ -359,7 +413,7 @@ function BranchSection({ branch }) {
             <div>
               <div className="px-5 py-2 bg-indigo-50 border-b border-indigo-100">
                 <span className="text-xs font-semibold text-indigo-700 uppercase tracking-wide">
-                  Top 5 · Most Bookings (all-time)
+                  Top 5 · Most Bookings (last 30 days)
                 </span>
               </div>
               <table className="w-full">

@@ -130,6 +130,13 @@ export default function Sidebar() {
                   }`}>
                 <span className="text-xs w-3 text-center">◎</span> Users
               </NavLink>
+              <NavLink to="/gov-data"
+                className={({ isActive }) =>
+                  `flex items-center gap-2 px-3 py-1.5 rounded text-sm transition-colors ${
+                    isActive ? "bg-indigo-600 text-white" : "text-gray-400 hover:bg-gray-700 hover:text-white"
+                  }`}>
+                <span className="text-xs w-3 text-center">◐</span> Gov Data
+              </NavLink>
             </div>
           </div>
         )}

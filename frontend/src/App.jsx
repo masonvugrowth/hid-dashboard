@@ -44,6 +44,9 @@ import CRMDashboard from "./pages/CRMDashboard";
 // Email Marketing (GHL)
 import EmailMarketing from "./pages/EmailMarketing";
 
+// Government Visitor Data
+import GovVisitorData from "./pages/GovVisitorData";
+
 export default function App() {
   return (
     <AuthProvider>
@@ -117,6 +120,7 @@ function AppRoutes() {
             {/* Settings & Admin */}
             <Route path="/settings" element={<Settings />} />
             <Route path="/users"    element={<Users />} />
+            <Route path="/gov-data" element={<GovVisitorData />} />
 
             {/* Phase 1 legacy */}
             <Route path="/dashboard"    element={<Dashboard />} />

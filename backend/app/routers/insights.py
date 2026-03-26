@@ -144,14 +144,14 @@ def country_intelligence(
 ):
     """
     Returns two ranked lists per branch:
-    - top_volume:  Top 5 countries by all-time booking count
-    - top_growth:  Top 5 countries by 90-day booking growth vs prior 90 days
-    Cross-referenced with KOL and Paid Ads coverage.
+    - top_volume:  Top 5 countries by booking count (last 30 days)
+    - top_growth:  Top 5 countries by 30-day booking growth vs prior 30 days
+    Cross-referenced with KOL coverage, Paid Ads coverage, and government visitor data.
     """
     b_filter = "AND r.branch_id = :bid" if branch_id else ""
     b_params = {"bid": str(branch_id)} if branch_id else {}
 
-    # ── 1. Top 5 by booking volume (all-time) ───────────────────────────────
+    # ── 1. Top 5 by booking volume (last 30 days) ───────────────────────────
     country_rows = db.execute(text(f"""
         WITH ranked AS (
             SELECT
@@ -176,6 +176,7 @@ def country_intelligence(
               AND r.status NOT IN (
                   'canceled','cancelled','no_show','no-show','cancelled_by_guest'
               )
+              AND r.check_in_date >= CURRENT_DATE - INTERVAL '30 days'
               {b_filter}
             GROUP BY b.id, b.name, b.currency, r.guest_country, r.guest_country_code
         )
@@ -400,8 +401,63 @@ def country_intelligence(
             "action_items": action_items,
         }
 
+    # ── 5b. Government visitor data ───────────────────────────────────────────
+    gov_rows = db.execute(text("""
+        SELECT destination, source_country, rank,
+               jan, feb, mar, apr, may, jun, jul, aug, sep, oct, nov, dec, total
+        FROM gov_visitor_data
+        ORDER BY destination, rank
+    """)).fetchall()
+
+    # gov_map: { destination_lower -> { source_country_lower -> row_dict } }
+    gov_map: dict[str, dict] = {}
+    for g in gov_rows:
+        dest = (g[0] or "").lower()
+        src = (g[1] or "").lower()
+        if dest not in gov_map:
+            gov_map[dest] = {}
+        gov_map[dest][src] = {
+            "destination": g[0],
+            "source_country": g[1],
+            "rank": g[2],
+            "jan": g[3] or 0, "feb": g[4] or 0, "mar": g[5] or 0,
+            "apr": g[6] or 0, "may": g[7] or 0, "jun": g[8] or 0,
+            "jul": g[9] or 0, "aug": g[10] or 0, "sep": g[11] or 0,
+            "oct": g[12] or 0, "nov": g[13] or 0, "dec": g[14] or 0,
+            "total": g[15] or 0,
+        }
+
+    # Map branch country to gov destination
+    _BRANCH_DEST_MAP = {
+        "taiwan": "Taiwan",
+        "japan": "Japan",
+        "vietnam": "Vietnam",
+        "viet nam": "Vietnam",
+    }
+
+    def _find_gov_data(branch_country: str, guest_country: str):
+        """Find government visitor data matching branch destination + guest source country."""
+        bc = (branch_country or "").lower()
+        dest_key = _BRANCH_DEST_MAP.get(bc, bc)
+        dest_data = gov_map.get(dest_key.lower(), {})
+        gc = guest_country.lower()
+        # Direct match
+        if gc in dest_data:
+            return dest_data[gc]
+        # Partial match
+        for key, val in dest_data.items():
+            if gc in key or key in gc:
+                return val
+        return None
+
     # ── 6. Build response ────────────────────────────────────────────────────
     branch_map: dict[str, dict] = {}
+
+    # Fetch branch country for gov data mapping
+    branch_info = {}
+    branch_info_rows = db.execute(text("SELECT id, country FROM branches")).fetchall()
+    for bi in branch_info_rows:
+        branch_info[str(bi[0])] = bi[1] or ""
 
     for r in country_rows:
         bid_str = str(r[0])
@@ -414,10 +470,12 @@ def country_intelligence(
                 "top_growth": [],
             }
         entry = _build_country(bid_str, r[3], r[4])
+        gov = _find_gov_data(branch_info.get(bid_str, ""), r[3])
         entry.update({
             "rank": int(r[7]),
             "booking_count": int(r[5]),
             "revenue_vnd": float(r[6]) if r[6] else 0.0,
+            "gov_visitor_data": gov,
         })
         branch_map[bid_str]["top_volume"].append(entry)
 
@@ -432,11 +490,13 @@ def country_intelligence(
                 "top_growth": [],
             }
         entry = _build_country(bid_str, r[3], r[4])
+        gov = _find_gov_data(branch_info.get(bid_str, ""), r[3])
         entry.update({
             "rank": int(r[8]),
             "recent_bookings": int(r[5]),
             "prev_bookings": int(r[6]),
             "growth_pct": float(r[7]) if r[7] is not None else None,
+            "gov_visitor_data": gov,
         })
         branch_map[bid_str]["top_growth"].append(entry)
 
