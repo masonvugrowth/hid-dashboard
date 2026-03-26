@@ -27,19 +27,18 @@ const NAV = [
     ],
   },
   {
-    label: "Marketing",
+    label: "KOL",
     items: [
-      { to: "/marketing", label: "Activity Log", icon: "◆" },
-      { to: "/ads",       label: "Paid Ads",     icon: "◇" },
-      { to: "/kol",       label: "KOL",          icon: "◈" },
-      { to: "/angles",    label: "Ad Angles",    icon: "◐" },
-      { to: "/insights",  label: "Insights",     icon: "◑" },
+      { to: "/kol", label: "KOL", icon: "◈" },
     ],
   },
   {
-    label: "Creatives",
+    label: "Paid Ads",
     items: [
-      { to: "/combos",       label: "Ad Combos",   icon: "◎" },
+      { to: "/ads",         label: "Paid Ads",    icon: "◇" },
+      { to: "/angles",      label: "Ad Angles",   icon: "◐" },
+      { to: "/insights",    label: "Insights",    icon: "◑" },
+      { to: "/combos",      label: "Ad Combos",   icon: "◎" },
       { to: "/ad-analyzer", label: "Ad Analyzer", icon: "⬡" },
       { to: "/copies",      label: "Copy",        icon: "◫" },
       { to: "/materials",   label: "Materials",   icon: "◰" },
@@ -110,6 +109,13 @@ export default function Sidebar() {
           <div>
             <p className="px-3 mb-1 text-xs font-semibold uppercase tracking-wider text-gray-500">Admin</p>
             <div className="space-y-0.5">
+              <NavLink to="/marketing"
+                className={({ isActive }) =>
+                  `flex items-center gap-2 px-3 py-1.5 rounded text-sm transition-colors ${
+                    isActive ? "bg-indigo-600 text-white" : "text-gray-400 hover:bg-gray-700 hover:text-white"
+                  }`}>
+                <span className="text-xs w-3 text-center">◆</span> Activity Log
+              </NavLink>
               <NavLink to="/settings"
                 className={({ isActive }) =>
                   `flex items-center gap-2 px-3 py-1.5 rounded text-sm transition-colors ${

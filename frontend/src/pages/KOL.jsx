@@ -1,7 +1,7 @@
 /**
  * KOL Management — aggregated from reservations (room_type KOL_ pattern)
  */
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import axios from "axios";
 import { useBranch } from "../context/BranchContext";
 
@@ -281,6 +281,30 @@ export default function KOL() {
   const [filterStatus, setFilterStatus] = useState("all");
 
   const [editRow, setEditRow] = useState(null); // row being edited
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const fileRef = useRef(null);
+
+  const handleImportCSV = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    setImportResult(null);
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const res = await axios.post("/api/kol/sync-csv", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setImportResult(res.data.data);
+      load();
+    } catch (err) {
+      setImportResult({ error: err.response?.data?.detail || err.message });
+    } finally {
+      setImporting(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
 
   const load = () => {
     setLoading(true);
@@ -330,12 +354,44 @@ export default function KOL() {
             Aggregated from reservations · Room type pattern: <code className="bg-gray-100 px-1 rounded">XYZ (KOL_Name)</code>
           </p>
         </div>
-        <button onClick={load} disabled={loading}
-          className="px-3 py-2 text-sm rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-600 disabled:opacity-50 flex items-center gap-1.5">
-          <span className={loading ? "animate-spin inline-block" : ""}>↻</span>
-          {loading ? "Loading…" : "Refresh"}
-        </button>
+        <div className="flex gap-2">
+          <input ref={fileRef} type="file" accept=".csv" onChange={handleImportCSV} className="hidden" />
+          <button onClick={() => fileRef.current?.click()} disabled={importing}
+            className="px-3 py-2 text-sm rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 disabled:opacity-50 flex items-center gap-1.5">
+            {importing ? "Importing…" : "Import CSV"}
+          </button>
+          <button onClick={load} disabled={loading}
+            className="px-3 py-2 text-sm rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-600 disabled:opacity-50 flex items-center gap-1.5">
+            <span className={loading ? "animate-spin inline-block" : ""}>↻</span>
+            {loading ? "Loading…" : "Refresh"}
+          </button>
+        </div>
       </div>
+
+      {/* import result banner */}
+      {importResult && (
+        <div className={`rounded-xl px-5 py-3 text-sm flex items-start gap-2 ${
+          importResult.error
+            ? "bg-red-50 border border-red-200 text-red-700"
+            : "bg-green-50 border border-green-200 text-green-700"
+        }`}>
+          {importResult.error ? (
+            <span>Import failed: {importResult.error}</span>
+          ) : (
+            <span>
+              Import complete: <strong>{importResult.created}</strong> created,{" "}
+              <strong>{importResult.updated}</strong> updated,{" "}
+              <strong>{importResult.skipped}</strong> skipped
+              {importResult.errors?.length > 0 && (
+                <span className="text-orange-600 ml-2">
+                  ({importResult.errors.length} warnings)
+                </span>
+              )}
+            </span>
+          )}
+          <button onClick={() => setImportResult(null)} className="ml-auto text-xs opacity-50 hover:opacity-100">✕</button>
+        </div>
+      )}
 
       {/* expiry alerts */}
       {expiryAlerts.length > 0 && (

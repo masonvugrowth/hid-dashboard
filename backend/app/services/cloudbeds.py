@@ -1035,6 +1035,198 @@ def sync_cloudbeds_occupancy(
     }
 
 
+# ── Filtered Insights via Custom Reports ──────────────────────────────────────
+
+# Sources excluded from REVENUE (but counted for rooms_sold / OCC)
+_REVENUE_EXCLUDED_SOURCES = ["Blogger", "House Use", "Special case"]
+
+
+def _make_date_filters(date_from: str, date_to: str) -> list[dict]:
+    return [
+        {"cdf": {"type": "default", "column": "stay_date"}, "operator": "greater_than_or_equal", "value": date_from},
+        {"cdf": {"type": "default", "column": "stay_date"}, "operator": "less_than_or_equal", "value": date_to},
+    ]
+
+
+def _make_source_exclude_filters() -> list[dict]:
+    """Filters to exclude Blogger, House Use, Special case from revenue."""
+    return [
+        {"cdf": {"type": "default", "column": "reservation_source", "multi_level_id": 4},
+         "operator": "not_contains", "value": src}
+        for src in _REVENUE_EXCLUDED_SOURCES
+    ]
+
+
+def _make_room_type_filter(is_dorm: bool) -> dict:
+    """Filter for Dorm (contains 'Dorm') or Room (not contains 'Dorm')."""
+    op = "contains" if is_dorm else "not_contains"
+    return {"cdf": {"type": "default", "column": "room_type"}, "operator": op, "value": "Dorm"}
+
+
+def _fetch_custom_report(
+    api_key: str,
+    property_id: str,
+    title: str,
+    filters: list[dict],
+) -> dict[str, dict]:
+    """
+    Create a temporary custom report in Cloudbeds Data Insights API,
+    fetch data, then delete the report.
+
+    Returns: { "YYYY-MM": {"rev": float, "sold": float} }
+    """
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "X-PROPERTY-ID": str(property_id),
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "title": title,
+        "dataset_id": 7,
+        "property_id": str(property_id),
+        "property_ids": [str(property_id)],
+        "columns": [
+            {"cdf": {"type": "default", "column": "rooms_sold"}, "metrics": ["sum"]},
+            {"cdf": {"type": "default", "column": "room_revenue"}, "metrics": ["sum"]},
+            {"cdf": {"type": "default", "column": "adr"}},
+        ],
+        "group_rows": [{"cdf": {"type": "default", "column": "stay_date"}}],
+        "filters": {"and": filters},
+    }
+
+    with httpx.Client(timeout=60) as client:
+        resp = client.post(f"{INSIGHTS_BASE_URL}/reports", headers=headers, json=payload)
+        if resp.status_code not in (200, 201):
+            logger.warning("Custom report create failed: %s %s", resp.status_code, resp.text[:200])
+            return {}
+
+        report_id = resp.json().get("id")
+        try:
+            resp2 = client.get(
+                f"{INSIGHTS_BASE_URL}/reports/{report_id}/data",
+                headers=headers,
+                params={"property_ids": str(property_id)},
+            )
+        finally:
+            # Always delete the temporary report
+            client.delete(f"{INSIGHTS_BASE_URL}/reports/{report_id}", headers=headers)
+
+        if resp2.status_code != 200:
+            return {}
+
+        records = resp2.json().get("records", {})
+        months: dict[str, dict] = {}
+        for k, v in records.items():
+            m = k[:7]
+            if m not in months:
+                months[m] = {"rev": 0.0, "sold": 0.0}
+            months[m]["rev"] += v.get("room_revenue", {}).get("sum", 0)
+            months[m]["sold"] += v.get("rooms_sold", {}).get("sum", 0)
+        return months
+
+
+def fetch_occupancy_filtered(
+    property_id: str,
+    api_key: str,
+    year: int,
+    month: int,
+) -> dict:
+    """
+    Fetch occupancy metrics with proper filtering from Cloudbeds Insights API.
+
+    Uses custom reports to get:
+    - Revenue with excluded sources (Blogger, House Use, Special case)
+    - Rooms sold with ALL sources (no exclusions)
+    - Room vs Dorm split
+
+    Returns: {
+        "total_rev": float, "total_sold": int, "total_adr": float,
+        "room_rev": float, "room_sold": int, "room_adr": float,
+        "dorm_rev": float, "dorm_sold": int, "dorm_adr": float,
+        "has_dorm": bool,
+    }
+    """
+    import calendar
+    last_day = calendar.monthrange(year, month)[1]
+    dfrom = f"{year}-{month:02d}-01"
+    dto = f"{year}-{month:02d}-{last_day:02d}"
+    date_f = _make_date_filters(dfrom, dto)
+    month_key = f"{year}-{month:02d}"
+
+    # 1. ALL sources (for rooms_sold / OCC)
+    all_data = _fetch_custom_report(
+        api_key, property_id, f"HiD-all-{month_key}", date_f,
+    )
+    # 2. Excluded sources (for revenue)
+    excl_data = _fetch_custom_report(
+        api_key, property_id, f"HiD-excl-{month_key}",
+        date_f + _make_source_exclude_filters(),
+    )
+
+    all_m = all_data.get(month_key, {"rev": 0, "sold": 0})
+    excl_m = excl_data.get(month_key, {"rev": 0, "sold": 0})
+
+    total_rev = excl_m["rev"]
+    total_sold = int(all_m["sold"])
+    total_adr = round(total_rev / total_sold, 2) if total_sold > 0 else 0
+
+    result = {
+        "total_rev": total_rev,
+        "total_sold": total_sold,
+        "total_adr": total_adr,
+        "room_rev": 0, "room_sold": 0, "room_adr": 0,
+        "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0,
+        "has_dorm": False,
+    }
+
+    # 3. Room / Dorm split (only if custom reports work — try Room first)
+    room_excl = _fetch_custom_report(
+        api_key, property_id, f"HiD-roomExcl-{month_key}",
+        date_f + [_make_room_type_filter(False)] + _make_source_exclude_filters(),
+    )
+
+    if room_excl:  # Custom reports work for this property
+        room_all = _fetch_custom_report(
+            api_key, property_id, f"HiD-roomAll-{month_key}",
+            date_f + [_make_room_type_filter(False)],
+        )
+        dorm_excl = _fetch_custom_report(
+            api_key, property_id, f"HiD-dormExcl-{month_key}",
+            date_f + [_make_room_type_filter(True)] + _make_source_exclude_filters(),
+        )
+        dorm_all = _fetch_custom_report(
+            api_key, property_id, f"HiD-dormAll-{month_key}",
+            date_f + [_make_room_type_filter(True)],
+        )
+
+        rm_excl = room_excl.get(month_key, {"rev": 0, "sold": 0})
+        rm_all = room_all.get(month_key, {"rev": 0, "sold": 0})
+        dm_excl = dorm_excl.get(month_key, {"rev": 0, "sold": 0})
+        dm_all = dorm_all.get(month_key, {"rev": 0, "sold": 0})
+
+        room_rev = rm_excl["rev"]
+        room_sold = int(rm_all["sold"])
+        dorm_rev = dm_excl["rev"]
+        dorm_sold = int(dm_all["sold"])
+
+        result["room_rev"] = room_rev
+        result["room_sold"] = room_sold
+        result["room_adr"] = round(room_rev / room_sold, 2) if room_sold > 0 else 0
+        result["dorm_rev"] = dorm_rev
+        result["dorm_sold"] = dorm_sold
+        result["dorm_adr"] = round(dorm_rev / dorm_sold, 2) if dorm_sold > 0 else 0
+        result["has_dorm"] = dorm_sold > 0
+
+    logger.info(
+        "Filtered occupancy %s %d/%d: total_rev=%.0f sold=%d adr=%.2f "
+        "room_adr=%.2f dorm_adr=%.2f",
+        property_id, year, month,
+        result["total_rev"], result["total_sold"], result["total_adr"],
+        result["room_adr"], result["dorm_adr"],
+    )
+    return result
+
+
 async def sync_all_branches() -> list[dict]:
     """Sync all active branches — uses per-property API key from config."""
     from app.models.branch import Branch

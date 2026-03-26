@@ -4,7 +4,7 @@ from datetime import datetime, date, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -13,6 +13,7 @@ from app.database import get_db
 from app.models.branch import Branch
 from app.models.kol import KOLRecord
 from app.services.cloudbeds import get_cached_rate
+from app.services.csv_kol_sync import sync_kol_csv
 
 router = APIRouter()
 
@@ -270,6 +271,16 @@ def delete_kol(kol_id: UUID, db: Session = Depends(get_db)):
     db.delete(obj)
     db.commit()
     return _envelope({"deleted": str(kol_id)})
+
+
+@router.post("/sync-csv")
+async def sync_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Upload a Lark CSV to upsert KOL records. Key: kol_name."""
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(400, "Only .csv files are accepted")
+    content = (await file.read()).decode("utf-8-sig")
+    stats = sync_kol_csv(db, content)
+    return _envelope(stats)
 
 
 def _row(r: KOLRecord):

@@ -1,19 +1,19 @@
 """
-KPI Engine — v3.2 (Cloudbeds Insights API as single source of truth)
+KPI Engine — v4.0 (Cloudbeds Insights API with filtered custom reports)
 
 Both current and next month: revenue, ADR, rooms_sold all come from
-Cloudbeds Data Insights API (via daily_metrics cache or live API call).
-  → Uses room_revenue (accommodation only, no tax/fees) = USALI standard.
-  → Each month uses its OWN ADR.
-
-Forecast formula:
-  Current ADR = Current Revenue / Current Rooms Sold
-  Predicted Room Sold = Round(predicted_occ x inventory x total_days, 0)
-  Forecast Revenue = Current ADR x Predicted Room Sold
+Cloudbeds Data Insights API via custom reports with proper filters.
 
 Revenue EXCLUDES sources: "House use", "Blogger", "Special case"
-(handled at Cloudbeds level — Insights API already excludes these.)
-Room/Dorm split ADR still uses reservation_daily (Insights doesn't split by room type).
+  (these sources don't charge — excluded via reservation_source filter)
+Rooms Sold / OCC counts ALL sources (no exclusions).
+Room/Dorm split uses room_type filter (Dorm = name contains 'Dorm').
+Each month uses its OWN ADR.
+
+Forecast formula:
+  ADR = Excluded Revenue / All Rooms Sold
+  Predicted Room Sold = Round(predicted_occ x inventory x total_days, 0)
+  Forecast Revenue = ADR x Predicted Room Sold
 """
 from __future__ import annotations
 
@@ -55,16 +55,18 @@ def _today() -> date:
 
 def _base_reservation_daily_query(
     db: Session, branch_id: UUID, first_day: date, last_day: date,
+    *, exclude_sources: bool = False,
 ):
     """
     Base query on reservation_daily joined to reservations, filtering:
     - branch_id matches
     - date within [first_day, last_day]
     - reservation status is not cancelled/no-show
-    - source is not in excluded sources (House use, Blogger, Special case)
+    - If exclude_sources=True: also exclude House use, Blogger, Special case
+      (use for REVENUE queries only — OCC/rooms_sold count ALL sources)
     Returns a SQLAlchemy query on ReservationDaily.
     """
-    return (
+    q = (
         db.query(ReservationDaily)
         .join(Reservation, ReservationDaily.reservation_id == Reservation.id)
         .filter(
@@ -73,10 +75,13 @@ def _base_reservation_daily_query(
             ReservationDaily.date <= last_day,
             # Exclude cancelled/no-show
             ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
-            # Exclude House use, Blogger, Special case
-            ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES)),
         )
     )
+    if exclude_sources:
+        q = q.filter(
+            ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES)),
+        )
+    return q
 
 
 def _count_dorm_beds(room_number: str) -> int:
@@ -151,46 +156,78 @@ def _get_adr_occ_from_insights(
     return adr, total_sold
 
 
-def _get_insights_live(
+def _get_insights_filtered(
     db: Session, branch_id: UUID, year: int, month: int,
-) -> tuple[float, int, Optional[float]]:
+) -> dict:
     """
-    Fetch revenue, rooms_sold, ADR directly from Cloudbeds Insights API (live call).
-    Falls back to cached daily_metrics if API call fails.
-    Returns: (revenue, rooms_sold, adr).
+    Fetch revenue, rooms_sold, ADR from Cloudbeds with proper filtering.
+
+    Uses custom reports API to apply:
+    - Revenue: excludes Blogger, House Use, Special case sources
+    - Rooms sold: ALL sources (no exclusions)
+    - Room/Dorm split by room type (Dorm = contains 'Dorm')
+
+    Returns dict with keys: total_rev, total_sold, total_adr,
+    room_rev, room_sold, room_adr, dorm_rev, dorm_sold, dorm_adr, has_dorm.
+
+    Falls back to stock report 110 (unfiltered) if custom reports fail.
     """
     from app.models.branch import Branch
     from app.config import settings
 
-    first_day = date(year, month, 1)
-    last_day = date(year, month, _days_in_month(year, month))
-
     branch = db.query(Branch).filter_by(id=branch_id, is_active=True).first()
     if not branch:
-        return 0.0, 0, None
+        return {"total_rev": 0, "total_sold": 0, "total_adr": 0,
+                "room_rev": 0, "room_sold": 0, "room_adr": 0,
+                "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
 
     pid = branch.cloudbeds_property_id
     api_key = settings.get_api_key_for_property(str(pid)) if pid else None
 
     if pid and api_key:
         try:
+            from app.services.cloudbeds import fetch_occupancy_filtered
+            result = fetch_occupancy_filtered(str(pid), api_key, year, month)
+            if result.get("total_sold", 0) > 0:
+                logger.info(
+                    "Filtered Insights for %s %d/%d: rev=%.0f sold=%d adr=%.2f "
+                    "room_adr=%.2f dorm_adr=%.2f",
+                    branch.name, year, month,
+                    result["total_rev"], result["total_sold"], result["total_adr"],
+                    result.get("room_adr", 0), result.get("dorm_adr", 0),
+                )
+                return result
+        except Exception as e:
+            logger.warning("Filtered Insights failed for %s: %s, falling back", branch.name, e)
+
+        # Fallback: stock report 110 (unfiltered — includes all sources)
+        try:
             from app.services.cloudbeds import fetch_cloudbeds_occupancy
-            occ_data = fetch_cloudbeds_occupancy(pid, api_key, first_day, last_day)
+            first_day = date(year, month, 1)
+            last_day = date(year, month, _days_in_month(year, month))
+            occ_data = fetch_cloudbeds_occupancy(str(pid), api_key, first_day, last_day)
             total_rev = sum(d.get("room_revenue", 0) for d in occ_data.values())
             total_sold = sum(int(d.get("rooms_sold", 0)) for d in occ_data.values())
-            adr = round(total_rev / total_sold, 2) if total_sold > 0 else None
+            adr = round(total_rev / total_sold, 2) if total_sold > 0 else 0
             logger.info(
-                "Live Insights for %s %d/%d: rev=%.0f sold=%d adr=%s",
+                "Fallback stock report for %s %d/%d: rev=%.0f sold=%d adr=%.2f",
                 branch.name, year, month, total_rev, total_sold, adr,
             )
-            return total_rev, total_sold, adr
+            return {"total_rev": total_rev, "total_sold": total_sold, "total_adr": adr,
+                    "room_rev": 0, "room_sold": 0, "room_adr": 0,
+                    "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
         except Exception as e:
-            logger.warning("Live Insights failed for %s: %s, falling back to cache", branch.name, e)
+            logger.warning("Stock report also failed for %s: %s", branch.name, e)
 
-    # Fallback to cached daily_metrics
+    # Final fallback: cached daily_metrics
+    first_day = date(year, month, 1)
+    last_day = date(year, month, _days_in_month(year, month))
     adr_cached, sold_cached = _get_adr_occ_from_insights(db, branch_id, first_day, last_day)
     rev_cached, _ = _get_revenue_from_insights(db, branch_id, year, month)
-    return rev_cached, sold_cached, adr_cached
+    return {"total_rev": rev_cached, "total_sold": sold_cached,
+            "total_adr": adr_cached or 0,
+            "room_rev": 0, "room_sold": 0, "room_adr": 0,
+            "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
 
 
 def _get_room_dorm_adr_from_daily(
@@ -198,46 +235,65 @@ def _get_room_dorm_adr_from_daily(
 ) -> tuple[Optional[float], Optional[float], float, int, float, int]:
     """
     Room/Dorm ADR from reservation_daily.
-    ADR = revenue / rooms_sold (where rooms_sold = count of reservation-night rows).
-    Excludes cancelled/no-show and excluded sources (House use, Blogger, Special case).
+    ADR = revenue (excl sources) / rooms_sold (ALL sources).
+    Revenue excludes "House use", "Blogger", "Special case".
+    Rooms sold / OCC counts ALL sources.
     For Dorm: counts per-BED (not per-reservation), excludes combo bookings.
 
     Returns: (room_adr, dorm_adr, room_revenue, room_sold, dorm_revenue, dorm_sold)
     """
-    base = _base_reservation_daily_query(db, branch_id, first_day, last_day)
-
-    # ── Room ADR (1 reservation_daily row = 1 room-night sold) ──────────────
-    room_q = base.filter(
+    # ── Room revenue (EXCLUDE sources) ──────────────────────────────────────
+    rev_base = _base_reservation_daily_query(db, branch_id, first_day, last_day, exclude_sources=True)
+    room_rev_row = rev_base.filter(
         func.lower(ReservationDaily.room_type_category) == "room",
-    )
-    room_row = room_q.with_entities(
+    ).with_entities(
         func.coalesce(func.sum(ReservationDaily.nightly_rate), 0),
+    ).one()
+    room_rev = float(room_rev_row[0])
+
+    # ── Room sold (ALL sources) ─────────────────────────────────────────────
+    all_base = _base_reservation_daily_query(db, branch_id, first_day, last_day, exclude_sources=False)
+    room_sold_row = all_base.filter(
+        func.lower(ReservationDaily.room_type_category) == "room",
+    ).with_entities(
         func.count(ReservationDaily.id),
     ).one()
-    room_rev = float(room_row[0])
-    room_nights = int(room_row[1])
+    room_nights = int(room_sold_row[0])
+
     room_adr = round(room_rev / room_nights, 2) if room_nights > 0 else None
 
-    # ── Dorm ADR (per-bed: count beds from room_number, exclude combos) ───
-    dorm_q = (
-        _base_reservation_daily_query(db, branch_id, first_day, last_day)
+    # ── Dorm revenue (EXCLUDE sources) + Dorm sold (ALL sources) ────────────
+    dorm_rev_q = (
+        _base_reservation_daily_query(db, branch_id, first_day, last_day, exclude_sources=True)
         .filter(func.lower(ReservationDaily.room_type_category) == "dorm")
     )
-    dorm_rows = dorm_q.with_entities(
+    dorm_rev_rows = dorm_rev_q.with_entities(
         ReservationDaily.nightly_rate,
         Reservation.room_number,
         Reservation.room_type,
     ).all()
 
     dorm_total_rev = 0.0
-    dorm_total_beds = 0
-    for row in dorm_rows:
+    for row in dorm_rev_rows:
         if _is_combo_booking(row.room_type):
-            continue  # skip combo bookings — mixed room+dorm revenue can't be split
-        rate = float(row.nightly_rate or 0)
-        beds = _count_dorm_beds(row.room_number)
-        dorm_total_rev += rate
-        dorm_total_beds += beds
+            continue
+        dorm_total_rev += float(row.nightly_rate or 0)
+
+    # Dorm beds sold (ALL sources)
+    dorm_all_q = (
+        _base_reservation_daily_query(db, branch_id, first_day, last_day, exclude_sources=False)
+        .filter(func.lower(ReservationDaily.room_type_category) == "dorm")
+    )
+    dorm_all_rows = dorm_all_q.with_entities(
+        Reservation.room_number,
+        Reservation.room_type,
+    ).all()
+
+    dorm_total_beds = 0
+    for row in dorm_all_rows:
+        if _is_combo_booking(row.room_type):
+            continue
+        dorm_total_beds += _count_dorm_beds(row.room_number)
 
     dorm_adr = round(dorm_total_rev / dorm_total_beds, 2) if dorm_total_beds > 0 else None
 
@@ -302,50 +358,30 @@ def compute_next_month_forecast(
     total_dorm_count: int = 0,
 ) -> dict:
     """
-    Forecast revenue for NEXT month using NEXT month's own ADR from reservation_daily.
+    Forecast revenue for NEXT month using NEXT month's own ADR from Cloudbeds API.
     Formula:
       Predict Room Sold = Round(total_days x num_rooms x Predict_OCC, 0)
       Forecast Revenue = Next Month ADR x Predict Room Sold
-    For room+dorm split: calculate room and dorm separately.
+    Revenue excludes Blogger/HouseUse/Special case.
+    Rooms sold counts ALL sources.
+    Room/Dorm split comes directly from Cloudbeds API filtered by room type.
     """
     next_month = cur_month + 1 if cur_month < 12 else 1
     next_year = cur_year if cur_month < 12 else cur_year + 1
     total_days = _days_in_month(next_year, next_month)
-    first_day_next = date(next_year, next_month, 1)
-    last_day_next = date(next_year, next_month, total_days)
 
-    # ── Next-month ADR & revenue from Cloudbeds Insights API (live) ──────
     has_split = total_room_count > 0 and total_dorm_count > 0
 
-    room_adr = dorm_adr = None
-    room_rev = dorm_rev = 0.0
-    room_sold = dorm_sold = 0
+    # ── Next-month data from Cloudbeds Insights API (filtered) ───────────
+    insights = _get_insights_filtered(db, branch_id, next_year, next_month)
 
-    # Live call to Cloudbeds Insights API for next month
-    total_revenue, total_sold, total_adr = _get_insights_live(
-        db, branch_id, next_year, next_month,
-    )
+    total_revenue = insights["total_rev"]
+    total_sold = insights["total_sold"]
+    total_adr = insights["total_adr"]
 
-    # Room/Dorm split: use reservation_daily for the RATIO, then scale to Insights ADR
-    if has_split:
-        raw_room_adr, raw_dorm_adr, room_rev, room_sold, dorm_rev, dorm_sold = \
-            _get_room_dorm_adr_from_daily(db, branch_id, first_day_next, last_day_next)
-
-        daily_total_rev = room_rev + dorm_rev
-        if daily_total_rev > 0 and total_adr and raw_room_adr and raw_dorm_adr:
-            # Scale reservation_daily ADRs so weighted avg = Insights ADR
-            daily_total_sold = room_sold + dorm_sold
-            daily_avg_adr = daily_total_rev / daily_total_sold if daily_total_sold else 1
-            scale = total_adr / daily_avg_adr if daily_avg_adr else 1
-            room_adr = round(raw_room_adr * scale, 2)
-            dorm_adr = round(raw_dorm_adr * scale, 2)
-            logger.info(
-                "Room/Dorm ADR scaled: raw_room=%s raw_dorm=%s → room=%s dorm=%s (scale=%.4f)",
-                raw_room_adr, raw_dorm_adr, room_adr, dorm_adr, scale,
-            )
-        else:
-            room_adr = raw_room_adr
-            dorm_adr = raw_dorm_adr
+    # Room/Dorm ADR directly from filtered Cloudbeds API
+    room_adr = insights.get("room_adr") or None
+    dorm_adr = insights.get("dorm_adr") or None
 
     # For rooms-only branches, room_adr = total_adr
     if total_room_count > 0 and total_dorm_count == 0:
@@ -368,13 +404,12 @@ def compute_next_month_forecast(
 
     can_split = (has_split
                  and predicted_room_occ_next is not None
-                 and predicted_dorm_occ_next is not None)
+                 and predicted_dorm_occ_next is not None
+                 and room_adr and dorm_adr)
 
-    if can_split and room_adr and dorm_adr:
-        # Predict Room Sold = Round(total_days x num_rooms x Predict_OCC, 0)
+    if can_split:
         pred_room_sold = round(total_days * total_room_count * predicted_room_occ_next)
         pred_dorm_sold = round(total_days * total_dorm_count * predicted_dorm_occ_next)
-        # Forecast Revenue = ADR x Predict Room Sold
         room_forecast = round(room_adr * pred_room_sold, 2)
         dorm_forecast = round(dorm_adr * pred_dorm_sold, 2)
         forecast = round(room_forecast + dorm_forecast, 2)
@@ -413,13 +448,14 @@ def compute_kpi_summary(
 ) -> dict:
     """
     Return full KPI summary dict for a branch/month.
-    Revenue & ADR from reservation_daily. Excludes House use, Blogger, Special case.
+    Revenue & ADR from Cloudbeds Insights API with proper filtering:
+    - Revenue excludes Blogger, House Use, Special case
+    - Rooms sold counts ALL sources
+    - Room/Dorm split via room type filter (Dorm = name contains 'Dorm')
     Forecast = ADR x Round(total_days x num_rooms x predicted_occ, 0).
     """
     today = _today()
     total_days = _days_in_month(year, month)
-    first_day = date(year, month, 1)
-    last_day = date(year, month, total_days)
 
     # Days elapsed in this month (cap at total_days)
     if today.year == year and today.month == month:
@@ -442,8 +478,13 @@ def compute_kpi_summary(
     predicted_room_occ = float(target_row.predicted_room_occ_pct) if (target_row and target_row.predicted_room_occ_pct) else None
     predicted_dorm_occ = float(target_row.predicted_dorm_occ_pct) if (target_row and target_row.predicted_dorm_occ_pct) else None
 
-    # ── Actuals from Cloudbeds Insights API (live call) ───────────────────
-    actual_native, total_sold, avg_adr = _get_insights_live(db, branch_id, year, month)
+    # ── Actuals from Cloudbeds Insights API (filtered) ────────────────────
+    insights = _get_insights_filtered(db, branch_id, year, month)
+
+    actual_native = insights["total_rev"]
+    total_sold = insights["total_sold"]
+    avg_adr = insights["total_adr"]
+
     # VND conversion
     from app.services.cloudbeds import get_cached_rate
     from app.models.branch import Branch
@@ -451,42 +492,27 @@ def compute_kpi_summary(
     vnd_rate = get_cached_rate(branch_obj.currency or "USD", "VND") if branch_obj else None
     actual_vnd = round(actual_native * vnd_rate, 2) if vnd_rate and actual_native else 0.0
 
-    # Room/Dorm split ADR: use reservation_daily for RATIO, scale to Insights ADR
-    room_adr = dorm_adr = None
+    # Room/Dorm ADR directly from filtered Cloudbeds API
+    room_adr = insights.get("room_adr") or None
+    dorm_adr = insights.get("dorm_adr") or None
     has_split = total_room_count > 0 and total_dorm_count > 0
 
-    room_rev = dorm_rev = 0.0
-    room_sold = dorm_sold = 0
-
-    if has_split:
-        raw_room_adr, raw_dorm_adr, room_rev, room_sold, dorm_rev, dorm_sold = \
-            _get_room_dorm_adr_from_daily(db, branch_id, first_day, last_day)
-
-        daily_total_rev = room_rev + dorm_rev
-        if daily_total_rev > 0 and avg_adr and raw_room_adr and raw_dorm_adr:
-            daily_total_sold = room_sold + dorm_sold
-            daily_avg_adr = daily_total_rev / daily_total_sold if daily_total_sold else 1
-            scale = avg_adr / daily_avg_adr if daily_avg_adr else 1
-            room_adr = round(raw_room_adr * scale, 2)
-            dorm_adr = round(raw_dorm_adr * scale, 2)
-        else:
-            room_adr = raw_room_adr
-            dorm_adr = raw_dorm_adr
-    elif total_room_count > 0 and total_dorm_count == 0:
+    # For rooms-only branches, room_adr = total_adr
+    if total_room_count > 0 and total_dorm_count == 0:
         room_adr = avg_adr
 
     avg_occ = predicted_occ_pct
 
     # ── Forecasts ─────────────────────────────────────────────────────────
-    # Forecast = ADR x Round(total_days x num_rooms x predicted_occ, 0)
     room_forecast = dorm_forecast = None
     occ_forecast = None
 
     can_split = (has_split
                  and predicted_room_occ is not None
-                 and predicted_dorm_occ is not None)
+                 and predicted_dorm_occ is not None
+                 and room_adr and dorm_adr)
 
-    if can_split and room_adr and dorm_adr:
+    if can_split:
         pred_room_sold = round(total_days * total_room_count * predicted_room_occ)
         pred_dorm_sold = round(total_days * total_dorm_count * predicted_dorm_occ)
         room_forecast = round(room_adr * pred_room_sold, 2)
@@ -515,7 +541,7 @@ def compute_kpi_summary(
         "actual_revenue_native": round(actual_native, 2),
         "actual_revenue_vnd": round(actual_vnd, 2),
         "avg_occ_pct": round(avg_occ, 4) if avg_occ is not None else None,
-        "avg_adr_native": round(avg_adr, 2) if avg_adr is not None else None,
+        "avg_adr_native": round(avg_adr, 2) if avg_adr else None,
         "room_adr_native": room_adr,
         "dorm_adr_native": dorm_adr,
         "nights_booked": total_sold,
@@ -528,5 +554,5 @@ def compute_kpi_summary(
         "forecast_room_adr": room_adr,
         "forecast_dorm_adr": dorm_adr,
         # Room/Dorm capability flag
-        "has_room_dorm_split": can_split and room_adr is not None and dorm_adr is not None,
+        "has_room_dorm_split": can_split,
     }
