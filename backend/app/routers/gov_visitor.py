@@ -1,4 +1,4 @@
-"""Government visitor data router — CRUD + Excel import."""
+"""Government visitor data router — CRUD + Excel import + template download."""
 from __future__ import annotations
 
 import io
@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -184,3 +185,82 @@ async def import_excel(
         "destinations": destinations_imported,
         "filename": file.filename,
     })
+
+
+@router.get("/template")
+def download_template():
+    """Generate and return an Excel template for gov visitor data import."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill("solid", fgColor="4F46E5")
+    sample_fill = PatternFill("solid", fgColor="F3F4F6")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+
+    headers = ["#", "Country", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Sum"]
+
+    sample_destinations = ["Vietnam", "Taiwan", "Japan"]
+    sample_data = {
+        "Vietnam": [
+            [1, "China", 574950, 380745, 630898, 368074, 407572, 364801, 391051, 414247, 361627, 433390, 467090, 487557, 5282002],
+            [2, "Korea", 417116, 468026, 374989, 326140, 318572, 303130, 317070, 384167, 328530, 360941, 343998, 388732, 4331411],
+        ],
+        "Taiwan": [
+            [1, "Japan", 89852, 120553, 154376, 97308, 125128, 92521, 85890, 124111, 127596, 127363, 161778, 172916, 1479392],
+            [2, "Hong Kong", 89391, 78870, 84521, 126554, 96859, 94236, 101602, 129122, 74649, 98688, 93386, 135855, 1203733],
+        ],
+        "Japan": [
+            [1, "Korea", 967100, 847358, 691725, 721672, 825883, 729860, 678566, 660917, 670563, 867261, 824567, 974239, 9459711],
+            [2, "China", 980520, 722924, 661817, 765189, 790089, 798001, 974564, 1018747, 775657, 715804, 562708, 330435, 9096455],
+        ],
+    }
+
+    for dest in sample_destinations:
+        ws = wb.create_sheet(title=dest)
+
+        # Write header row
+        for col_idx, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+
+        # Write sample data rows
+        for row_idx, row_data in enumerate(sample_data.get(dest, []), 2):
+            for col_idx, val in enumerate(row_data, 1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                cell.fill = sample_fill
+                cell.border = thin_border
+                if col_idx >= 3:
+                    cell.number_format = "#,##0"
+
+        # Add empty rows for user to fill
+        for row_idx in range(len(sample_data.get(dest, [])) + 2, 12):
+            ws.cell(row=row_idx, column=1, value=row_idx - 1)
+            for col_idx in range(1, 16):
+                ws.cell(row=row_idx, column=col_idx).border = thin_border
+
+        # Column widths
+        ws.column_dimensions["A"].width = 5
+        ws.column_dimensions["B"].width = 18
+        for c in "CDEFGHIJKLMNO":
+            ws.column_dimensions[c].width = 12
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=gov_visitor_template.xlsx"},
+    )

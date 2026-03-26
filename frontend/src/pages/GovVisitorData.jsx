@@ -115,7 +115,7 @@ export default function GovVisitorData() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Import Excel File</label>
             <p className="text-xs text-gray-400 mb-2">
               Upload an .xlsx file with sheets named by destination (e.g. Taiwan, Japan, Vietnam).
-              Each sheet: columns = Rank, Country, Jan–Dec, Sum. Existing data for matching destinations will be replaced.
+              Each sheet: columns = #, Country, Jan–Dec, Sum. Existing data for matching destinations will be replaced.
             </p>
             <div className="flex items-center gap-3">
               <input
@@ -131,6 +131,13 @@ export default function GovVisitorData() {
               >
                 {uploading ? "Importing..." : "Import"}
               </button>
+              <a
+                href="/api/gov-visitor/template"
+                download
+                className="px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded hover:bg-gray-50 whitespace-nowrap flex items-center gap-1.5"
+              >
+                <span className="text-base leading-none">&#8615;</span> Template
+              </a>
             </div>
           </div>
         </div>
