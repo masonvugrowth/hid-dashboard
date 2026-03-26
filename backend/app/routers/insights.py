@@ -591,28 +591,74 @@ def country_intelligence(
             return True
         return mapped_a in mapped_b or mapped_b in mapped_a or na in nb or nb in na
 
-    def _build_combined_forecast(month_num: int, branch_data: dict, dest_key: str):
+    def _get_month_bookings(month_num: int, branch_id: str):
         """
-        Cross-reference gov visitor forecast with top_volume (bookings).
+        Get top 5 countries by booking count for a specific month (by check-in date),
+        plus average lead time (days between booking created and check-in).
+        """
+        # Determine year: if month_num <= current month, it's next year
+        target_year = today.year if month_num > today.month else today.year + 1
+        month_start = f"{target_year}-{month_num:02d}-01"
+        if month_num == 12:
+            month_end = f"{target_year + 1}-01-01"
+        else:
+            month_end = f"{target_year}-{month_num + 1:02d}-01"
+
+        rows = db.execute(text("""
+            SELECT
+                r.guest_country,
+                r.guest_country_code,
+                COUNT(*)                                            AS booking_count,
+                COALESCE(SUM(r.grand_total_vnd), 0)                AS revenue_vnd,
+                AVG(r.check_in_date - r.reservation_date)          AS avg_lead_days,
+                ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC, COALESCE(SUM(r.grand_total_vnd), 0) DESC) AS rank
+            FROM reservations r
+            WHERE r.branch_id = :bid
+              AND r.guest_country IS NOT NULL
+              AND r.guest_country != ''
+              AND r.guest_country != '0'
+              AND length(r.guest_country) > 1
+              AND r.status NOT IN ('canceled','cancelled','no_show','no-show','cancelled_by_guest')
+              AND r.check_in_date >= :m_start
+              AND r.check_in_date < :m_end
+            GROUP BY r.guest_country, r.guest_country_code
+            ORDER BY COUNT(*) DESC
+            LIMIT 5
+        """), {"bid": branch_id, "m_start": month_start, "m_end": month_end}).fetchall()
+
+        result = {}
+        for r in rows:
+            avg_lead = None
+            if r[4] is not None:
+                try:
+                    avg_lead = round(float(r[4]), 1)
+                except (TypeError, ValueError):
+                    avg_lead = None
+            result[r[0].lower()] = {
+                "country": r[0],
+                "country_code": r[1],
+                "booking_count": int(r[2]),
+                "revenue_vnd": float(r[3]),
+                "avg_lead_days": avg_lead,
+                "rank": int(r[5]),
+            }
+        return result
+
+    def _build_combined_forecast(month_num: int, branch_id: str, dest_key: str):
+        """
+        Cross-reference gov visitor forecast with bookings for that specific month.
         Only return countries that appear in BOTH gov data AND top bookings.
-        Add reason notes for each match.
+        Add reason notes + avg lead time for each match.
         """
         raw_gov = _build_gov_forecast_raw(month_num)
         gov_countries = raw_gov.get(dest_key, raw_gov.get(dest_key.capitalize(), []))
 
-        # Build lookup: country name → booking info from top_volume
-        volume_lookup = {}
-        for v in branch_data.get("top_volume", []):
-            volume_lookup[v["country"].lower()] = {
-                "booking_count": v.get("booking_count", 0),
-                "revenue_vnd": v.get("revenue_vnd", 0),
-                "rank": v.get("rank", 0),
-            }
+        # Get bookings for this specific month by check-in date
+        volume_lookup = _get_month_bookings(month_num, branch_id)
 
         matched = []
         for gc in gov_countries:
             src = gc["source_country"]
-            # Find matching booking data
             booking_info = None
             for vk, vv in volume_lookup.items():
                 if _country_matches(src, vk):
@@ -620,14 +666,19 @@ def country_intelligence(
                     break
 
             if booking_info:
+                import calendar as _cal
+                month_name = _cal.month_name[month_num]
                 reasons = []
-                reasons.append(f"Top {booking_info['rank']} bookings (last 30d): {booking_info['booking_count']} bookings")
+                reasons.append(f"#{booking_info['rank']} bookings in {month_name}: {booking_info['booking_count']} bookings")
                 reasons.append(f"Gov forecast: #{gc['gov_rank']} source market with {gc['visitor_count']:,} visitors")
+                if booking_info["avg_lead_days"] is not None:
+                    reasons.append(f"Avg lead time: {booking_info['avg_lead_days']} days")
                 matched.append({
                     **gc,
                     "booking_count": booking_info["booking_count"],
                     "booking_rank": booking_info["rank"],
                     "revenue_vnd": booking_info["revenue_vnd"],
+                    "avg_lead_days": booking_info["avg_lead_days"],
                     "match_type": "volume",
                     "reasons": reasons,
                 })
@@ -647,8 +698,8 @@ def country_intelligence(
         bid = bdata["branch_id"]
         dest_key = _resolve_dest(bid, branch_info.get(bid, ""), branch_name_map.get(bid, ""))
 
-        combined_next = _build_combined_forecast(next_month, bdata, dest_key)
-        combined_next2 = _build_combined_forecast(next2_month, bdata, dest_key)
+        combined_next = _build_combined_forecast(next_month, bid, dest_key)
+        combined_next2 = _build_combined_forecast(next2_month, bid, dest_key)
 
         # Also keep full gov list for reference
         all_gov_next = gov_raw_next.get(dest_key, gov_raw_next.get(dest_key.capitalize(), []))[:10]

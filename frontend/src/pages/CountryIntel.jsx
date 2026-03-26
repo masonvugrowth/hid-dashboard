@@ -394,7 +394,7 @@ function ForecastTable({ forecast }) {
         <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 rounded-lg border border-amber-200 mb-3">
           <span className="text-amber-500 text-sm">⚠</span>
           <span className="text-xs text-amber-700">
-            No overlap between gov visitor forecast and your top booking countries (last 30d).
+            No overlap between gov visitor forecast and your top booking countries for this month.
             Below is the full gov visitor ranking for reference.
           </span>
         </div>
@@ -419,7 +419,8 @@ function ForecastTable({ forecast }) {
             <th className="px-3 py-2 text-left">Country</th>
             <th className="px-3 py-2 text-right">Gov Visitors ({forecast?.month_name})</th>
             <th className="px-3 py-2 text-left w-36">Visitor Volume</th>
-            <th className="px-3 py-2 text-right">Bookings (30d)</th>
+            <th className="px-3 py-2 text-right">Bookings ({forecast?.month_name})</th>
+            <th className="px-3 py-2 text-right">Avg Lead Time</th>
             <th className="px-3 py-2 text-left">Why Target</th>
           </tr>
         </thead>
@@ -452,6 +453,13 @@ function ForecastTable({ forecast }) {
               </td>
               <td className="px-3 py-2 text-sm text-right font-mono font-bold text-indigo-700">
                 {fmt(c.booking_count)}
+              </td>
+              <td className="px-3 py-2 text-sm text-right font-mono text-gray-700">
+                {c.avg_lead_days != null ? (
+                  <span>{c.avg_lead_days}d</span>
+                ) : (
+                  <span className="text-gray-300">—</span>
+                )}
               </td>
               <td className="px-3 py-2">
                 <div className="flex flex-col gap-0.5">
