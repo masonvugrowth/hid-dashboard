@@ -435,10 +435,31 @@ def country_intelligence(
         "viet nam": "Vietnam",
     }
 
-    def _find_gov_data(branch_country: str, guest_country: str):
+    # Fallback: map branch NAME to gov destination (when branch.country is empty)
+    # Saigon → Vietnam, Taipei/1948/Oani → Taiwan, Osaka → Japan
+    _BRANCH_NAME_DEST_MAP = {
+        "meander taipei": "Taiwan",
+        "meander 1948": "Taiwan",
+        "meander oani": "Taiwan",
+        "meander osaka": "Japan",
+        "meander saigon": "Vietnam",
+    }
+
+    def _resolve_dest(branch_id: str, branch_country: str = None, branch_name: str = None) -> str:
+        """Resolve branch to gov destination key. Tries branch.country first, then branch name."""
+        bc = (branch_country or "").lower().strip()
+        if bc and bc in _BRANCH_DEST_MAP:
+            return _BRANCH_DEST_MAP[bc]
+        # Fallback: use branch name
+        bn = (branch_name or "").lower().strip()
+        for key, dest in _BRANCH_NAME_DEST_MAP.items():
+            if key in bn or bn in key:
+                return dest
+        return bc or bn
+
+    def _find_gov_data(branch_country: str, guest_country: str, branch_name: str = None):
         """Find government visitor data matching branch destination + guest source country."""
-        bc = (branch_country or "").lower()
-        dest_key = _BRANCH_DEST_MAP.get(bc, bc)
+        dest_key = _resolve_dest("", branch_country, branch_name)
         dest_data = gov_map.get(dest_key.lower(), {})
         gc = guest_country.lower()
         # Direct match
@@ -453,11 +474,13 @@ def country_intelligence(
     # ── 6. Build response ────────────────────────────────────────────────────
     branch_map: dict[str, dict] = {}
 
-    # Fetch branch country for gov data mapping
+    # Fetch branch country + name for gov data mapping
     branch_info = {}
-    branch_info_rows = db.execute(text("SELECT id, country FROM branches")).fetchall()
+    branch_name_map = {}
+    branch_info_rows = db.execute(text("SELECT id, country, name FROM branches")).fetchall()
     for bi in branch_info_rows:
         branch_info[str(bi[0])] = bi[1] or ""
+        branch_name_map[str(bi[0])] = bi[2] or ""
 
     for r in country_rows:
         bid_str = str(r[0])
@@ -470,7 +493,7 @@ def country_intelligence(
                 "top_growth": [],
             }
         entry = _build_country(bid_str, r[3], r[4])
-        gov = _find_gov_data(branch_info.get(bid_str, ""), r[3])
+        gov = _find_gov_data(branch_info.get(bid_str, ""), r[3], branch_name=branch_name_map.get(bid_str, ""))
         entry.update({
             "rank": int(r[7]),
             "booking_count": int(r[5]),
@@ -490,7 +513,7 @@ def country_intelligence(
                 "top_growth": [],
             }
         entry = _build_country(bid_str, r[3], r[4])
-        gov = _find_gov_data(branch_info.get(bid_str, ""), r[3])
+        gov = _find_gov_data(branch_info.get(bid_str, ""), r[3], branch_name=branch_name_map.get(bid_str, ""))
         entry.update({
             "rank": int(r[8]),
             "recent_bookings": int(r[5]),
@@ -594,8 +617,8 @@ def country_intelligence(
     next2_month_name = calendar.month_name[next2_month]
 
     for bdata in branch_map.values():
-        b_country = branch_info.get(bdata["branch_id"], "").lower()
-        dest_key = _BRANCH_DEST_MAP.get(b_country, b_country)
+        bid = bdata["branch_id"]
+        dest_key = _resolve_dest(bid, branch_info.get(bid, ""), branch_name_map.get(bid, ""))
 
         combined_next = _build_combined_forecast(next_month, bdata, dest_key)
         combined_next2 = _build_combined_forecast(next2_month, bdata, dest_key)
