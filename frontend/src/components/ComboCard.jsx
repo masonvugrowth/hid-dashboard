@@ -1,7 +1,7 @@
 import VerdictBadge from "./VerdictBadge";
 import { getTAClasses } from "../constants/audiences";
 
-const fmt = (v) => v != null ? new Intl.NumberFormat("vi-VN", { notation: "compact" }).format(v) : "—";
+const fmt = (v) => v != null ? new Intl.NumberFormat("en").format(Math.round(v)) : "—";
 
 function RoasChip({ value }) {
   if (value == null) return <span className="text-[11px] text-gray-300">—</span>;

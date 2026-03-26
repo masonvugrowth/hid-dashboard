@@ -25,12 +25,12 @@ export default function KPICard({ label, actual, target, currency, suffix = "", 
     : pct >= 0.6   ? "bg-orange-400"
     : "bg-red-500";
 
-  const barWidth = pct !== null ? `${Math.min(pct * 100, 100).toFixed(1)}%` : "0%";
+  const barWidth = pct !== null ? `${Math.min(pct * 100, 100).toFixed(2)}%` : "0%";
 
   const fmt = (n) => {
     if (n == null) return "—";
-    if (suffix === "%") return `${(n * 100).toFixed(1)}%`;
-    return new Intl.NumberFormat("vi-VN").format(Math.round(n));
+    if (suffix === "%") return `${(n * 100).toFixed(2)}%`;
+    return new Intl.NumberFormat("en").format(Math.round(n));
   };
 
   return (
@@ -43,7 +43,7 @@ export default function KPICard({ label, actual, target, currency, suffix = "", 
         </span>
         {pct !== null && (
           <span className={`text-sm font-semibold px-2 py-0.5 rounded-full ${bandColor}`}>
-            {(pct * 100).toFixed(1)}%
+            {(pct * 100).toFixed(2)}%
           </span>
         )}
       </div>

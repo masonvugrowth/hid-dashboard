@@ -156,7 +156,7 @@ export default function Countries() {
                   </td>
                   <td className="px-4 py-2.5 text-right text-gray-700">{c.count?.toLocaleString()}</td>
                   <td className="px-4 py-2.5 text-right text-gray-700">
-                    {new Intl.NumberFormat("vi-VN", { notation: "compact" }).format(Math.round(c.revenue_native || 0))}
+                    {new Intl.NumberFormat("en").format(Math.round(c.revenue_native || 0))}
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     {c.yoy_growth != null ? (
@@ -164,7 +164,7 @@ export default function Countries() {
                         c.yoy_growth > 0 ? "text-emerald-600" :
                         c.yoy_growth < 0 ? "text-red-500" : "text-gray-500"
                       }`}>
-                        {c.yoy_growth > 0 ? "+" : ""}{(c.yoy_growth * 100).toFixed(1)}%
+                        {c.yoy_growth > 0 ? "+" : ""}{(c.yoy_growth * 100).toFixed(2)}%
                       </span>
                     ) : (
                       <span className="text-gray-300">—</span>

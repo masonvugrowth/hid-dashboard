@@ -36,7 +36,7 @@ const ANGLE_COLORS = ["#6366f1", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6", "#e
 const REC_TYPES = ["scale_up", "optimize", "pause", "reduce", "maintain", "test_new", "insufficient_data"];
 const VERDICTS = ["WIN", "TEST", "LOSE"];
 
-const fmt = (v) => v != null ? new Intl.NumberFormat("vi-VN", { notation: "compact" }).format(v) : "—";
+const fmt = (v) => v != null ? new Intl.NumberFormat("en").format(Math.round(v)) : "—";
 
 export default function AdAnalyzer() {
   const { selected, isAll } = useBranch();

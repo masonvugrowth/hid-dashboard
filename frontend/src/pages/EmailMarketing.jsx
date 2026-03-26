@@ -14,7 +14,7 @@ import TrendChart from "../components/TrendChart";
 
 function pct(val) {
   if (val == null) return "—";
-  return `${(val * 100).toFixed(1)}%`;
+  return `${(val * 100).toFixed(2)}%`;
 }
 
 function rateBand(rate, thresholds = [0.3, 0.2, 0.1]) {

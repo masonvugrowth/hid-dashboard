@@ -26,9 +26,7 @@ function cancelBand(pct) {
 
 function fmt(val, currency) {
   if (val == null) return "—";
-  const n = Math.round(val);
-  if (currency === "VND") return new Intl.NumberFormat("vi-VN").format(n);
-  return new Intl.NumberFormat("en-US").format(n);
+  return new Intl.NumberFormat("en").format(Math.round(val));
 }
 
 export default function PerformanceDaily() {
@@ -78,7 +76,7 @@ export default function PerformanceDaily() {
       const row = { date };
       metrics.filter((m) => m.date === date).forEach((m) => {
         const key = m.branch_id?.slice(-4);
-        row[`occ_${key}`] = +(m.occ_pct * 100).toFixed(1);
+        row[`occ_${key}`] = +(m.occ_pct * 100).toFixed(2);
       });
       return row;
     });
@@ -135,8 +133,8 @@ export default function PerformanceDaily() {
               name: branchMap[id]?.name || `…${id.slice(-4)}`,
               color: OCC_COLORS[i % OCC_COLORS.length],
             }))}
-            formatY={(v) => `${v}%`}
-            formatTooltip={(v, name) => [`${v}%`, name]}
+            formatY={(v) => `${Number(v).toFixed(2)}%`}
+            formatTooltip={(v, name) => [`${Number(v).toFixed(2)}%`, name]}
           />
 
           {/* Data table */}
@@ -165,7 +163,7 @@ export default function PerformanceDaily() {
                       </td>
                       <td className="px-4 py-2.5 text-right">
                         <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${occBand(m.occ_pct)}`}>
-                          {(m.occ_pct * 100).toFixed(1)}%
+                          {(m.occ_pct * 100).toFixed(2)}%
                         </span>
                       </td>
                       <td className="px-4 py-2.5 text-right text-gray-700 font-medium tabular-nums">
@@ -179,7 +177,7 @@ export default function PerformanceDaily() {
                       </td>
                       <td className="px-4 py-2.5 text-right">
                         <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${cancelBand(m.cancellation_pct || 0)}`}>
-                          {((m.cancellation_pct || 0) * 100).toFixed(1)}%
+                          {((m.cancellation_pct || 0) * 100).toFixed(2)}%
                         </span>
                       </td>
                     </tr>

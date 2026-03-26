@@ -76,7 +76,7 @@ export default function OCCHeatmap({ data = [], title = "OCC Heatmap" }) {
             {week.map(({ date, occ }) => (
               <div
                 key={date}
-                title={`${date}: ${occ != null ? (occ * 100).toFixed(1) + "%" : "—"}`}
+                title={`${date}: ${occ != null ? (occ * 100).toFixed(2) + "%" : "—"}`}
                 className="w-4 h-4 rounded-sm cursor-default"
                 style={{ backgroundColor: occColor(occ) }}
               />

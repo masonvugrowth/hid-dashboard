@@ -34,7 +34,7 @@ export default function TrendChart({
   formatY,
   formatTooltip,
 }) {
-  const yTickFmt = formatY || ((v) => new Intl.NumberFormat("vi-VN", { notation: "compact" }).format(v));
+  const yTickFmt = formatY || ((v) => new Intl.NumberFormat("en").format(Math.round(v)));
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
@@ -61,7 +61,7 @@ export default function TrendChart({
               width={52}
             />
             <Tooltip
-              formatter={formatTooltip || ((v, name) => [new Intl.NumberFormat("vi-VN").format(Math.round(v)), name])}
+              formatter={formatTooltip || ((v, name) => [new Intl.NumberFormat("en").format(Math.round(v)), name])}
               contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e5e7eb" }}
             />
             {(lines.length > 0 || bars.length > 0) && (

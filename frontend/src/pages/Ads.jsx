@@ -10,9 +10,7 @@ const CHANNELS = ["Meta", "Google", "TikTok"];
 function fmt(val, currency) {
   if (val == null) return "—";
   const sym = CURRENCY_SYMBOLS[currency] || "";
-  if (Math.abs(val) >= 1_000_000) return sym + (val / 1_000_000).toFixed(1) + "M";
-  if (Math.abs(val) >= 1_000) return sym + (val / 1_000).toFixed(0) + "K";
-  return sym + val.toLocaleString();
+  return sym + new Intl.NumberFormat("en").format(Math.round(val));
 }
 
 function RoasBadge({ value }) {

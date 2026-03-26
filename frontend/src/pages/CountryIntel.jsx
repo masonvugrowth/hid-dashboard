@@ -2,13 +2,7 @@ import { useState, useEffect } from "react";
 import { useBranch } from "../context/BranchContext";
 
 const fmt = (n) =>
-  n == null ? "—" : n >= 1_000_000_000
-    ? `${(n / 1_000_000_000).toFixed(1)}B`
-    : n >= 1_000_000
-    ? `${(n / 1_000_000).toFixed(1)}M`
-    : n >= 1_000
-    ? `${(n / 1_000).toFixed(0)}K`
-    : String(Math.round(n));
+  n == null ? "—" : new Intl.NumberFormat("en").format(Math.round(n));
 
 const ISO3_TO_2 = {
   AFG:"AF",ALB:"AL",DZA:"DZ",AND:"AD",AGO:"AO",ARG:"AR",ARM:"AM",AUS:"AU",AUT:"AT",AZE:"AZ",

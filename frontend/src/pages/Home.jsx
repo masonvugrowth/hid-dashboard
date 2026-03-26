@@ -18,9 +18,7 @@ const MONTH_NAME = now.toLocaleString("en-US", { month: "long", year: "numeric" 
 function fmt(value, currency) {
   if (value == null) return "\u2014";
   const sym = CURRENCY_SYMBOLS[currency] || currency || "";
-  if (Math.abs(value) >= 1_000_000_000) return sym + (value / 1_000_000_000).toFixed(1) + "B";
-  if (Math.abs(value) >= 1_000_000)     return sym + (value / 1_000_000).toFixed(1) + "M";
-  return sym + Math.round(value).toLocaleString();
+  return sym + new Intl.NumberFormat("en").format(Math.round(value));
 }
 
 function AchievementBadge({ value }) {

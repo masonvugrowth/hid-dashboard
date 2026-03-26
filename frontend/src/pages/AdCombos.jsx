@@ -361,7 +361,7 @@ export default function AdCombos() {
               <div className="grid grid-cols-4 gap-2 text-xs">
                 <div className="bg-blue-50 rounded p-2 text-center">
                   <span className="text-blue-400 text-[10px]">Cost</span>
-                  <p className="font-semibold text-blue-700">{detail.spend_vnd != null ? new Intl.NumberFormat("vi-VN", {notation: "compact"}).format(detail.spend_vnd) : "—"}</p>
+                  <p className="font-semibold text-blue-700">{detail.spend_vnd != null ? new Intl.NumberFormat("en").format(Math.round(detail.spend_vnd)) : "—"}</p>
                 </div>
                 <div className="bg-purple-50 rounded p-2 text-center">
                   <span className="text-purple-400 text-[10px]">Purchase</span>
@@ -369,7 +369,7 @@ export default function AdCombos() {
                 </div>
                 <div className="bg-green-50 rounded p-2 text-center">
                   <span className="text-green-400 text-[10px]">Revenue</span>
-                  <p className="font-semibold text-green-700">{detail.revenue_vnd != null ? new Intl.NumberFormat("vi-VN", {notation: "compact"}).format(detail.revenue_vnd) : "—"}</p>
+                  <p className="font-semibold text-green-700">{detail.revenue_vnd != null ? new Intl.NumberFormat("en").format(Math.round(detail.revenue_vnd)) : "—"}</p>
                 </div>
                 <div className={`rounded p-2 text-center ${
                   detail.roas >= 3 ? "bg-green-50" : detail.roas >= 1 ? "bg-amber-50" : detail.roas != null ? "bg-red-50" : "bg-gray-50"

@@ -18,13 +18,12 @@ import TrendChart from "../components/TrendChart";
 function fmt(val, style = "number") {
   if (val == null) return "—";
   const n = Math.round(val);
-  if (style === "compact") return new Intl.NumberFormat("vi-VN", { notation: "compact" }).format(n);
-  return new Intl.NumberFormat("vi-VN").format(n);
+  return new Intl.NumberFormat("en").format(n);
 }
 
 function pct(val) {
   if (val == null) return "—";
-  return `${(val * 100).toFixed(1)}%`;
+  return `${(val * 100).toFixed(2)}%`;
 }
 
 function cancelBand(rate) {

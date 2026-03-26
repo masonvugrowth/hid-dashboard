@@ -22,9 +22,6 @@ function currSym(currency) {
 function fmt(val, currency) {
   if (val == null || val === 0) return "--";
   const sym = currSym(currency);
-  if (Math.abs(val) >= 1e9)  return `${sym}${(val / 1e9).toFixed(1)}B`;
-  if (Math.abs(val) >= 1e6)  return `${sym}${(val / 1e6).toFixed(1)}M`;
-  if (Math.abs(val) >= 1e3)  return `${sym}${(val / 1e3).toFixed(0)}K`;
   return `${sym}${new Intl.NumberFormat("en").format(Math.round(val))}`;
 }
 
@@ -35,7 +32,7 @@ function fmtNumber(val) {
 
 function fmtPct(val) {
   if (val == null) return "--";
-  return `${(val * 100).toFixed(1)}%`;
+  return `${(val * 100).toFixed(2)}%`;
 }
 
 function pctChange(curr, prev) {
@@ -62,7 +59,7 @@ function KpiCard({ label, value, change, suffix = "" }) {
       <p className="text-2xl font-bold text-gray-900 mt-1">{value}{suffix}</p>
       {change != null && (
         <p className={`text-xs font-medium mt-1 ${changeColor}`}>
-          {arrow} {Math.abs(change).toFixed(1)}% MoM
+          {arrow} {Math.abs(change).toFixed(2)}% MoM
         </p>
       )}
     </div>
@@ -154,7 +151,7 @@ function MonthlyTable({ rows, branchMap, allMonthly }) {
                 <td className="px-4 py-2 text-right text-gray-600 tabular-nums">{fmt(r.avg_revpar_native, cur)}</td>
                 <td className="px-4 py-2 text-right text-gray-500 tabular-nums">{fmtNumber(r.total_sold)}</td>
                 <td className={`px-4 py-2 text-right text-xs font-medium tabular-nums ${yoyColor}`}>
-                  {r.yoy_rev_change != null ? `${yoyArrow} ${Math.abs(r.yoy_rev_change).toFixed(1)}%` : "--"}
+                  {r.yoy_rev_change != null ? `${yoyArrow} ${Math.abs(r.yoy_rev_change).toFixed(2)}%` : "--"}
                 </td>
               </tr>
             );
@@ -279,9 +276,9 @@ export default function PerformanceMonthly() {
       const sortKey = `${m.year}-${String(m.month).padStart(2, "0")}`;
       if (!map[sortKey]) map[sortKey] = { label: key, sortKey };
       if (isAll) {
-        map[sortKey][m.branch_id] = +((m.avg_occ_pct || 0) * 100).toFixed(1);
+        map[sortKey][m.branch_id] = +((m.avg_occ_pct || 0) * 100).toFixed(2);
       } else {
-        map[sortKey].occ_pct = +((m.avg_occ_pct || 0) * 100).toFixed(1);
+        map[sortKey].occ_pct = +((m.avg_occ_pct || 0) * 100).toFixed(2);
       }
     }
     return Object.values(map).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
@@ -407,15 +404,10 @@ export default function PerformanceMonthly() {
                   />
                   <YAxis
                     tick={{ fontSize: 11, fill: "#9ca3af" }}
-                    tickFormatter={(v) => {
-                      if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
-                      if (v >= 1e6) return `${(v / 1e6).toFixed(0)}M`;
-                      if (v >= 1e3) return `${(v / 1e3).toFixed(0)}K`;
-                      return v;
-                    }}
+                    tickFormatter={(v) => new Intl.NumberFormat("en").format(Math.round(v))}
                     tickLine={false}
                     axisLine={false}
-                    width={52}
+                    width={80}
                   />
                   <Tooltip
                     formatter={(v, name) => {
@@ -466,16 +458,16 @@ export default function PerformanceMonthly() {
                   />
                   <YAxis
                     tick={{ fontSize: 11, fill: "#9ca3af" }}
-                    tickFormatter={(v) => `${v}%`}
+                    tickFormatter={(v) => `${Number(v).toFixed(2)}%`}
                     tickLine={false}
                     axisLine={false}
-                    width={44}
+                    width={56}
                     domain={[0, 100]}
                   />
                   <Tooltip
                     formatter={(v, name) => {
-                      if (isAll) return [`${v}%`, branchMap[name]?.name || name];
-                      return [`${v}%`, "OCC%"];
+                      if (isAll) return [`${Number(v).toFixed(2)}%`, branchMap[name]?.name || name];
+                      return [`${Number(v).toFixed(2)}%`, "OCC%"];
                     }}
                     contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e5e7eb" }}
                   />
@@ -521,14 +513,10 @@ export default function PerformanceMonthly() {
                   />
                   <YAxis
                     tick={{ fontSize: 11, fill: "#9ca3af" }}
-                    tickFormatter={(v) => {
-                      if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
-                      if (v >= 1e3) return `${(v / 1e3).toFixed(0)}K`;
-                      return v;
-                    }}
+                    tickFormatter={(v) => new Intl.NumberFormat("en").format(Math.round(v))}
                     tickLine={false}
                     axisLine={false}
-                    width={52}
+                    width={72}
                   />
                   <Tooltip
                     formatter={(v, name) => {

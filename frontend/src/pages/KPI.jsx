@@ -11,7 +11,7 @@ const MONTHS = [
   "Jul","Aug","Sep","Oct","Nov","Dec",
 ];
 
-const fmt = (v) => v != null ? new Intl.NumberFormat("vi-VN").format(Math.round(v)) : "—";
+const fmt = (v) => v != null ? new Intl.NumberFormat("en").format(Math.round(v)) : "—";
 
 export default function KPI() {
   const { selected, isAll } = useBranch();
@@ -134,7 +134,7 @@ export default function KPI() {
                     : b.achievement_pct >= 0.8 ? "bg-yellow-100 text-yellow-700"
                     : "bg-red-100 text-red-700"
                   }`}>
-                    {(b.achievement_pct * 100).toFixed(1)}% of target
+                    {(b.achievement_pct * 100).toFixed(2)}% of target
                   </span>
                 )}
               </div>
@@ -196,7 +196,7 @@ export default function KPI() {
                         <input
                           type="number" min="0" max="100" step="0.1"
                           className="border border-gray-200 rounded-lg px-2 py-1 text-sm w-20 text-center"
-                          defaultValue={b.predicted_room_occ_pct != null ? (b.predicted_room_occ_pct * 100).toFixed(1) : ""}
+                          defaultValue={b.predicted_room_occ_pct != null ? (b.predicted_room_occ_pct * 100).toFixed(2) : ""}
                           placeholder="—"
                           onChange={(e) => handleOccChange(b.branch_id, "cur_room", e.target.value)}
                         />
@@ -204,7 +204,7 @@ export default function KPI() {
                         <input
                           type="number" min="0" max="100" step="0.1"
                           className="border border-gray-200 rounded-lg px-2 py-1 text-sm w-20 text-center"
-                          defaultValue={b.predicted_dorm_occ_pct != null ? (b.predicted_dorm_occ_pct * 100).toFixed(1) : ""}
+                          defaultValue={b.predicted_dorm_occ_pct != null ? (b.predicted_dorm_occ_pct * 100).toFixed(2) : ""}
                           placeholder="—"
                           onChange={(e) => handleOccChange(b.branch_id, "cur_dorm", e.target.value)}
                         />
@@ -226,7 +226,7 @@ export default function KPI() {
                         <input
                           type="number" min="0" max="100" step="0.1"
                           className="border border-gray-200 rounded-lg px-2 py-1 text-sm w-20 text-center"
-                          defaultValue={b.predicted_room_occ_next != null ? (b.predicted_room_occ_next * 100).toFixed(1) : ""}
+                          defaultValue={b.predicted_room_occ_next != null ? (b.predicted_room_occ_next * 100).toFixed(2) : ""}
                           placeholder="—"
                           onChange={(e) => handleOccChange(b.branch_id, "next_room", e.target.value)}
                         />
@@ -234,7 +234,7 @@ export default function KPI() {
                         <input
                           type="number" min="0" max="100" step="0.1"
                           className="border border-gray-200 rounded-lg px-2 py-1 text-sm w-20 text-center"
-                          defaultValue={b.predicted_dorm_occ_next != null ? (b.predicted_dorm_occ_next * 100).toFixed(1) : ""}
+                          defaultValue={b.predicted_dorm_occ_next != null ? (b.predicted_dorm_occ_next * 100).toFixed(2) : ""}
                           placeholder="—"
                           onChange={(e) => handleOccChange(b.branch_id, "next_dorm", e.target.value)}
                         />
@@ -255,7 +255,7 @@ export default function KPI() {
                       <input
                         type="number" min="0" max="100" step="0.1"
                         className="border border-gray-200 rounded-lg px-2 py-1 text-sm w-20 text-center"
-                        defaultValue={b.predicted_occ_pct != null ? (b.predicted_occ_pct * 100).toFixed(1) : ""}
+                        defaultValue={b.predicted_occ_pct != null ? (b.predicted_occ_pct * 100).toFixed(2) : ""}
                         placeholder="—"
                         onChange={(e) => handleOccChange(b.branch_id, "cur", e.target.value)}
                       />
@@ -272,7 +272,7 @@ export default function KPI() {
                       <input
                         type="number" min="0" max="100" step="0.1"
                         className="border border-gray-200 rounded-lg px-2 py-1 text-sm w-20 text-center"
-                        defaultValue={b.predicted_occ_next != null ? (b.predicted_occ_next * 100).toFixed(1) : ""}
+                        defaultValue={b.predicted_occ_next != null ? (b.predicted_occ_next * 100).toFixed(2) : ""}
                         placeholder="—"
                         onChange={(e) => handleOccChange(b.branch_id, "next", e.target.value)}
                       />

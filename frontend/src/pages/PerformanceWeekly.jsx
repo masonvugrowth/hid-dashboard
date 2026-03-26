@@ -22,9 +22,6 @@ function currSym(currency) {
 function fmtCompact(val, currency) {
   if (val == null || val === 0) return "0";
   const sym = currSym(currency);
-  if (Math.abs(val) >= 1e9)  return `${sym}${(val / 1e9).toFixed(1)}B`;
-  if (Math.abs(val) >= 1e6)  return `${sym}${(val / 1e6).toFixed(1)}M`;
-  if (Math.abs(val) >= 1e3)  return `${sym}${(val / 1e3).toFixed(0)}K`;
   return `${sym}${new Intl.NumberFormat("en").format(Math.round(val))}`;
 }
 
@@ -35,7 +32,7 @@ function fmtNumber(val) {
 
 function fmtPct(val) {
   if (val == null) return "--";
-  return `${(val * 100).toFixed(1)}%`;
+  return `${(val * 100).toFixed(2)}%`;
 }
 
 function pctChange(curr, prev) {
@@ -77,7 +74,7 @@ function KpiCard({ label, value, change, suffix = "" }) {
       <p className="text-2xl font-bold text-gray-900 mt-1">{value}{suffix}</p>
       {change != null && (
         <p className={`text-xs font-medium mt-1 ${changeColor}`}>
-          {arrow} {Math.abs(change).toFixed(1)}% WoW
+          {arrow} {Math.abs(change).toFixed(2)}% WoW
         </p>
       )}
     </div>
@@ -294,7 +291,7 @@ export default function PerformanceWeekly() {
       const row = { week };
       for (const [bid, rows] of Object.entries(weeklyByBranch)) {
         const found = rows.find((r) => r.week_start === week);
-        row[bid] = found ? +((found.avg_occ_pct || 0) * 100).toFixed(1) : null;
+        row[bid] = found ? +((found.avg_occ_pct || 0) * 100).toFixed(2) : null;
       }
       return row;
     });
@@ -383,15 +380,10 @@ export default function PerformanceWeekly() {
               />
               <YAxis
                 tick={{ fontSize: 11, fill: "#9ca3af" }}
-                tickFormatter={(v) => {
-                  if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
-                  if (v >= 1e6) return `${(v / 1e6).toFixed(0)}M`;
-                  if (v >= 1e3) return `${(v / 1e3).toFixed(0)}K`;
-                  return v;
-                }}
+                tickFormatter={(v) => new Intl.NumberFormat("en").format(Math.round(v))}
                 tickLine={false}
                 axisLine={false}
-                width={52}
+                width={72}
               />
               <Tooltip
                 formatter={(v, name) => {
@@ -428,14 +420,14 @@ export default function PerformanceWeekly() {
               />
               <YAxis
                 tick={{ fontSize: 11, fill: "#9ca3af" }}
-                tickFormatter={(v) => `${v}%`}
+                tickFormatter={(v) => `${v.toFixed(2)}%`}
                 tickLine={false}
                 axisLine={false}
-                width={44}
+                width={56}
                 domain={[0, 100]}
               />
               <Tooltip
-                formatter={(v, name) => [`${v}%`, branchMap[name]?.name || name]}
+                formatter={(v, name) => [`${Number(v).toFixed(2)}%`, branchMap[name]?.name || name]}
                 labelFormatter={(l) => `Week of ${l}`}
                 contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e5e7eb" }}
               />
@@ -475,14 +467,10 @@ export default function PerformanceWeekly() {
               />
               <YAxis
                 tick={{ fontSize: 11, fill: "#9ca3af" }}
-                tickFormatter={(v) => {
-                  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
-                  if (v >= 1e3) return `${(v / 1e3).toFixed(0)}K`;
-                  return v;
-                }}
+                tickFormatter={(v) => new Intl.NumberFormat("en").format(Math.round(v))}
                 tickLine={false}
                 axisLine={false}
-                width={52}
+                width={72}
               />
               <Tooltip
                 formatter={(v, name) => {
@@ -534,7 +522,7 @@ export default function PerformanceWeekly() {
                         cx="50%"
                         cy="50%"
                         outerRadius={60}
-                        label={({ pct }) => `${pct.toFixed(0)}%`}
+                        label={({ pct }) => `${pct.toFixed(2)}%`}
                         labelLine={false}
                       >
                         {mix.map((_, i) => (
@@ -548,7 +536,7 @@ export default function PerformanceWeekly() {
                     {mix.map((o, i) => (
                       <span key={o.category} className="flex items-center gap-1 text-xs text-gray-500">
                         <span className="w-2 h-2 rounded-full inline-block" style={{ background: OTA_COLORS[i % OTA_COLORS.length] }} />
-                        {o.category} {o.pct.toFixed(0)}%
+                        {o.category} {o.pct.toFixed(2)}%
                       </span>
                     ))}
                   </div>

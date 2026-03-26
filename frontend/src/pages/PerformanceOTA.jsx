@@ -7,9 +7,9 @@ import axios from "axios";
 import { useBranch } from "../context/BranchContext";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-function pct(v, decimals = 2) {
+function pct(v) {
   if (v === null || v === undefined) return null;
-  return `${(v * 100).toFixed(decimals)}%`;
+  return `${(v * 100).toFixed(2)}%`;
 }
 
 // Cancel rate: >25% red, 10-25% amber, 0-10% green  (matches OTA ranking rule)

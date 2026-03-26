@@ -108,7 +108,7 @@ export default function CountryDetail() {
             {
               label: "YoY Growth",
               value: yoyChange != null
-                ? `${yoyChange > 0 ? "+" : ""}${(yoyChange * 100).toFixed(1)}%`
+                ? `${yoyChange > 0 ? "+" : ""}${(yoyChange * 100).toFixed(2)}%`
                 : "—",
               color: yoyChange == null ? "" : yoyChange > 0 ? "text-emerald-600" : "text-red-500",
             },
@@ -161,12 +161,10 @@ export default function CountryDetail() {
               <XAxis dataKey="month" tick={{ fontSize: 11 }} />
               <YAxis
                 tick={{ fontSize: 11 }}
-                tickFormatter={(v) =>
-                  new Intl.NumberFormat("vi-VN", { notation: "compact" }).format(v)
-                }
+                tickFormatter={(v) => new Intl.NumberFormat("en").format(Math.round(v))}
               />
               <Tooltip
-                formatter={(v) => new Intl.NumberFormat("vi-VN").format(Math.round(v))}
+                formatter={(v) => new Intl.NumberFormat("en").format(Math.round(v))}
               />
               <Legend />
               <Bar dataKey="rev_prev" name={`${year - 1}`} fill="#cbd5e1" radius={[3,3,0,0]} barSize={10} />
@@ -204,13 +202,13 @@ export default function CountryDetail() {
                         delta > 0 ? "text-emerald-600" :
                         delta < 0 ? "text-red-500" : "text-gray-400"
                       }`}>
-                        {delta > 0 ? "+" : ""}{(delta * 100).toFixed(1)}%
+                        {delta > 0 ? "+" : ""}{(delta * 100).toFixed(2)}%
                       </span>
                     ) : "—"}
                   </td>
                   <td className="px-4 py-2.5 text-right text-gray-600">
                     {row.rev_this
-                      ? new Intl.NumberFormat("vi-VN", { notation: "compact" }).format(Math.round(row.rev_this))
+                      ? new Intl.NumberFormat("en").format(Math.round(row.rev_this))
                       : "—"}
                   </td>
                 </tr>

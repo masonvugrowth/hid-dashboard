@@ -173,7 +173,7 @@ export default function Angles() {
                     <p className="text-xs text-gray-400 italic">No TOF Sales combos linked</p>
                   ) : row.status_reason === "insufficient_data" ? (
                     <p className="text-xs text-amber-500 italic">
-                      Insufficient data: {row.tof_impressions < 20000 ? `${(row.tof_impressions/1000).toFixed(1)}K/${20}K impr` : ""}{row.tof_impressions < 20000 && row.tof_bookings < 5 ? " · " : ""}{row.tof_bookings < 5 ? `${row.tof_bookings}/5 bookings` : ""}
+                      Insufficient data: {row.tof_impressions < 20000 ? `${new Intl.NumberFormat("en").format(row.tof_impressions)}/${new Intl.NumberFormat("en").format(20000)} impr` : ""}{row.tof_impressions < 20000 && row.tof_bookings < 5 ? " · " : ""}{row.tof_bookings < 5 ? `${row.tof_bookings}/5 bookings` : ""}
                     </p>
                   ) : row.status_reason === "no_benchmark" ? (
                     <p className="text-xs text-gray-400 italic">No benchmark data for this branch</p>
@@ -185,7 +185,7 @@ export default function Angles() {
                       </div>
                       <div>
                         <p className="text-gray-400">Impressions</p>
-                        <p className="font-medium text-gray-700">{row.tof_impressions > 0 ? (row.tof_impressions/1000).toFixed(1) + "K" : "—"}</p>
+                        <p className="font-medium text-gray-700">{row.tof_impressions > 0 ? new Intl.NumberFormat("en").format(row.tof_impressions) : "—"}</p>
                       </div>
                       <div>
                         <p className="text-gray-400">Bookings</p>
@@ -200,7 +200,7 @@ export default function Angles() {
                   <div className="grid grid-cols-4 gap-1 pt-1 border-t border-black/5 text-xs">
                     <div>
                       <p className="text-gray-400">Total Spend</p>
-                      <p className="font-medium text-gray-700">{row.cost_native > 0 ? sym + (row.cost_native / 1000).toFixed(0) + "K" : "—"}</p>
+                      <p className="font-medium text-gray-700">{row.cost_native > 0 ? sym + new Intl.NumberFormat("en").format(Math.round(row.cost_native)) : "—"}</p>
                     </div>
                     <div>
                       <p className="text-gray-400">Total ROAS</p>
