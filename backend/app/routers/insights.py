@@ -507,7 +507,7 @@ def country_intelligence(
     next2_month = (today.month + 1) % 12 + 1
     month_cols = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"]
 
-    def _build_gov_forecast(month_num: int):
+    def _build_gov_forecast_raw(month_num: int):
         """Return gov visitor data ranked by visitor count for a specific month, per branch destination."""
         col = month_cols[month_num - 1]
         forecast_rows = db.execute(text(f"""
@@ -517,25 +517,78 @@ def country_intelligence(
             ORDER BY destination, {col} DESC
         """)).fetchall()
 
-        # Group by destination, take top 10
         dest_map = {}
         for fr in forecast_rows:
             dest = fr[0]
             if dest not in dest_map:
                 dest_map[dest] = []
-            if len(dest_map[dest]) < 10:
-                dest_map[dest].append({
-                    "source_country": fr[1],
-                    "gov_rank": fr[2],
-                    "visitor_count": int(fr[3] or 0),
-                    "yearly_total": int(fr[4] or 0),
-                })
+            dest_map[dest].append({
+                "source_country": fr[1],
+                "gov_rank": fr[2],
+                "visitor_count": int(fr[3] or 0),
+                "yearly_total": int(fr[4] or 0),
+            })
         return dest_map
 
-    gov_next_month = _build_gov_forecast(next_month)
-    gov_next2_month = _build_gov_forecast(next2_month)
+    def _country_matches(name_a: str, name_b: str) -> bool:
+        """Fuzzy match two country names."""
+        a = name_a.lower().strip()
+        b = name_b.lower().strip()
+        if a == b:
+            return True
+        # Check nationality → country mapping
+        mapped_a = _NAT_MAP.get(a, a)
+        mapped_b = _NAT_MAP.get(b, b)
+        return mapped_a in mapped_b or mapped_b in mapped_a or a in b or b in a
 
-    # Attach forecast to each branch
+    def _build_combined_forecast(month_num: int, branch_data: dict, dest_key: str):
+        """
+        Cross-reference gov visitor forecast with top_volume (bookings).
+        Only return countries that appear in BOTH gov data AND top bookings.
+        Add reason notes for each match.
+        """
+        raw_gov = _build_gov_forecast_raw(month_num)
+        gov_countries = raw_gov.get(dest_key, raw_gov.get(dest_key.capitalize(), []))
+
+        # Build lookup: country name → booking info from top_volume
+        volume_lookup = {}
+        for v in branch_data.get("top_volume", []):
+            volume_lookup[v["country"].lower()] = {
+                "booking_count": v.get("booking_count", 0),
+                "revenue_vnd": v.get("revenue_vnd", 0),
+                "rank": v.get("rank", 0),
+            }
+
+        matched = []
+        for gc in gov_countries:
+            src = gc["source_country"]
+            # Find matching booking data
+            booking_info = None
+            for vk, vv in volume_lookup.items():
+                if _country_matches(src, vk):
+                    booking_info = vv
+                    break
+
+            if booking_info:
+                reasons = []
+                reasons.append(f"Top {booking_info['rank']} bookings (last 30d): {booking_info['booking_count']} bookings")
+                reasons.append(f"Gov forecast: #{gc['gov_rank']} source market with {gc['visitor_count']:,} visitors")
+                matched.append({
+                    **gc,
+                    "booking_count": booking_info["booking_count"],
+                    "booking_rank": booking_info["rank"],
+                    "revenue_vnd": booking_info["revenue_vnd"],
+                    "match_type": "volume",
+                    "reasons": reasons,
+                })
+
+        # Sort by gov visitor count descending
+        matched.sort(key=lambda x: x["visitor_count"], reverse=True)
+        return matched
+
+    gov_raw_next = _build_gov_forecast_raw(next_month)
+    gov_raw_next2 = _build_gov_forecast_raw(next2_month)
+
     import calendar
     next_month_name = calendar.month_name[next_month]
     next2_month_name = calendar.month_name[next2_month]
@@ -544,16 +597,25 @@ def country_intelligence(
         b_country = branch_info.get(bdata["branch_id"], "").lower()
         dest_key = _BRANCH_DEST_MAP.get(b_country, b_country)
 
+        combined_next = _build_combined_forecast(next_month, bdata, dest_key)
+        combined_next2 = _build_combined_forecast(next2_month, bdata, dest_key)
+
+        # Also keep full gov list for reference
+        all_gov_next = gov_raw_next.get(dest_key, gov_raw_next.get(dest_key.capitalize(), []))[:10]
+        all_gov_next2 = gov_raw_next2.get(dest_key, gov_raw_next2.get(dest_key.capitalize(), []))[:10]
+
         bdata["gov_forecast"] = {
             "next_month": {
                 "month_num": next_month,
                 "month_name": next_month_name,
-                "countries": gov_next_month.get(dest_key, gov_next_month.get(dest_key.capitalize(), [])),
+                "countries": combined_next,
+                "all_gov_countries": all_gov_next,
             },
             "next_2_months": {
                 "month_num": next2_month,
                 "month_name": next2_month_name,
-                "countries": gov_next2_month.get(dest_key, gov_next2_month.get(dest_key.capitalize(), [])),
+                "countries": combined_next2,
+                "all_gov_countries": all_gov_next2,
             },
         }
 

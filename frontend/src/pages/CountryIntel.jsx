@@ -375,23 +375,128 @@ function GrowthRow({ item }) {
   );
 }
 
-function ForecastTable({ forecast, label }) {
+function ForecastTable({ forecast }) {
   const countries = forecast?.countries || [];
-  if (countries.length === 0) {
+  const allGov = forecast?.all_gov_countries || [];
+  const hasMatches = countries.length > 0;
+
+  if (allGov.length === 0 && countries.length === 0) {
     return (
       <div className="px-5 py-3 text-xs text-gray-400">
         No government visitor data available. Import data in Admin → Gov Data.
       </div>
     );
   }
+
+  if (!hasMatches) {
+    return (
+      <div className="px-5 py-4">
+        <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 rounded-lg border border-amber-200 mb-3">
+          <span className="text-amber-500 text-sm">⚠</span>
+          <span className="text-xs text-amber-700">
+            No overlap between gov visitor forecast and your top booking countries (last 30d).
+            Below is the full gov visitor ranking for reference.
+          </span>
+        </div>
+        <GovOnlyTable countries={allGov} monthName={forecast?.month_name} />
+      </div>
+    );
+  }
+
   const maxVisitors = Math.max(...countries.map((c) => c.visitor_count), 1);
+  return (
+    <div>
+      {/* Matched countries — combined view */}
+      <div className="px-5 py-2 bg-green-50 border-b border-green-100">
+        <span className="text-xs font-semibold text-green-700 uppercase tracking-wide">
+          Countries to focus — matched gov forecast + top bookings ({countries.length} countries)
+        </span>
+      </div>
+      <table className="w-full">
+        <thead>
+          <tr className="text-xs text-gray-500 bg-gray-50 border-b">
+            <th className="px-3 py-2 text-left w-8">#</th>
+            <th className="px-3 py-2 text-left">Country</th>
+            <th className="px-3 py-2 text-right">Gov Visitors ({forecast?.month_name})</th>
+            <th className="px-3 py-2 text-left w-36">Visitor Volume</th>
+            <th className="px-3 py-2 text-right">Bookings (30d)</th>
+            <th className="px-3 py-2 text-left">Why Target</th>
+          </tr>
+        </thead>
+        <tbody>
+          {countries.map((c, i) => (
+            <tr key={c.source_country} className="border-b hover:bg-gray-50">
+              <td className="px-3 py-2 text-xs text-gray-400">{i + 1}</td>
+              <td className="px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">{FLAG(c.source_country)}</span>
+                  <span className="text-sm font-medium text-gray-800">{c.source_country}</span>
+                  <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-600 text-[10px] font-medium">
+                    Gov #{c.gov_rank}
+                  </span>
+                  <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-600 text-[10px] font-medium">
+                    Booking #{c.booking_rank}
+                  </span>
+                </div>
+              </td>
+              <td className="px-3 py-2 text-sm text-right font-mono font-bold text-gray-800">
+                {fmt(c.visitor_count)}
+              </td>
+              <td className="px-3 py-2">
+                <div className="w-full bg-gray-100 rounded-full h-2">
+                  <div
+                    className="bg-violet-500 h-2 rounded-full"
+                    style={{ width: `${(c.visitor_count / maxVisitors) * 100}%` }}
+                  />
+                </div>
+              </td>
+              <td className="px-3 py-2 text-sm text-right font-mono font-bold text-indigo-700">
+                {fmt(c.booking_count)}
+              </td>
+              <td className="px-3 py-2">
+                <div className="flex flex-col gap-0.5">
+                  {(c.reasons || []).map((r, ri) => (
+                    <span key={ri} className="text-[10px] text-gray-500 leading-tight">{r}</span>
+                  ))}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* Show remaining gov countries that didn't match */}
+      {allGov.length > countries.length && (
+        <div className="mt-2">
+          <div className="px-5 py-2 bg-gray-50 border-y border-gray-200">
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              Other gov source markets (not in your top 5 bookings)
+            </span>
+          </div>
+          <GovOnlyTable
+            countries={allGov.filter(
+              (g) => !countries.some((m) =>
+                g.source_country.toLowerCase() === m.source_country.toLowerCase()
+              )
+            )}
+            monthName={forecast?.month_name}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GovOnlyTable({ countries, monthName }) {
+  if (!countries || countries.length === 0) return null;
+  const maxV = Math.max(...countries.map((c) => c.visitor_count), 1);
   return (
     <table className="w-full">
       <thead>
         <tr className="text-xs text-gray-500 bg-gray-50 border-b">
           <th className="px-3 py-2 text-left w-8">#</th>
           <th className="px-3 py-2 text-left">Source Country</th>
-          <th className="px-3 py-2 text-right">Visitors ({forecast?.month_name})</th>
+          <th className="px-3 py-2 text-right">Visitors ({monthName})</th>
           <th className="px-3 py-2 text-left w-48">Volume</th>
           <th className="px-3 py-2 text-right">Yearly Total</th>
         </tr>
@@ -417,8 +522,8 @@ function ForecastTable({ forecast, label }) {
             <td className="px-3 py-2">
               <div className="w-full bg-gray-100 rounded-full h-2">
                 <div
-                  className="bg-violet-500 h-2 rounded-full"
-                  style={{ width: `${(c.visitor_count / maxVisitors) * 100}%` }}
+                  className="bg-gray-400 h-2 rounded-full"
+                  style={{ width: `${(c.visitor_count / maxV) * 100}%` }}
                 />
               </div>
             </td>
@@ -570,7 +675,7 @@ function BranchSection({ branch }) {
             <div>
               <div className="px-5 py-2 bg-violet-50 border-b border-violet-100">
                 <span className="text-xs font-semibold text-violet-700 uppercase tracking-wide">
-                  Gov Visitor Forecast · {forecast.next_month?.month_name || "Next Month"} — Which countries to target
+                  {forecast.next_month?.month_name || "Next Month"} — Gov Forecast + Top Bookings
                 </span>
               </div>
               <ForecastTable forecast={forecast.next_month} />
@@ -581,7 +686,7 @@ function BranchSection({ branch }) {
             <div>
               <div className="px-5 py-2 bg-violet-50 border-b border-violet-100">
                 <span className="text-xs font-semibold text-violet-700 uppercase tracking-wide">
-                  Gov Visitor Forecast · {forecast.next_2_months?.month_name || "+2 Months"} — Which countries to target
+                  {forecast.next_2_months?.month_name || "+2 Months"} — Gov Forecast + Top Bookings
                 </span>
               </div>
               <ForecastTable forecast={forecast.next_2_months} />
