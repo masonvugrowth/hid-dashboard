@@ -500,5 +500,62 @@ def country_intelligence(
         })
         branch_map[bid_str]["top_growth"].append(entry)
 
+    # ── 7. Gov visitor forecast for upcoming months ─────────────────────────
+    from datetime import date as _date
+    today = _date.today()
+    next_month = today.month % 12 + 1
+    next2_month = (today.month + 1) % 12 + 1
+    month_cols = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"]
+
+    def _build_gov_forecast(month_num: int):
+        """Return gov visitor data ranked by visitor count for a specific month, per branch destination."""
+        col = month_cols[month_num - 1]
+        forecast_rows = db.execute(text(f"""
+            SELECT destination, source_country, rank, {col} AS visitor_count, total
+            FROM gov_visitor_data
+            WHERE {col} > 0
+            ORDER BY destination, {col} DESC
+        """)).fetchall()
+
+        # Group by destination, take top 10
+        dest_map = {}
+        for fr in forecast_rows:
+            dest = fr[0]
+            if dest not in dest_map:
+                dest_map[dest] = []
+            if len(dest_map[dest]) < 10:
+                dest_map[dest].append({
+                    "source_country": fr[1],
+                    "gov_rank": fr[2],
+                    "visitor_count": int(fr[3] or 0),
+                    "yearly_total": int(fr[4] or 0),
+                })
+        return dest_map
+
+    gov_next_month = _build_gov_forecast(next_month)
+    gov_next2_month = _build_gov_forecast(next2_month)
+
+    # Attach forecast to each branch
+    import calendar
+    next_month_name = calendar.month_name[next_month]
+    next2_month_name = calendar.month_name[next2_month]
+
+    for bdata in branch_map.values():
+        b_country = branch_info.get(bdata["branch_id"], "").lower()
+        dest_key = _BRANCH_DEST_MAP.get(b_country, b_country)
+
+        bdata["gov_forecast"] = {
+            "next_month": {
+                "month_num": next_month,
+                "month_name": next_month_name,
+                "countries": gov_next_month.get(dest_key, gov_next_month.get(dest_key.capitalize(), [])),
+            },
+            "next_2_months": {
+                "month_num": next2_month,
+                "month_name": next2_month_name,
+                "countries": gov_next2_month.get(dest_key, gov_next2_month.get(dest_key.capitalize(), [])),
+            },
+        }
+
     result = sorted(branch_map.values(), key=lambda x: x["branch_name"])
     return _envelope(result)

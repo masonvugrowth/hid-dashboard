@@ -375,11 +375,76 @@ function GrowthRow({ item }) {
   );
 }
 
+function ForecastTable({ forecast, label }) {
+  const countries = forecast?.countries || [];
+  if (countries.length === 0) {
+    return (
+      <div className="px-5 py-3 text-xs text-gray-400">
+        No government visitor data available. Import data in Admin → Gov Data.
+      </div>
+    );
+  }
+  const maxVisitors = Math.max(...countries.map((c) => c.visitor_count), 1);
+  return (
+    <table className="w-full">
+      <thead>
+        <tr className="text-xs text-gray-500 bg-gray-50 border-b">
+          <th className="px-3 py-2 text-left w-8">#</th>
+          <th className="px-3 py-2 text-left">Source Country</th>
+          <th className="px-3 py-2 text-right">Visitors ({forecast?.month_name})</th>
+          <th className="px-3 py-2 text-left w-48">Volume</th>
+          <th className="px-3 py-2 text-right">Yearly Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {countries.map((c, i) => (
+          <tr key={c.source_country} className="border-b hover:bg-gray-50">
+            <td className="px-3 py-2 text-xs text-gray-400">{i + 1}</td>
+            <td className="px-3 py-2">
+              <div className="flex items-center gap-2">
+                <span className="text-base">{FLAG(c.source_country)}</span>
+                <span className="text-sm font-medium text-gray-800">{c.source_country}</span>
+                {c.gov_rank && (
+                  <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-600 text-[10px] font-medium">
+                    Gov #{c.gov_rank}
+                  </span>
+                )}
+              </div>
+            </td>
+            <td className="px-3 py-2 text-sm text-right font-mono font-bold text-gray-800">
+              {fmt(c.visitor_count)}
+            </td>
+            <td className="px-3 py-2">
+              <div className="w-full bg-gray-100 rounded-full h-2">
+                <div
+                  className="bg-violet-500 h-2 rounded-full"
+                  style={{ width: `${(c.visitor_count / maxVisitors) * 100}%` }}
+                />
+              </div>
+            </td>
+            <td className="px-3 py-2 text-xs text-right font-mono text-gray-500">
+              {fmt(c.yearly_total)}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+const TABS = [
+  { key: "current", label: "Current Performance" },
+  { key: "next_month", label: "Next Month" },
+  { key: "next_2_months", label: "Next 2 Months" },
+];
+
 function BranchSection({ branch }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [tab, setTab] = useState("current");
   const allItems = [...(branch.top_volume || []), ...(branch.top_growth || [])];
   const kolGaps = allItems.filter((c) => c.kol_gap).length;
   const adsGaps = allItems.filter((c) => c.ads_gap).length;
+  const forecast = branch.gov_forecast || {};
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-4">
@@ -406,72 +471,123 @@ function BranchSection({ branch }) {
       </div>
 
       {!collapsed && (
-        <div className="divide-y divide-gray-100">
+        <>
+          {/* Tab bar */}
+          <div className="flex border-b">
+            {TABS.map((t) => {
+              const isActive = tab === t.key;
+              let label = t.label;
+              if (t.key === "next_month" && forecast.next_month?.month_name) {
+                label = `Next Month (${forecast.next_month.month_name})`;
+              } else if (t.key === "next_2_months" && forecast.next_2_months?.month_name) {
+                label = `+2 Months (${forecast.next_2_months.month_name})`;
+              }
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={`px-4 py-2 text-xs font-semibold transition-colors ${
+                    isActive
+                      ? "text-indigo-700 border-b-2 border-indigo-600 bg-white"
+                      : "text-gray-400 hover:text-gray-600 hover:bg-gray-50"
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
 
-          {/* ── Top by Volume ── */}
-          {branch.top_volume?.length > 0 && (
-            <div>
-              <div className="px-5 py-2 bg-indigo-50 border-b border-indigo-100">
-                <span className="text-xs font-semibold text-indigo-700 uppercase tracking-wide">
-                  Top 5 · Most Bookings (last 30 days)
-                </span>
+          {/* Tab content */}
+          {tab === "current" && (
+            <div className="divide-y divide-gray-100">
+              {/* ── Top by Volume ── */}
+              {branch.top_volume?.length > 0 && (
+                <div>
+                  <div className="px-5 py-2 bg-indigo-50 border-b border-indigo-100">
+                    <span className="text-xs font-semibold text-indigo-700 uppercase tracking-wide">
+                      Top 5 · Most Bookings (last 30 days)
+                    </span>
+                  </div>
+                  <table className="w-full">
+                    <thead>
+                      <tr className="text-xs text-gray-500 bg-gray-50 border-b">
+                        <th className="px-3 py-2 text-left w-8">#</th>
+                        <th className="px-3 py-2 text-left">Country</th>
+                        <th className="px-3 py-2 text-right">Bookings</th>
+                        <th className="px-3 py-2 text-left">KOL</th>
+                        <th className="px-3 py-2 text-left">Paid Ads</th>
+                        <th className="px-3 py-2 text-left">Actions</th>
+                        <th className="px-3 py-2 w-6"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {branch.top_volume.map((c) => (
+                        <VolumeRow key={c.country} item={c} />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* ── Top by Growth ── */}
+              <div>
+                <div className="px-5 py-2 bg-emerald-50 border-b border-emerald-100">
+                  <span className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">
+                    Top 5 · Fastest Growing (last 30 days vs prior 30 days)
+                  </span>
+                </div>
+                {branch.top_growth?.length > 0 ? (
+                  <table className="w-full">
+                    <thead>
+                      <tr className="text-xs text-gray-500 bg-gray-50 border-b">
+                        <th className="px-3 py-2 text-left w-8">#</th>
+                        <th className="px-3 py-2 text-left">Country</th>
+                        <th className="px-3 py-2 text-right">Recent (30d)</th>
+                        <th className="px-3 py-2 text-right">Prior (30d)</th>
+                        <th className="px-3 py-2 text-right">Growth</th>
+                        <th className="px-3 py-2 text-left">KOL</th>
+                        <th className="px-3 py-2 text-left">Paid Ads</th>
+                        <th className="px-3 py-2 w-6"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {branch.top_growth.map((c) => (
+                        <GrowthRow key={c.country} item={c} />
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="px-5 py-3 text-xs text-gray-400">
+                    No clear growth trends in the last 30 days.
+                  </div>
+                )}
               </div>
-              <table className="w-full">
-                <thead>
-                  <tr className="text-xs text-gray-500 bg-gray-50 border-b">
-                    <th className="px-3 py-2 text-left w-8">#</th>
-                    <th className="px-3 py-2 text-left">Country</th>
-                    <th className="px-3 py-2 text-right">Bookings</th>
-                    <th className="px-3 py-2 text-left">KOL</th>
-                    <th className="px-3 py-2 text-left">Paid Ads</th>
-                    <th className="px-3 py-2 text-left">Actions</th>
-                    <th className="px-3 py-2 w-6"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {branch.top_volume.map((c) => (
-                    <VolumeRow key={c.country} item={c} />
-                  ))}
-                </tbody>
-              </table>
             </div>
           )}
 
-          {/* ── Top by Growth ── */}
-          <div>
-            <div className="px-5 py-2 bg-emerald-50 border-b border-emerald-100">
-              <span className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">
-                Top 5 · Fastest Growing (last 30 days vs prior 30 days)
-              </span>
-            </div>
-            {branch.top_growth?.length > 0 ? (
-              <table className="w-full">
-                <thead>
-                  <tr className="text-xs text-gray-500 bg-gray-50 border-b">
-                    <th className="px-3 py-2 text-left w-8">#</th>
-                    <th className="px-3 py-2 text-left">Country</th>
-                    <th className="px-3 py-2 text-right">Recent (30d)</th>
-                    <th className="px-3 py-2 text-right">Prior (30d)</th>
-                    <th className="px-3 py-2 text-right">Growth</th>
-                    <th className="px-3 py-2 text-left">KOL</th>
-                    <th className="px-3 py-2 text-left">Paid Ads</th>
-                    <th className="px-3 py-2 w-6"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {branch.top_growth.map((c) => (
-                    <GrowthRow key={c.country} item={c} />
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <div className="px-5 py-3 text-xs text-gray-400">
-                No clear growth trends in the last 30 days.
+          {tab === "next_month" && (
+            <div>
+              <div className="px-5 py-2 bg-violet-50 border-b border-violet-100">
+                <span className="text-xs font-semibold text-violet-700 uppercase tracking-wide">
+                  Gov Visitor Forecast · {forecast.next_month?.month_name || "Next Month"} — Which countries to target
+                </span>
               </div>
-            )}
-          </div>
+              <ForecastTable forecast={forecast.next_month} />
+            </div>
+          )}
 
-        </div>
+          {tab === "next_2_months" && (
+            <div>
+              <div className="px-5 py-2 bg-violet-50 border-b border-violet-100">
+                <span className="text-xs font-semibold text-violet-700 uppercase tracking-wide">
+                  Gov Visitor Forecast · {forecast.next_2_months?.month_name || "+2 Months"} — Which countries to target
+                </span>
+              </div>
+              <ForecastTable forecast={forecast.next_2_months} />
+            </div>
+          )}
+        </>
       )}
     </div>
   );
