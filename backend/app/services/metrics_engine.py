@@ -441,10 +441,13 @@ def recompute_branch_range(
 
 async def nightly_metrics_job(db_factory) -> None:
     """
-    v2.2: Nightly job — populate reservation_daily, recompute daily_metrics,
-    then overlay Cloudbeds Data Insights OCC/ADR/RevPAR/Revenue for full month.
-    Runs for yesterday + today for reservation_daily + compute_day,
-    then syncs full current month from Cloudbeds Insights (including future dates).
+    v2.3: Nightly job — populate reservation_daily, recompute daily_metrics,
+    then overlay Cloudbeds Data Insights OCC/ADR/RevPAR/Revenue.
+
+    Coverage:
+      - reservation_daily + compute_day: last 14 days + today (catch retroactive updates)
+      - Cloudbeds Insights: last 14 days through end of NEXT month (for forecast)
+    This ensures Daily Brief, Weekly, and Monthly dashboards always show fresh data.
     """
     import calendar
     from app.config import settings
@@ -452,11 +455,18 @@ async def nightly_metrics_job(db_factory) -> None:
 
     db: Session = db_factory()
     try:
-        yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
         today = datetime.now(timezone.utc).date()
-        # Full month boundaries for Cloudbeds Insights sync
-        month_start = today.replace(day=1)
-        month_end = today.replace(day=calendar.monthrange(today.year, today.month)[1])
+        lookback_start = today - timedelta(days=14)
+
+        # Insights sync boundaries: from 14 days ago through end of NEXT month
+        # This covers: recent past (retroactive updates) + current month + next month (forecast)
+        if today.month == 12:
+            next_month_year, next_month = today.year + 1, 1
+        else:
+            next_month_year, next_month = today.year, today.month + 1
+        insights_start = lookback_start
+        insights_end = date(next_month_year, next_month,
+                           calendar.monthrange(next_month_year, next_month)[1])
 
         branches = db.query(Branch).filter_by(is_active=True).all()
         for branch in branches:
@@ -465,25 +475,25 @@ async def nightly_metrics_job(db_factory) -> None:
                 pid = branch.cloudbeds_property_id
                 api_key = settings.get_api_key_for_property(str(pid)) if pid else None
 
-                # Step 1: populate reservation_daily with actual Cloudbeds nightly rates
+                # Step 1: populate reservation_daily for last 14 days + today
                 populate_reservation_daily(
                     db, str(branch.id),
-                    date_from=yesterday, date_to=today,
+                    date_from=lookback_start, date_to=today,
                     property_id=pid,
                     currency=branch.currency,
                     api_key=api_key,
                 )
-                # Step 2: compute daily_metrics from reservation_daily (cancel rate, bookings, etc.)
-                compute_day(db, branch, yesterday)
-                compute_day(db, branch, today)
+                # Step 2: recompute daily_metrics for last 14 days + today
+                recompute_branch_range(db, branch, lookback_start, today)
 
-                # Step 3: overlay Cloudbeds Data Insights for FULL MONTH
-                # Revenue, OCC, ADR, RevPAR — including future confirmed bookings
+                # Step 3: overlay Cloudbeds Data Insights for extended range
+                # From 14 days ago through end of next month — covers Daily Brief,
+                # Weekly, Monthly dashboards + forecast data
                 if pid and api_key:
                     try:
                         sync_cloudbeds_occupancy(
                             db, str(branch.id), pid, branch.currency, api_key,
-                            date_from=month_start, date_to=month_end,
+                            date_from=insights_start, date_to=insights_end,
                         )
                     except Exception as occ_err:
                         logger.warning(
@@ -491,7 +501,11 @@ async def nightly_metrics_job(db_factory) -> None:
                             branch.name, occ_err,
                         )
 
-                logger.info(f"Metrics v2.2 OK branch={branch.name} dates={yesterday}..{today}, insights={month_start}..{month_end}")
+                logger.info(
+                    f"Metrics v2.3 OK branch={branch.name} "
+                    f"compute={lookback_start}..{today}, "
+                    f"insights={insights_start}..{insights_end}"
+                )
             except Exception as e:
                 logger.error(f"Metrics FAIL branch={branch.name}: {e}")
     finally:
@@ -500,9 +514,13 @@ async def nightly_metrics_job(db_factory) -> None:
 
 async def cloudbeds_insights_sync_job(db_factory) -> None:
     """
-    Standalone job to sync Cloudbeds Data Insights (OCC/ADR/RevPAR/Revenue)
-    for the full current month. Runs independently of nightly_metrics_job
-    so revenue/OCC stays up-to-date throughout the day.
+    Standalone job to sync Cloudbeds Data Insights (OCC/ADR/RevPAR/Revenue).
+    Runs independently of nightly_metrics_job so revenue/OCC stays fresh
+    throughout the day.
+
+    Coverage: last 14 days through end of current month.
+    This catches retroactive Cloudbeds updates for recent past dates
+    and keeps the Daily Brief accurate.
     """
     import calendar
     from app.config import settings
@@ -511,7 +529,10 @@ async def cloudbeds_insights_sync_job(db_factory) -> None:
     db: Session = db_factory()
     try:
         today = datetime.now(timezone.utc).date()
-        month_start = today.replace(day=1)
+        # Start from 14 days ago to catch retroactive updates (e.g. late check-outs,
+        # revenue adjustments, OCC corrections that Cloudbeds applies retroactively)
+        sync_start = today - timedelta(days=14)
+        # End at end of current month (next month handled by nightly job only)
         month_end = today.replace(day=calendar.monthrange(today.year, today.month)[1])
 
         branches = db.query(Branch).filter_by(is_active=True).all()
@@ -523,9 +544,9 @@ async def cloudbeds_insights_sync_job(db_factory) -> None:
             try:
                 sync_cloudbeds_occupancy(
                     db, str(branch.id), pid, branch.currency, api_key,
-                    date_from=month_start, date_to=month_end,
+                    date_from=sync_start, date_to=month_end,
                 )
-                logger.info(f"Insights sync OK branch={branch.name} [{month_start}..{month_end}]")
+                logger.info(f"Insights sync OK branch={branch.name} [{sync_start}..{month_end}]")
             except Exception as e:
                 logger.warning(f"Insights sync FAIL branch={branch.name}: {e}")
     finally:

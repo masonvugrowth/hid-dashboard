@@ -1230,3 +1230,67 @@ def trigger_sheets_kol(
         "message": "KOL sync running in background. Check Railway logs.",
         "sheet": "KOL Combine All Branch (VND)",
     })
+
+
+# ---------------------------------------------------------------------------
+# Cloudbeds Insights sync (manual trigger)
+# ---------------------------------------------------------------------------
+
+@router.post("/insights")
+def trigger_insights_sync(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    Manually trigger Cloudbeds Data Insights sync.
+    Syncs OCC/ADR/RevPAR/Revenue from Cloudbeds for:
+      - Last 14 days (catch retroactive updates)
+      - Current month (remaining days)
+      - Next month (forecast)
+    Runs in background.
+    """
+    import calendar
+    from datetime import date, timedelta
+    from app.services.cloudbeds import sync_cloudbeds_occupancy
+
+    today = date.today()
+    sync_start = today - timedelta(days=14)
+    if today.month == 12:
+        next_month_year, next_month = today.year + 1, 1
+    else:
+        next_month_year, next_month = today.year, today.month + 1
+    sync_end = date(next_month_year, next_month,
+                    calendar.monthrange(next_month_year, next_month)[1])
+
+    def _run():
+        import logging
+        from app.database import SessionLocal
+        log = logging.getLogger(__name__)
+        db2 = SessionLocal()
+        try:
+            branches = db2.query(Branch).filter_by(is_active=True).all()
+            for branch in branches:
+                pid = branch.cloudbeds_property_id
+                api_key = settings.get_api_key_for_property(str(pid)) if pid else None
+                if not pid or not api_key:
+                    continue
+                try:
+                    sync_cloudbeds_occupancy(
+                        db2, str(branch.id), pid, branch.currency, api_key,
+                        date_from=sync_start, date_to=sync_end,
+                    )
+                    log.info("Manual insights sync OK branch=%s [%s..%s]", branch.name, sync_start, sync_end)
+                except Exception as e:
+                    log.warning("Manual insights sync FAIL branch=%s: %s", branch.name, e)
+        except Exception:
+            log.exception("Manual insights sync job failed")
+        finally:
+            db2.close()
+
+    background_tasks.add_task(_run)
+    return _envelope({
+        "status": "started",
+        "message": f"Insights sync running in background [{sync_start}..{sync_end}]",
+        "date_from": str(sync_start),
+        "date_to": str(sync_end),
+    })

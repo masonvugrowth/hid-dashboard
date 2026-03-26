@@ -290,9 +290,9 @@ def setup_scheduler(app):
         logger.info(
             "Scheduler started — "
             "Cloudbeds reservation sync at 02:00 ICT, "
-            "metrics compute + full-month Insights at 03:00 ICT, "
+            "metrics compute (14-day lookback + next month) at 03:00 ICT, "
             "Ads sync (Meta + Google) at 06:00 ICT, "
-            "Insights refresh at 08:00 & 14:00 ICT, "
+            "Insights refresh (14-day lookback) at 08:00 & 14:00 ICT, "
             "verdict sync at 03:30 ICT, "
             "email stats at 04:00 ICT, "
             "GHL email sync at 05:00 ICT"
