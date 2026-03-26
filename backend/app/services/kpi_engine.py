@@ -200,7 +200,7 @@ def _get_insights_filtered(
         except Exception as e:
             logger.warning("Filtered Insights failed for %s: %s, falling back", branch.name, e)
 
-        # Fallback: stock report 110 (unfiltered — includes all sources)
+        # Fallback: stock report 110 (unfiltered) + reservation_daily for room/dorm ratio
         try:
             from app.services.cloudbeds import fetch_cloudbeds_occupancy
             first_day = date(year, month, 1)
@@ -213,9 +213,29 @@ def _get_insights_filtered(
                 "Fallback stock report for %s %d/%d: rev=%.0f sold=%d adr=%.2f",
                 branch.name, year, month, total_rev, total_sold, adr,
             )
-            return {"total_rev": total_rev, "total_sold": total_sold, "total_adr": adr,
-                    "room_rev": 0, "room_sold": 0, "room_adr": 0,
-                    "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
+
+            # Use reservation_daily to get room/dorm ADR ratio, scale to stock report ADR
+            fallback = {"total_rev": total_rev, "total_sold": total_sold, "total_adr": adr,
+                        "room_rev": 0, "room_sold": 0, "room_adr": 0,
+                        "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
+            if adr > 0:
+                raw_room_adr, raw_dorm_adr, r_rev, r_sold, d_rev, d_sold = \
+                    _get_room_dorm_adr_from_daily(db, branch_id, first_day, last_day)
+                daily_total_rev = r_rev + d_rev
+                daily_total_sold = r_sold + d_sold
+                if daily_total_rev > 0 and raw_room_adr and raw_dorm_adr and daily_total_sold > 0:
+                    daily_avg_adr = daily_total_rev / daily_total_sold
+                    scale = adr / daily_avg_adr if daily_avg_adr else 1
+                    fallback["room_adr"] = round(raw_room_adr * scale, 2)
+                    fallback["dorm_adr"] = round(raw_dorm_adr * scale, 2)
+                    fallback["room_sold"] = r_sold
+                    fallback["dorm_sold"] = d_sold
+                    fallback["has_dorm"] = d_sold > 0
+                    logger.info(
+                        "Fallback room/dorm ADR (scaled): room=%s dorm=%s (scale=%.4f)",
+                        fallback["room_adr"], fallback["dorm_adr"], scale,
+                    )
+            return fallback
         except Exception as e:
             logger.warning("Stock report also failed for %s: %s", branch.name, e)
 
