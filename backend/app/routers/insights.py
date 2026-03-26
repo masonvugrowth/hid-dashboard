@@ -553,16 +553,43 @@ def country_intelligence(
             })
         return dest_map
 
+    # Common country name aliases for matching
+    _COUNTRY_ALIASES = {
+        "usa": "united states",
+        "u.s.a.": "united states",
+        "united states of america": "united states",
+        "uk": "united kingdom",
+        "great britain": "united kingdom",
+        "korea": "south korea",
+        "republic of korea": "south korea",
+        "south korea": "korea",
+        "hong kong sar": "hong kong",
+        "mainland china": "china",
+        "p.r. china": "china",
+        "uae": "united arab emirates",
+    }
+
+    def _normalize_country(name: str) -> str:
+        n = name.lower().strip()
+        return _COUNTRY_ALIASES.get(n, n)
+
     def _country_matches(name_a: str, name_b: str) -> bool:
-        """Fuzzy match two country names."""
+        """Fuzzy match two country names with alias support."""
         a = name_a.lower().strip()
         b = name_b.lower().strip()
         if a == b:
             return True
+        # Normalize via aliases
+        na = _normalize_country(a)
+        nb = _normalize_country(b)
+        if na == nb:
+            return True
         # Check nationality → country mapping
-        mapped_a = _NAT_MAP.get(a, a)
-        mapped_b = _NAT_MAP.get(b, b)
-        return mapped_a in mapped_b or mapped_b in mapped_a or a in b or b in a
+        mapped_a = _NAT_MAP.get(a, na)
+        mapped_b = _NAT_MAP.get(b, nb)
+        if mapped_a == mapped_b:
+            return True
+        return mapped_a in mapped_b or mapped_b in mapped_a or na in nb or nb in na
 
     def _build_combined_forecast(month_num: int, branch_data: dict, dest_key: str):
         """
