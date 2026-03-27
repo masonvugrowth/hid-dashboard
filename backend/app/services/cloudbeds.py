@@ -480,7 +480,7 @@ def pull_reservations(
 
     try:
         while True:
-            data = _fetch_reservations_page(property_id, modified_since, page, api_key)
+            data = _fetch_reservations_page(property_id, page, api_key, modified_since)
             records = data.get("data", [])
             all_reservations.extend(records)
 
@@ -1227,8 +1227,12 @@ def fetch_occupancy_filtered(
     return result
 
 
-async def sync_all_branches() -> list[dict]:
-    """Sync all active branches — uses per-property API key from config."""
+async def sync_all_branches(incremental: bool = True) -> list[dict]:
+    """Sync all active branches — uses per-property API key from config.
+
+    incremental=True  (default): only pull reservations modified in last 2 days (fast).
+    incremental=False: full sync — pull all reservations in the lookback window (thorough).
+    """
     from app.models.branch import Branch
 
     db = SessionLocal()
@@ -1247,7 +1251,7 @@ async def sync_all_branches() -> list[dict]:
                 results.append({"branch_id": str(branch.id), "branch": branch.name, "error": "no api_key configured"})
                 continue
             try:
-                result = sync_branch(str(branch.id), pid, branch.currency, api_key=api_key, incremental=True)
+                result = sync_branch(str(branch.id), pid, branch.currency, api_key=api_key, incremental=incremental)
                 result["branch"] = branch.name
                 results.append(result)
             except Exception as exc:

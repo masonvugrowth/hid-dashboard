@@ -16,11 +16,22 @@ def setup_scheduler(app):
         from app.services.verdict_sync import sync_combo_performance, compute_derived_verdicts
         from app.database import SessionLocal
 
-        # Nightly Cloudbeds reservations sync at 2:00am Vietnam time
+        # Nightly FULL Cloudbeds sync at 2:00am Vietnam time
+        # Full sync pulls all reservations in lookback window (365d back + 180d forward)
         scheduler.add_job(
             sync_all_branches,
+            kwargs={"incremental": False},
             trigger=CronTrigger(hour=2, minute=0),
             id="nightly_cloudbeds_sync",
+            replace_existing=True,
+        )
+
+        # Daytime incremental Cloudbeds sync at 10:00am Vietnam time
+        # Catches new reservations + modifications from the morning (fast — last 2 days only)
+        scheduler.add_job(
+            sync_all_branches,
+            trigger=CronTrigger(hour=10, minute=0),
+            id="daytime_cloudbeds_sync_morning",
             replace_existing=True,
         )
 
@@ -289,7 +300,7 @@ def setup_scheduler(app):
         scheduler.start()
         logger.info(
             "Scheduler started — "
-            "Cloudbeds reservation sync at 02:00 ICT, "
+            "Cloudbeds reservation sync at 02:00, 10:00 ICT, "
             "metrics compute (14-day lookback + next month) at 03:00 ICT, "
             "Ads sync (Meta + Google) at 06:00 ICT, "
             "Insights refresh (14-day lookback) at 08:00 & 14:00 ICT, "

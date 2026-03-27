@@ -707,52 +707,68 @@ def trigger_meta_sync(
 
 
 @router.post("/cloudbeds")
-def trigger_cloudbeds_sync(payload: SyncRequest = SyncRequest(), db: Session = Depends(get_db)):
+def trigger_cloudbeds_sync(
+    background_tasks: BackgroundTasks,
+    payload: SyncRequest = SyncRequest(),
+    db: Session = Depends(get_db),
+):
     """
-    Trigger on-demand Cloudbeds sync.
+    Trigger on-demand Cloudbeds sync (runs in background to avoid HTTP timeout).
     If branch_id is provided, sync that branch only. Otherwise sync all active branches.
+    Returns immediately with 202 Accepted — sync runs asynchronously.
     """
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    def _run_sync(branch_id=None):
+        from app.database import SessionLocal
+        sdb = SessionLocal()
+        try:
+            if branch_id:
+                branch = sdb.query(Branch).filter_by(id=branch_id, is_active=True).first()
+                if not branch:
+                    _logger.error("Branch %s not found", branch_id)
+                    return
+                pid = branch.cloudbeds_property_id
+                api_key = settings.get_api_key_for_property(str(pid)) if pid else None
+                if not pid or not api_key:
+                    _logger.error("No property_id/api_key for branch %s", branch.name)
+                    return
+                result = sync_branch(str(branch.id), pid, branch.currency, api_key=api_key)
+                _logger.info("Cloudbeds sync done branch=%s: %s", branch.name, result)
+            else:
+                branches = sdb.query(Branch).filter_by(is_active=True).all()
+                for branch in branches:
+                    pid = branch.cloudbeds_property_id
+                    if not pid:
+                        continue
+                    api_key = settings.get_api_key_for_property(str(pid))
+                    if not api_key:
+                        continue
+                    try:
+                        result = sync_branch(str(branch.id), pid, branch.currency, api_key=api_key)
+                        _logger.info("Cloudbeds sync done branch=%s: %s", branch.name, result)
+                    except Exception as exc:
+                        _logger.error("Cloudbeds sync failed branch=%s: %s", branch.name, exc)
+        except Exception as exc:
+            _logger.exception("Cloudbeds background sync error: %s", exc)
+        finally:
+            sdb.close()
+
     if payload.branch_id:
         branch = db.query(Branch).filter_by(id=payload.branch_id, is_active=True).first()
         if not branch:
             raise HTTPException(status_code=404, detail="Branch not found or inactive")
+        background_tasks.add_task(_run_sync, branch_id=payload.branch_id)
+        return _envelope({"status": "sync_started", "branch": branch.name, "message": "Full sync running in background"})
 
-        pid = branch.cloudbeds_property_id
-        if not pid:
-            raise HTTPException(status_code=400, detail="No Cloudbeds property_id configured for this branch")
-
-        api_key = settings.get_api_key_for_property(str(pid))
-        if not api_key:
-            raise HTTPException(status_code=400, detail=f"No API key configured for property {pid}")
-
-        try:
-            result = sync_branch(str(branch.id), pid, branch.currency, api_key=api_key)
-            result["branch"] = branch.name
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Cloudbeds sync failed: {exc}")
-
-        return _envelope(result)
-
-    # Sync all branches
     branches = db.query(Branch).filter_by(is_active=True).all()
-    results = []
-    for branch in branches:
-        pid = branch.cloudbeds_property_id
-        if not pid:
-            results.append({"branch": branch.name, "error": "no property_id"})
-            continue
-        api_key = settings.get_api_key_for_property(str(pid))
-        if not api_key:
-            results.append({"branch": branch.name, "error": f"no api_key for property {pid}"})
-            continue
-        try:
-            result = sync_branch(str(branch.id), pid, branch.currency, api_key=api_key)
-            result["branch"] = branch.name
-            results.append(result)
-        except Exception as exc:
-            results.append({"branch": branch.name, "error": str(exc)})
-
-    return _envelope({"synced_branches": results})
+    background_tasks.add_task(_run_sync)
+    return _envelope({
+        "status": "sync_started",
+        "branches": [b.name for b in branches],
+        "message": "Full sync for all branches running in background",
+    })
 
 
 @router.post("/daily")
