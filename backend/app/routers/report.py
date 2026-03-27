@@ -37,6 +37,7 @@ from app.services.kpi_engine import (
     _EXCLUDED_STATUSES,
     _EXCLUDED_SOURCES,
 )
+from app.models.gov_visitor import GovVisitorData
 
 router = APIRouter()
 
@@ -142,6 +143,92 @@ def _growth_countries(db: Session, branch_id, limit: int = 3):
     return results[:limit]
 
 
+# ── Branch → Gov destination mapping ──────────────────────────────────────────
+_BRANCH_NAME_DEST_MAP = {
+    "meander taipei": "Taiwan",
+    "meander 1948": "Taiwan",
+    "meander oani": "Taiwan",
+    "oani": "Taiwan",
+    "meander osaka": "Japan",
+    "meander saigon": "Vietnam",
+}
+
+MONTH_COLS = ["jan", "feb", "mar", "apr", "may", "jun",
+              "jul", "aug", "sep", "oct", "nov", "dec"]
+
+
+def _resolve_branch_dest(branch_name: str) -> Optional[str]:
+    bn = branch_name.lower().strip()
+    for key, dest in _BRANCH_NAME_DEST_MAP.items():
+        if key in bn or bn in key:
+            return dest
+    return None
+
+
+def _gov_top_countries(db: Session, destination: str, month_num: int, limit: int = 5):
+    """Top source countries by gov visitor count for a specific month and destination."""
+    col_attr = getattr(GovVisitorData, MONTH_COLS[month_num - 1])
+    rows = (
+        db.query(
+            GovVisitorData.source_country,
+            GovVisitorData.rank,
+            col_attr.label("visitor_count"),
+            GovVisitorData.total,
+        )
+        .filter(
+            func.lower(GovVisitorData.destination) == destination.lower(),
+            col_attr > 0,
+        )
+        .order_by(col_attr.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "source_country": r.source_country,
+            "gov_rank": r.rank,
+            "visitor_count": int(r.visitor_count or 0),
+            "yearly_total": int(r.total or 0),
+        }
+        for r in rows
+    ]
+
+
+def _gov_growth_countries(db: Session, destination: str, target_month: int, prior_month: int, limit: int = 5):
+    """Countries with highest MoM growth in gov visitor data (target vs prior month)."""
+    col_target = getattr(GovVisitorData, MONTH_COLS[target_month - 1])
+    col_prior = getattr(GovVisitorData, MONTH_COLS[prior_month - 1])
+    rows = (
+        db.query(
+            GovVisitorData.source_country,
+            col_target.label("target_visitors"),
+            col_prior.label("prior_visitors"),
+        )
+        .filter(
+            func.lower(GovVisitorData.destination) == destination.lower(),
+            col_target > 0,
+            col_prior > 0,
+        )
+        .all()
+    )
+    results = []
+    for r in rows:
+        target_v = int(r.target_visitors or 0)
+        prior_v = int(r.prior_visitors or 0)
+        if prior_v == 0:
+            continue
+        growth = round((target_v - prior_v) / prior_v * 100, 1)
+        if growth > 0:
+            results.append({
+                "source_country": r.source_country,
+                "target_visitors": target_v,
+                "prior_visitors": prior_v,
+                "growth_pct": growth,
+            })
+    results.sort(key=lambda x: x["growth_pct"], reverse=True)
+    return results[:limit]
+
+
 def _actual_occ_pct(db: Session, branch_id, year: int, month: int, total_rooms: int) -> Optional[float]:
     """Compute actual average OCC% from daily_metrics for the month (up to today)."""
     if total_rooms <= 0:
@@ -214,6 +301,17 @@ def _build_report(db: Session):
         predicted_occ_current = kpi.get("predicted_occ_pct")
         predicted_occ_next = nxt.get("predicted_occ_next")
 
+        # Gov visitor forecast for recommendations
+        dest = _resolve_branch_dest(b.name)
+        # Paid Ads → next month (demand arriving soon, act now)
+        # KOLs → month+2 (peak travel — need KOL lead time to recruit/activate)
+        ads_month = today.month % 12 + 1           # next month
+        kol_month = (today.month + 1) % 12 + 1     # month after next
+        ads_prior = today.month                      # current month (for growth calc)
+        gov_ads_top = _gov_top_countries(db, dest, ads_month, limit=5) if dest else []
+        gov_ads_growth = _gov_growth_countries(db, dest, ads_month, ads_prior, limit=5) if dest else []
+        gov_kol_top = _gov_top_countries(db, dest, kol_month, limit=5) if dest else []
+
         report.append({
             "branch_id": str(b.id),
             "branch_name": b.name,
@@ -245,6 +343,10 @@ def _build_report(db: Session):
             "top_countries": top,
             "growth_countries": growth,
             "country_intel": country_intel,
+            # Gov forecast for recommendations
+            "gov_ads_top": gov_ads_top,
+            "gov_ads_growth": gov_ads_growth,
+            "gov_kol_top": gov_kol_top,
         })
 
     return report
@@ -253,6 +355,10 @@ def _build_report(db: Session):
 def _build_html(report: list, today: date) -> str:
     month_name = MONTHS_EN[today.month]
     next_month_name = MONTHS_EN[today.month % 12 + 1]
+
+    # Month names for recommendations
+    ads_rec_month = MONTHS_EN[today.month % 12 + 1]           # next month
+    kol_rec_month = MONTHS_EN[(today.month + 1) % 12 + 1]     # month+2
 
     sections = []
     next_actions_all = []
@@ -290,10 +396,38 @@ def _build_html(report: list, today: date) -> str:
         if b["achievement_pct"] and b["achievement_pct"] < 80:
             actions.append(f"🔴 KPI at {ach_str} — review pricing and promotions")
 
+        # ── Paid Ads recommendations (April demand) ───────────────────────
+        ads_recs = []
+        gov_ads_top = b.get("gov_ads_top", [])
+        gov_ads_growth = b.get("gov_ads_growth", [])
+
+        # High-volume markets to scale ads for next month
+        for g in gov_ads_top[:3]:
+            ads_recs.append(
+                f"📣 {g['source_country']} — {g['visitor_count']:,} visitors in {ads_rec_month[:3]} (gov #{g['gov_rank']}) → scale ad spend"
+            )
+        # High-growth markets (next month vs current month)
+        prior_month_short = MONTHS_EN[today.month][:3]
+        for g in gov_ads_growth[:2]:
+            if g["source_country"] not in [a["source_country"] for a in gov_ads_top[:3]]:
+                ads_recs.append(
+                    f"🚀 {g['source_country']} — +{g['growth_pct']}% growth {ads_rec_month[:3]} vs {prior_month_short} ({g['target_visitors']:,} visitors) → test new campaigns"
+                )
+
+        # ── KOL recommendations (month+2 peak travel) ─────────────────────
+        kol_recs = []
+        gov_kol_top = b.get("gov_kol_top", [])
+        for g in gov_kol_top[:3]:
+            kol_recs.append(
+                f"🎥 {g['source_country']} — {g['visitor_count']:,} visitors in {kol_rec_month[:3]} (gov #{g['gov_rank']}) → activate/recruit KOLs now"
+            )
+
         next_actions_all.append({
             "branch": b["branch_name"],
             "city": b["branch_city"],
             "actions": actions,
+            "ads_recs": ads_recs,
+            "kol_recs": kol_recs,
         })
 
         top_c = " · ".join(f"{c['country']} ({c['bookings']})" for c in b["top_countries"][:3])
@@ -373,7 +507,7 @@ def _build_html(report: list, today: date) -> str:
           </div>
         </div>""")
 
-    # Next actions section
+    # Next actions section (Country Intel)
     action_html = ""
     for na in next_actions_all:
         if not na["actions"]:
@@ -384,6 +518,37 @@ def _build_html(report: list, today: date) -> str:
           <strong style="font-size:13px;color:#374151;">{na['branch']} — {na['city']}</strong>
           <ul style="margin:6px 0 0;padding-left:20px;color:#374151;font-size:13px;">{items}</ul>
         </div>"""
+
+    # Next Week Recommendations (based on gov visitor data)
+    recs_html = ""
+    for na in next_actions_all:
+        ads_recs = na.get("ads_recs", [])
+        kol_recs = na.get("kol_recs", [])
+        if not ads_recs and not kol_recs:
+            continue
+
+        branch_recs = f"""
+        <div style="margin-bottom:16px;">
+          <strong style="font-size:13px;color:#374151;">{na['branch']} — {na['city']}</strong>"""
+
+        if ads_recs:
+            ads_items = "".join(f"<li style='margin:4px 0;'>{r}</li>" for r in ads_recs)
+            branch_recs += f"""
+          <div style="margin-top:8px;">
+            <span style="font-size:12px;font-weight:600;color:#4f46e5;text-transform:uppercase;letter-spacing:0.5px;">Paid Ads — {ads_rec_month} Demand</span>
+            <ul style="margin:4px 0 0;padding-left:20px;color:#374151;font-size:13px;">{ads_items}</ul>
+          </div>"""
+
+        if kol_recs:
+            kol_items = "".join(f"<li style='margin:4px 0;'>{r}</li>" for r in kol_recs)
+            branch_recs += f"""
+          <div style="margin-top:8px;">
+            <span style="font-size:12px;font-weight:600;color:#7c3aed;text-transform:uppercase;letter-spacing:0.5px;">KOLs — {kol_rec_month} Peak Travel</span>
+            <ul style="margin:4px 0 0;padding-left:20px;color:#374151;font-size:13px;">{kol_items}</ul>
+          </div>"""
+
+        branch_recs += "\n        </div>"
+        recs_html += branch_recs
 
     return f"""<!DOCTYPE html>
 <html>
@@ -402,9 +567,16 @@ def _build_html(report: list, today: date) -> str:
     <!-- Branch sections -->
     {''.join(sections)}
 
-    <!-- Next Actions -->
+    <!-- Next Week Recommendations -->
     <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-      <h3 style="margin:0 0 14px;font-size:15px;font-weight:700;color:#111827;">🎯 Next Actions</h3>
+      <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">📋 Next Week Recommendations</h3>
+      <p style="margin:0 0 14px;font-size:12px;color:#6b7280;">Based on government visitor forecasts</p>
+      {recs_html or '<p style="color:#6b7280;font-size:13px;">No gov visitor data available.</p>'}
+    </div>
+
+    <!-- Country Intel Actions -->
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+      <h3 style="margin:0 0 14px;font-size:15px;font-weight:700;color:#111827;">🎯 Country Intel Actions</h3>
       {action_html or '<p style="color:#6b7280;font-size:13px;">No actions required this week.</p>'}
     </div>
 
