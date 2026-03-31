@@ -1019,11 +1019,19 @@ def sync_cloudbeds_occupancy(
         # Write total-level metrics from Insights API (authoritative for revenue/ADR)
         dm.total_sold = rooms_sold
         dm.occ_pct = occ_pct
-        dm.adr_native = adr_native
         dm.revpar_native = revpar_native
-        dm.revenue_native = revenue_native
-        dm.revenue_vnd = revenue_vnd
         dm.computed_at = now
+
+        # Only write revenue/ADR if the row has no data yet (future dates).
+        # For past dates, the nightly recompute_branch_range() is the source
+        # of truth — it uses filtered revenue (excl Blogger, House Use, etc).
+        # Stock report #110 returns unfiltered USALI revenue which would
+        # overwrite the correct filtered values.
+        if dm.revenue_native is None or dm.revenue_native == 0:
+            dm.revenue_native = revenue_native
+            dm.revenue_vnd = revenue_vnd
+            dm.adr_native = adr_native
+
         # NOTE: room/dorm splits (rooms_sold, dorms_sold, room_revenue_native,
         # dorm_revenue_native, room_adr_native, dorm_adr_native) are NOT
         # overwritten — those come from the nightly recompute_branch_range()
