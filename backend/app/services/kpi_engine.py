@@ -162,13 +162,12 @@ def _get_insights_from_cache(
     """
     Read monthly revenue, rooms_sold, ADR, room/dorm splits from daily_metrics cache.
 
-    daily_metrics is populated by the nightly recompute (3am) with proper filters:
-    - Revenue excludes: Blogger, House Use, Special case sources
-    - Rooms sold counts ALL sources (no exclusions)
-    - Room/Dorm split by room_type_category
+    Total-level metrics (revenue_native, total_sold, adr_native) come from the
+    Cloudbeds Insights overlay (USALI-standard, authoritative for ADR).
+    Room/dorm splits come from the nightly recompute (reservation_daily).
 
-    Returns the same structure as the old fetch_occupancy_filtered() API call,
-    but reads from DB cache instead of making 6+ HTTP requests to Cloudbeds.
+    Room/dorm ADR is scaled to match the Insights total ADR so forecasts
+    are consistent with actual revenue.
 
     Also returns 'computed_at' (latest sync timestamp) for frontend display.
     """
@@ -187,17 +186,37 @@ def _get_insights_from_cache(
                 "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0,
                 "has_dorm": False, "computed_at": None}
 
+    # Total-level from Insights overlay (authoritative for revenue/ADR)
     total_rev = sum(float(r.revenue_native or 0) for r in rows)
     total_sold = sum(int(r.total_sold or 0) for r in rows)
     total_adr = round(total_rev / total_sold, 2) if total_sold > 0 else 0
 
-    room_rev = sum(float(r.room_revenue_native or 0) for r in rows)
+    # Room/dorm splits from nightly compute (reservation_daily)
+    raw_room_rev = sum(float(r.room_revenue_native or 0) for r in rows)
     room_sold = sum(int(r.rooms_sold or 0) for r in rows)
-    room_adr = round(room_rev / room_sold, 2) if room_sold > 0 else 0
+    raw_room_adr = round(raw_room_rev / room_sold, 2) if room_sold > 0 else 0
 
-    dorm_rev = sum(float(r.dorm_revenue_native or 0) for r in rows)
+    raw_dorm_rev = sum(float(r.dorm_revenue_native or 0) for r in rows)
     dorm_sold = sum(int(r.dorms_sold or 0) for r in rows)
-    dorm_adr = round(dorm_rev / dorm_sold, 2) if dorm_sold > 0 else 0
+    raw_dorm_adr = round(raw_dorm_rev / dorm_sold, 2) if dorm_sold > 0 else 0
+
+    # Scale room/dorm ADR to match Insights total ADR
+    # (nightly compute uses nightly_rate from reservation_daily, Insights uses
+    #  USALI-standard room_revenue — they can differ slightly)
+    raw_total_rev = raw_room_rev + raw_dorm_rev
+    raw_total_sold = room_sold + dorm_sold
+    if raw_total_rev > 0 and raw_total_sold > 0 and total_adr > 0:
+        raw_avg_adr = raw_total_rev / raw_total_sold
+        scale = total_adr / raw_avg_adr if raw_avg_adr else 1.0
+        room_adr = round(raw_room_adr * scale, 2) if raw_room_adr else 0
+        dorm_adr = round(raw_dorm_adr * scale, 2) if raw_dorm_adr else 0
+        room_rev = round(raw_room_rev * scale, 2)
+        dorm_rev = round(raw_dorm_rev * scale, 2)
+    else:
+        room_adr = raw_room_adr
+        dorm_adr = raw_dorm_adr
+        room_rev = raw_room_rev
+        dorm_rev = raw_dorm_rev
 
     # Latest sync timestamp across all rows
     computed_at = max((r.computed_at for r in rows if r.computed_at), default=None)

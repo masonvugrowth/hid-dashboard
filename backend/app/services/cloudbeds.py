@@ -974,13 +974,14 @@ def sync_cloudbeds_occupancy(
     date_to: Optional[date] = None,
 ) -> dict:
     """
-    Refresh daily_metrics computed_at timestamp from Cloudbeds Data Insights API.
+    Sync OCC, ADR, RevPAR, Revenue from Cloudbeds Data Insights API
+    directly into daily_metrics.
 
-    Previously this overwrote per-day revenue/OCC/ADR with stock report #110
-    (unfiltered), which clobbered the properly-filtered values from the nightly
-    recompute_branch_range(). Now the nightly compute is the sole source of
-    truth for per-day metrics — this job only validates data is available and
-    updates computed_at to signal freshness to the frontend.
+    Uses stock report #110 which returns per-day data including future dates.
+    This is the authoritative source for revenue/ADR (USALI-standard).
+
+    The nightly recompute_branch_range() writes room/dorm splits from
+    reservation_daily — those are NOT overwritten here.
 
     Returns: { branch_id, dates_updated, date_from, date_to }
     """
@@ -994,23 +995,43 @@ def sync_cloudbeds_occupancy(
         last_day = calendar.monthrange(today.year, today.month)[1]
         date_to = today.replace(day=last_day)
 
+    occ_data = fetch_cloudbeds_occupancy(property_id, api_key, date_from, date_to)
+    rate = get_cached_rate(currency, "VND")
+
+    updated = 0
     now = datetime.now(timezone.utc)
 
-    # Update computed_at for existing rows to signal data freshness
-    rows = db.query(DailyMetrics).filter(
-        DailyMetrics.branch_id == branch_id,
-        DailyMetrics.date >= date_from,
-        DailyMetrics.date <= date_to,
-    ).all()
+    for d, metrics in sorted(occ_data.items()):
+        rooms_sold = int(metrics["rooms_sold"])
+        occ_pct = round(metrics["occupancy"] / 100.0, 4)
+        adr_native = round(metrics["adr"], 2)
+        revpar_native = round(metrics["revpar"], 2)
+        revenue_native = round(metrics["room_revenue"], 2)
+        revenue_vnd = round(revenue_native * rate, 2) if rate else None
 
-    for dm in rows:
+        dm = db.query(DailyMetrics).filter_by(
+            branch_id=branch_id, date=d,
+        ).first()
+        if not dm:
+            dm = DailyMetrics(branch_id=branch_id, date=d)
+            db.add(dm)
+
+        # Write total-level metrics from Insights API (authoritative for revenue/ADR)
+        dm.total_sold = rooms_sold
+        dm.occ_pct = occ_pct
+        dm.adr_native = adr_native
+        dm.revpar_native = revpar_native
+        dm.revenue_native = revenue_native
+        dm.revenue_vnd = revenue_vnd
         dm.computed_at = now
+        # NOTE: room/dorm splits (rooms_sold, dorms_sold, room_revenue_native,
+        # dorm_revenue_native, room_adr_native, dorm_adr_native) are NOT
+        # overwritten — those come from the nightly recompute_branch_range()
+        updated += 1
 
     db.commit()
-
-    updated = len(rows)
     logger.info(
-        "Cloudbeds sync refresh branch %s: %d dates updated [%s → %s]",
+        "Cloudbeds OCC sync complete branch %s: %d dates updated [%s → %s]",
         branch_id, updated, date_from, date_to,
     )
     return {
