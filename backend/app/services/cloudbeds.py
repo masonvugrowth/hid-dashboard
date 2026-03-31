@@ -975,13 +975,8 @@ def sync_cloudbeds_occupancy(
 ) -> dict:
     """
     Sync OCC, ADR, RevPAR, Revenue from Cloudbeds Data Insights API
-    directly into daily_metrics.
-
-    Uses stock report #110 which returns per-day data including future dates.
-    This is the authoritative source for revenue/ADR (USALI-standard).
-
-    The nightly recompute_branch_range() writes room/dorm splits from
-    reservation_daily — those are NOT overwritten here.
+    directly into daily_metrics. This overwrites computed values with
+    Cloudbeds' authoritative numbers (USALI-standard).
 
     Returns: { branch_id, dates_updated, date_from, date_to }
     """
@@ -991,6 +986,7 @@ def sync_cloudbeds_occupancy(
     if date_from is None:
         date_from = today.replace(day=1)
     if date_to is None:
+        # Sync full month (including future confirmed bookings)
         import calendar
         last_day = calendar.monthrange(today.year, today.month)[1]
         date_to = today.replace(day=last_day)
@@ -1003,11 +999,12 @@ def sync_cloudbeds_occupancy(
 
     for d, metrics in sorted(occ_data.items()):
         rooms_sold = int(metrics["rooms_sold"])
-        occ_pct = round(metrics["occupancy"] / 100.0, 4)
+        occ_pct = round(metrics["occupancy"] / 100.0, 4)  # store as 0.xxxx
         adr_native = round(metrics["adr"], 2)
         revpar_native = round(metrics["revpar"], 2)
         revenue_native = round(metrics["room_revenue"], 2)
         revenue_vnd = round(revenue_native * rate, 2) if rate else None
+        capacity = int(metrics["capacity_count"])
 
         dm = db.query(DailyMetrics).filter_by(
             branch_id=branch_id, date=d,
@@ -1016,25 +1013,13 @@ def sync_cloudbeds_occupancy(
             dm = DailyMetrics(branch_id=branch_id, date=d)
             db.add(dm)
 
-        # Write total-level metrics from Insights API (authoritative for revenue/ADR)
         dm.total_sold = rooms_sold
         dm.occ_pct = occ_pct
+        dm.adr_native = adr_native
         dm.revpar_native = revpar_native
+        dm.revenue_native = revenue_native
+        dm.revenue_vnd = revenue_vnd
         dm.computed_at = now
-
-        # Only write revenue/ADR if the row has no data yet (future dates).
-        # For past dates, the nightly recompute_branch_range() is the source
-        # of truth — it uses filtered revenue (excl Blogger, House Use, etc).
-        # Stock report #110 returns unfiltered USALI revenue which would
-        # overwrite the correct filtered values.
-        if dm.revenue_native is None or dm.revenue_native == 0:
-            dm.revenue_native = revenue_native
-            dm.revenue_vnd = revenue_vnd
-            dm.adr_native = adr_native
-
-        # NOTE: room/dorm splits (rooms_sold, dorms_sold, room_revenue_native,
-        # dorm_revenue_native, room_adr_native, dorm_adr_native) are NOT
-        # overwritten — those come from the nightly recompute_branch_range()
         updated += 1
 
     db.commit()

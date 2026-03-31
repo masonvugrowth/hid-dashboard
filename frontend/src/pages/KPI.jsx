@@ -119,7 +119,10 @@ export default function KPI() {
       </div>
 
       {loading ? (
-        <div className="text-gray-400 animate-pulse">Loading…</div>
+        <div className="text-center py-12">
+          <div className="text-gray-400 animate-pulse text-lg">Loading\u2026</div>
+          <p className="text-xs text-gray-300 mt-2">Please wait ~30s on first load (data is cached for 1 hour)</p>
+        </div>
       ) : data.length === 0 ? (
         <div className="bg-white rounded-xl border p-8 text-center text-gray-400">
           No data. Add branches and set KPI targets first.
