@@ -345,10 +345,18 @@ def recompute_branch_range(
     # Revenue filter: exclude cancelled/no-show + non-paying sources (NOT day use)
     valid_daily_revenue = [rd for rd in all_daily if not _is_excluded_revenue(rd)]
 
+    # Sold filter: exclude cancelled/no-show only (count ALL sources for sold/ADR denominator)
+    valid_daily_sold = [rd for rd in all_daily if not _is_excluded_status(rd)]
+
     # Pre-index reservation_daily by date for O(1) lookup
     daily_by_date: dict = defaultdict(list)
     for rd in valid_daily_revenue:
         daily_by_date[rd.date].append(rd)
+
+    # Pre-index ALL-sources daily rows for sold count (ADR denominator)
+    daily_sold_by_date: dict = defaultdict(list)
+    for rd in valid_daily_sold:
+        daily_sold_by_date[rd.date].append(rd)
 
     # Load existing daily_metrics for upsert
     existing_map: dict[date, DailyMetrics] = {
@@ -371,14 +379,21 @@ def recompute_branch_range(
 
         room_rev = [rd for rd in day_revenue_rows if (rd.room_type_category or "").lower() == "room"]
         dorm_rev = [rd for rd in day_revenue_rows if (rd.room_type_category or "").lower() == "dorm"]
-        rooms_sold = len(_room_expand_daily(room_rev))
-        dorms_sold = len(_room_expand_daily(dorm_rev))
-        total_sold = rooms_sold + dorms_sold
 
         revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in day_revenue_rows), 2)
         revenue_vnd    = round(sum(float(rd.nightly_rate_vnd or 0) for rd in day_revenue_rows), 2)
         room_revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in room_rev), 2)
         dorm_revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in dorm_rev), 2)
+
+        # ── Sold count: ALL sources (excl cancelled only) — for ADR denominator
+        day_sold_rows = daily_sold_by_date.get(current, [])
+        room_sold_rows = [rd for rd in day_sold_rows if (rd.room_type_category or "").lower() == "room"]
+        dorm_sold_rows = [rd for rd in day_sold_rows if (rd.room_type_category or "").lower() == "dorm"]
+        rooms_sold = len(_room_expand_daily(room_sold_rows))
+        dorms_sold = len(_room_expand_daily(dorm_sold_rows))
+        total_sold = rooms_sold + dorms_sold
+
+        # ADR = filtered_revenue / all_sources_sold
         adr_native     = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
         room_adr_native = round(room_revenue_native / rooms_sold, 2) if rooms_sold > 0 else 0.0
         dorm_adr_native = round(dorm_revenue_native / dorms_sold, 2) if dorms_sold > 0 else 0.0
