@@ -87,7 +87,14 @@ export default function KPI() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">KPI Dashboard</h1>
-          <p className="text-sm text-gray-500">Revenue achievement + forecasts</p>
+          <p className="text-sm text-gray-500">
+            Revenue achievement + forecasts
+            {data[0]?.data_synced_at && (
+              <span className="ml-2 text-xs text-gray-400">
+                Last synced: {new Date(data[0].data_synced_at).toLocaleString("en-GB", { timeZone: "Asia/Ho_Chi_Minh", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
+          </p>
         </div>
         <div className="flex gap-2">
           <select

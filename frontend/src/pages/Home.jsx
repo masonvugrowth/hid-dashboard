@@ -104,7 +104,12 @@ function AllBranchesTable({ data, loading }) {
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="px-5 py-4 border-b border-gray-100">
         <h2 className="font-semibold text-gray-800">Group Summary \u2014 {MONTH_NAME}</h2>
-        <p className="text-xs text-gray-400 mt-0.5">Native currency per branch \u00b7 Revenue from Cloudbeds Insights API</p>
+        <p className="text-xs text-gray-400 mt-0.5">
+          Native currency per branch
+          {data[0]?.data_synced_at && (
+            <span> \u00b7 Last synced: {new Date(data[0].data_synced_at).toLocaleString("en-GB", { timeZone: "Asia/Ho_Chi_Minh", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+          )}
+        </p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">

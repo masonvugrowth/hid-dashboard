@@ -1,13 +1,13 @@
 """
-KPI Engine — v4.0 (Cloudbeds Insights API with filtered custom reports)
+KPI Engine — v5.0 (cached daily_metrics — no real-time API calls)
 
-Both current and next month: revenue, ADR, rooms_sold all come from
-Cloudbeds Data Insights API via custom reports with proper filters.
+Revenue, ADR, rooms_sold, OCC all come from daily_metrics cache,
+populated by the nightly recompute (3am) with proper exclusion filters.
+No Cloudbeds API calls at request time — page loads in <1s.
 
 Revenue EXCLUDES sources: "House use", "Blogger", "Special case"
-  (these sources don't charge — excluded via reservation_source filter)
 Rooms Sold / OCC counts ALL sources (no exclusions).
-Room/Dorm split uses room_type filter (Dorm = name contains 'Dorm').
+Room/Dorm split by room_type_category (Room/Dorm).
 Each month uses its OWN ADR.
 
 Forecast formula:
@@ -156,99 +156,65 @@ def _get_adr_occ_from_insights(
     return adr, total_sold
 
 
-def _get_insights_filtered(
+def _get_insights_from_cache(
     db: Session, branch_id: UUID, year: int, month: int,
 ) -> dict:
     """
-    Fetch revenue, rooms_sold, ADR from Cloudbeds with proper filtering.
+    Read monthly revenue, rooms_sold, ADR, room/dorm splits from daily_metrics cache.
 
-    Uses custom reports API to apply:
-    - Revenue: excludes Blogger, House Use, Special case sources
-    - Rooms sold: ALL sources (no exclusions)
-    - Room/Dorm split by room type (Dorm = contains 'Dorm')
+    daily_metrics is populated by the nightly recompute (3am) with proper filters:
+    - Revenue excludes: Blogger, House Use, Special case sources
+    - Rooms sold counts ALL sources (no exclusions)
+    - Room/Dorm split by room_type_category
 
-    Returns dict with keys: total_rev, total_sold, total_adr,
-    room_rev, room_sold, room_adr, dorm_rev, dorm_sold, dorm_adr, has_dorm.
+    Returns the same structure as the old fetch_occupancy_filtered() API call,
+    but reads from DB cache instead of making 6+ HTTP requests to Cloudbeds.
 
-    Falls back to stock report 110 (unfiltered) if custom reports fail.
-    Final fallback: cached daily_metrics.
+    Also returns 'computed_at' (latest sync timestamp) for frontend display.
     """
-    from app.models.branch import Branch
-    from app.config import settings
-
-    branch = db.query(Branch).filter_by(id=branch_id, is_active=True).first()
-    if not branch:
-        return {"total_rev": 0, "total_sold": 0, "total_adr": 0,
-                "room_rev": 0, "room_sold": 0, "room_adr": 0,
-                "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
-
-    pid = branch.cloudbeds_property_id
-    api_key = settings.get_api_key_for_property(str(pid)) if pid else None
-
-    if pid and api_key:
-        try:
-            from app.services.cloudbeds import fetch_occupancy_filtered
-            result = fetch_occupancy_filtered(str(pid), api_key, year, month)
-            if result.get("total_sold", 0) > 0:
-                logger.info(
-                    "Filtered Insights for %s %d/%d: rev=%.0f sold=%d adr=%.2f "
-                    "room_adr=%.2f dorm_adr=%.2f",
-                    branch.name, year, month,
-                    result["total_rev"], result["total_sold"], result["total_adr"],
-                    result.get("room_adr", 0), result.get("dorm_adr", 0),
-                )
-                return result
-        except Exception as e:
-            logger.warning("Filtered Insights failed for %s: %s, falling back", branch.name, e)
-
-        # Fallback: stock report 110 (unfiltered) + reservation_daily for room/dorm ratio
-        try:
-            from app.services.cloudbeds import fetch_cloudbeds_occupancy
-            first_day = date(year, month, 1)
-            last_day = date(year, month, _days_in_month(year, month))
-            occ_data = fetch_cloudbeds_occupancy(str(pid), api_key, first_day, last_day)
-            total_rev = sum(d.get("room_revenue", 0) for d in occ_data.values())
-            total_sold = sum(int(d.get("rooms_sold", 0)) for d in occ_data.values())
-            adr = round(total_rev / total_sold, 2) if total_sold > 0 else 0
-            logger.info(
-                "Fallback stock report for %s %d/%d: rev=%.0f sold=%d adr=%.2f",
-                branch.name, year, month, total_rev, total_sold, adr,
-            )
-
-            # Use reservation_daily to get room/dorm ADR ratio, scale to stock report ADR
-            fallback = {"total_rev": total_rev, "total_sold": total_sold, "total_adr": adr,
-                        "room_rev": 0, "room_sold": 0, "room_adr": 0,
-                        "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
-            if adr > 0:
-                raw_room_adr, raw_dorm_adr, r_rev, r_sold, d_rev, d_sold = \
-                    _get_room_dorm_adr_from_daily(db, branch_id, first_day, last_day)
-                daily_total_rev = r_rev + d_rev
-                daily_total_sold = r_sold + d_sold
-                if daily_total_rev > 0 and raw_room_adr and raw_dorm_adr and daily_total_sold > 0:
-                    daily_avg_adr = daily_total_rev / daily_total_sold
-                    scale = adr / daily_avg_adr if daily_avg_adr else 1
-                    fallback["room_adr"] = round(raw_room_adr * scale, 2)
-                    fallback["dorm_adr"] = round(raw_dorm_adr * scale, 2)
-                    fallback["room_sold"] = r_sold
-                    fallback["dorm_sold"] = d_sold
-                    fallback["has_dorm"] = d_sold > 0
-                    logger.info(
-                        "Fallback room/dorm ADR (scaled): room=%s dorm=%s (scale=%.4f)",
-                        fallback["room_adr"], fallback["dorm_adr"], scale,
-                    )
-            return fallback
-        except Exception as e:
-            logger.warning("Stock report also failed for %s: %s", branch.name, e)
-
-    # Final fallback: cached daily_metrics
     first_day = date(year, month, 1)
     last_day = date(year, month, _days_in_month(year, month))
-    adr_cached, sold_cached = _get_adr_occ_from_insights(db, branch_id, first_day, last_day)
-    rev_cached, _ = _get_revenue_from_insights(db, branch_id, year, month)
-    return {"total_rev": rev_cached, "total_sold": sold_cached,
-            "total_adr": adr_cached or 0,
-            "room_rev": 0, "room_sold": 0, "room_adr": 0,
-            "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
+
+    rows = db.query(DailyMetrics).filter(
+        DailyMetrics.branch_id == branch_id,
+        DailyMetrics.date >= first_day,
+        DailyMetrics.date <= last_day,
+    ).all()
+
+    if not rows:
+        return {"total_rev": 0, "total_sold": 0, "total_adr": 0,
+                "room_rev": 0, "room_sold": 0, "room_adr": 0,
+                "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0,
+                "has_dorm": False, "computed_at": None}
+
+    total_rev = sum(float(r.revenue_native or 0) for r in rows)
+    total_sold = sum(int(r.total_sold or 0) for r in rows)
+    total_adr = round(total_rev / total_sold, 2) if total_sold > 0 else 0
+
+    room_rev = sum(float(r.room_revenue_native or 0) for r in rows)
+    room_sold = sum(int(r.rooms_sold or 0) for r in rows)
+    room_adr = round(room_rev / room_sold, 2) if room_sold > 0 else 0
+
+    dorm_rev = sum(float(r.dorm_revenue_native or 0) for r in rows)
+    dorm_sold = sum(int(r.dorms_sold or 0) for r in rows)
+    dorm_adr = round(dorm_rev / dorm_sold, 2) if dorm_sold > 0 else 0
+
+    # Latest sync timestamp across all rows
+    computed_at = max((r.computed_at for r in rows if r.computed_at), default=None)
+
+    return {
+        "total_rev": total_rev,
+        "total_sold": total_sold,
+        "total_adr": total_adr,
+        "room_rev": room_rev,
+        "room_sold": room_sold,
+        "room_adr": room_adr,
+        "dorm_rev": dorm_rev,
+        "dorm_sold": dorm_sold,
+        "dorm_adr": dorm_adr,
+        "has_dorm": dorm_sold > 0,
+        "computed_at": computed_at,
+    }
 
 
 def _get_room_dorm_adr_from_daily(
@@ -393,14 +359,14 @@ def compute_next_month_forecast(
 
     has_split = total_room_count > 0 and total_dorm_count > 0
 
-    # ── Next-month data from Cloudbeds Insights API (filtered) ───────────
-    insights = _get_insights_filtered(db, branch_id, next_year, next_month)
+    # ── Next-month data from daily_metrics cache ─────────────────────────
+    insights = _get_insights_from_cache(db, branch_id, next_year, next_month)
 
     total_revenue = insights["total_rev"]
     total_sold = insights["total_sold"]
     total_adr = insights["total_adr"]
 
-    # Room/Dorm ADR directly from filtered Cloudbeds API
+    # Room/Dorm ADR from cached daily_metrics
     room_adr = insights.get("room_adr") or None
     dorm_adr = insights.get("dorm_adr") or None
 
@@ -499,12 +465,13 @@ def compute_kpi_summary(
     predicted_room_occ = float(target_row.predicted_room_occ_pct) if (target_row and target_row.predicted_room_occ_pct) else None
     predicted_dorm_occ = float(target_row.predicted_dorm_occ_pct) if (target_row and target_row.predicted_dorm_occ_pct) else None
 
-    # ── Actuals from Cloudbeds Insights API (filtered) ────────────────────
-    insights = _get_insights_filtered(db, branch_id, year, month)
+    # ── Actuals from daily_metrics cache (nightly compute with proper filters) ─
+    insights = _get_insights_from_cache(db, branch_id, year, month)
 
     actual_native = insights["total_rev"]
     total_sold = insights["total_sold"]
     avg_adr = insights["total_adr"]
+    data_synced_at = insights.get("computed_at")
 
     # VND conversion
     from app.services.cloudbeds import get_cached_rate
@@ -513,7 +480,7 @@ def compute_kpi_summary(
     vnd_rate = get_cached_rate(branch_obj.currency or "USD", "VND") if branch_obj else None
     actual_vnd = round(actual_native * vnd_rate, 2) if vnd_rate and actual_native else 0.0
 
-    # Room/Dorm ADR directly from filtered Cloudbeds API
+    # Room/Dorm ADR from cached daily_metrics
     room_adr = insights.get("room_adr") or None
     dorm_adr = insights.get("dorm_adr") or None
     has_split = total_room_count > 0 and total_dorm_count > 0
@@ -522,7 +489,15 @@ def compute_kpi_summary(
     if total_room_count > 0 and total_dorm_count == 0:
         room_adr = avg_adr
 
-    avg_occ = predicted_occ_pct
+    # ── Actual OCC from daily_metrics ────────────────────────────────────
+    actual_occ = round(total_sold / (total_rooms * days_elapsed), 4) if (total_rooms > 0 and days_elapsed > 0) else None
+    actual_room_occ = None
+    actual_dorm_occ = None
+    if has_split and days_elapsed > 0:
+        room_sold_total = insights.get("room_sold", 0)
+        dorm_sold_total = insights.get("dorm_sold", 0)
+        actual_room_occ = round(room_sold_total / (total_room_count * days_elapsed), 4) if total_room_count > 0 else None
+        actual_dorm_occ = round(dorm_sold_total / (total_dorm_count * days_elapsed), 4) if total_dorm_count > 0 else None
 
     # ── Forecasts ─────────────────────────────────────────────────────────
     room_forecast = dorm_forecast = None
@@ -561,7 +536,10 @@ def compute_kpi_summary(
         # Actuals
         "actual_revenue_native": round(actual_native, 2),
         "actual_revenue_vnd": round(actual_vnd, 2),
-        "avg_occ_pct": round(avg_occ, 4) if avg_occ is not None else None,
+        "actual_occ_pct": actual_occ,
+        "actual_room_occ_pct": actual_room_occ,
+        "actual_dorm_occ_pct": actual_dorm_occ,
+        "avg_occ_pct": actual_occ,
         "avg_adr_native": round(avg_adr, 2) if avg_adr else None,
         "room_adr_native": room_adr,
         "dorm_adr_native": dorm_adr,
@@ -576,4 +554,6 @@ def compute_kpi_summary(
         "forecast_dorm_adr": dorm_adr,
         # Room/Dorm capability flag
         "has_room_dorm_split": can_split,
+        # Sync metadata
+        "data_synced_at": data_synced_at.isoformat() if data_synced_at else None,
     }

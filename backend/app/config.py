@@ -30,12 +30,6 @@ class Settings(BaseSettings):
     GOOGLE_SHEET_1948: str = "1iWi9cPqEwFFQ6pW7Kc6Ik6wwZnbEt9dz1nUqnWWeDBw"
     GOOGLE_SHEET_OANI: str = "1sRw0OQngWAhJBYJkCESXFxuvHOQCcu-UqR_3LqvquYM"
     GOOGLE_SHEET_OSAKA: str = "1yNRL8b0qW52W2-SeJi_h1ehgXXYzKNK-0M0DINqorK4"
-    # Reservation (Raw_data) sheets
-    GOOGLE_RES_SHEET_TAIPEI: str = "1FhNdvo79lfgDrD9SKSVROQW3MVtA6qtEcavo_OALLf4"
-    GOOGLE_RES_SHEET_SAIGON: str = "1HUdM4gYwTyyFV2gBJddwysJIBAXNybl0dNT2GH7bh-8"
-    GOOGLE_RES_SHEET_OSAKA:  str = "1NGaidHDU-c0znkq8aGzbSkWu48u4f4uhBYH6NZxCiVU"
-    GOOGLE_RES_SHEET_OANI:   str = "1q9d-oJNRYHBzwJDlc5F1k7ygzwY3AbKoIX9jVf8r_rc"
-    GOOGLE_RES_SHEET_1948:   str = "1Bun1xweSSIcZF5QPkEWuUMVwWNCcAXS8ErjwPRv0iNA"
 
     SENDGRID_API_KEY: str = ""
     EMAIL_FROM: str = ""
