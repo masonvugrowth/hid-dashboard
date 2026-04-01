@@ -392,7 +392,7 @@ def backfill_accommodation_total(
     logger.info("Backfill: %d NULL reservations for branch %s", len(null_res), branch_id)
 
     with httpx.Client(timeout=30) as client:
-        batch_buf: list[tuple[str, float]] = []
+        batch_buf: list[tuple[str, float, Optional[str], Optional[str]]] = []
         for i, r in enumerate(null_res):
             try:
                 resp = client.get(
@@ -401,12 +401,27 @@ def backfill_accommodation_total(
                     params={"propertyID": property_id, "reservationID": r.cloudbeds_reservation_id},
                 )
                 resp.raise_for_status()
-                bd = (resp.json().get("data") or {}).get("balanceDetailed") or {}
+                res_data = resp.json().get("data") or {}
+                bd = res_data.get("balanceDetailed") or {}
                 sub = float(_safe_decimal(bd.get("subTotal")) or 0)
                 extra = float(_safe_decimal(bd.get("additionalItems")) or 0)
                 accom = sub - extra
+
+                # Also extract rate plan and room type while we have the full response
+                rate_plan = None
+                room_type_name = None
+                for room_list_key in ("assigned", "unassigned"):
+                    rooms = res_data.get(room_list_key) or {}
+                    if isinstance(rooms, dict):
+                        rooms = list(rooms.values())
+                    for room in rooms:
+                        if not rate_plan:
+                            rate_plan = room.get("ratePlanNamePublic") or room.get("ratePlanNamePrivate")
+                        if not room_type_name:
+                            room_type_name = room.get("roomTypeName")
+
                 if accom > 0:
-                    batch_buf.append((r.cloudbeds_reservation_id, accom))
+                    batch_buf.append((r.cloudbeds_reservation_id, accom, rate_plan, room_type_name if not r.room_type else None))
                 total_fetched += 1
             except Exception as e:
                 logger.warning("Backfill fetch failed res %s: %s", r.cloudbeds_reservation_id, e)
@@ -415,13 +430,23 @@ def backfill_accommodation_total(
             if len(batch_buf) >= BATCH_SIZE or (i == len(null_res) - 1 and batch_buf):
                 _s = SessionLocal()
                 try:
-                    for cb_id, accom in batch_buf:
+                    for cb_id, accom, rp, rt in batch_buf:
                         native = round(accom, 2)
                         vnd = round(accom * rate, 2) if rate else None
+                        set_parts = ["grand_total_native=:n", "grand_total_vnd=:v", "updated_at=:t"]
+                        params = {"n": native, "v": vnd, "t": now, "cid": cb_id}
+                        if rp:
+                            set_parts.append("rate_plan_name=:rp")
+                            params["rp"] = rp
+                        if rt:
+                            set_parts.append("room_type=:rt")
+                            set_parts.append("room_type_category=:rc")
+                            params["rt"] = rt
+                            params["rc"] = map_room_type_category(rt)
                         result = _s.execute(_text(
-                            "UPDATE reservations SET grand_total_native=:n, grand_total_vnd=:v, updated_at=:t "
+                            f"UPDATE reservations SET {', '.join(set_parts)} "
                             "WHERE cloudbeds_reservation_id=:cid AND grand_total_native IS NULL"
-                        ), {"n": native, "v": vnd, "t": now, "cid": cb_id})
+                        ), params)
                         if result.rowcount:
                             filled += 1
                     _s.commit()
@@ -437,6 +462,124 @@ def backfill_accommodation_total(
 
     logger.info("Backfill complete branch %s: %d fetched, %d filled", branch_id, total_fetched, filled)
     return {"branch_id": branch_id, "fetched": total_fetched, "filled": filled}
+
+
+def backfill_rate_plan(
+    branch_id: str,
+    property_id: str,
+    api_key: str,
+    checkin_from: Optional[date] = None,
+    checkin_to: Optional[date] = None,
+    limit: Optional[int] = None,
+) -> dict:
+    """
+    Backfill rate_plan_name (and room_type if still NULL) by calling
+    getReservation individually for each reservation.
+    Extracts ratePlanNamePublic from assigned/unassigned room data.
+    """
+    import time
+
+    today = date.today()
+    df = checkin_from or (today - timedelta(days=30))
+    dt = checkin_to or today
+
+    db = SessionLocal()
+    query = db.query(Reservation).filter(
+        Reservation.branch_id == branch_id,
+        Reservation.check_in_date >= df,
+        Reservation.check_in_date <= dt,
+        Reservation.rate_plan_name == None,  # noqa: E711
+        Reservation.cloudbeds_reservation_id != None,  # noqa: E711
+    )
+    if limit:
+        query = query.limit(limit)
+    null_res = query.all()
+    db.close()
+
+    total_fetched = filled = room_type_filled = 0
+    now = datetime.now(timezone.utc)
+    BATCH_SIZE = 20
+
+    logger.info("Rate plan backfill: %d reservations for branch %s", len(null_res), branch_id)
+
+    with httpx.Client(timeout=30) as client:
+        batch_buf: list[tuple[str, Optional[str], Optional[str]]] = []  # (cb_id, rate_plan, room_type)
+        for i, r in enumerate(null_res):
+            try:
+                resp = client.get(
+                    f"{CLOUDBEDS_BASE_URL}/getReservation",
+                    headers=_headers(api_key),
+                    params={"propertyID": property_id, "reservationID": r.cloudbeds_reservation_id},
+                )
+                resp.raise_for_status()
+                data = resp.json().get("data") or {}
+
+                # Extract rate plan and room type from assigned/unassigned rooms
+                rate_plan = None
+                room_type_name = None
+                for room_list_key in ("assigned", "unassigned"):
+                    rooms = data.get(room_list_key) or {}
+                    if isinstance(rooms, dict):
+                        rooms = list(rooms.values())
+                    for room in rooms:
+                        if not rate_plan:
+                            rate_plan = room.get("ratePlanNamePublic") or room.get("ratePlanNamePrivate")
+                        if not room_type_name:
+                            room_type_name = room.get("roomTypeName")
+
+                batch_buf.append((r.cloudbeds_reservation_id, rate_plan, room_type_name if not r.room_type else None))
+                total_fetched += 1
+            except Exception as e:
+                logger.warning("Rate plan backfill fetch failed res %s: %s", r.cloudbeds_reservation_id, e)
+
+            # Flush batch
+            if len(batch_buf) >= BATCH_SIZE or (i == len(null_res) - 1 and batch_buf):
+                _s = SessionLocal()
+                try:
+                    for cb_id, rp, rt in batch_buf:
+                        updates = ["updated_at=:t"]
+                        params = {"t": now, "cid": cb_id}
+                        if rp:
+                            updates.append("rate_plan_name=:rp")
+                            params["rp"] = rp
+                        if rt:
+                            updates.append("room_type=:rt")
+                            updates.append("room_type_category=:rc")
+                            params["rt"] = rt
+                            params["rc"] = map_room_type_category(rt)
+                        if len(updates) > 1:  # more than just updated_at
+                            result = _s.execute(_text(
+                                f"UPDATE reservations SET {', '.join(updates)} "
+                                "WHERE cloudbeds_reservation_id=:cid"
+                            ), params)
+                            if result.rowcount:
+                                if rp:
+                                    filled += 1
+                                if rt:
+                                    room_type_filled += 1
+                    _s.commit()
+                except Exception as e:
+                    _s.rollback()
+                    logger.warning("Rate plan backfill batch write failed: %s", e)
+                finally:
+                    _s.close()
+                batch_buf.clear()
+
+            if (i + 1) % 50 == 0:
+                logger.info("Rate plan backfill progress: %d/%d fetched, %d rate plans filled, %d room types filled",
+                            i + 1, len(null_res), filled, room_type_filled)
+
+            # Rate limit: 0.2s between API calls
+            time.sleep(0.2)
+
+    logger.info("Rate plan backfill complete branch %s: %d fetched, %d rate plans, %d room types",
+                branch_id, total_fetched, filled, room_type_filled)
+    return {
+        "branch_id": branch_id,
+        "fetched": total_fetched,
+        "rate_plans_filled": filled,
+        "room_types_filled": room_type_filled,
+    }
 
 
 def _fetch_reservations_page(
@@ -558,6 +701,11 @@ def ingest_reservations(
             cancellation_date=_parse_date(raw.get("cancellationDate")),
             reservation_date=_parse_date(raw.get("dateCreated")),
         )
+
+        # Rate plan name (present in getReservation detail, not in bulk getReservations)
+        rate_plan = raw.get("ratePlanNamePublic") or raw.get("ratePlanNamePrivate")
+        if rate_plan is not None:
+            payload["rate_plan_name"] = rate_plan
 
         # Only update enriched fields when the API returned them
         if room_type is not None:

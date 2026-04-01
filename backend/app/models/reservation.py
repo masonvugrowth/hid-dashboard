@@ -22,6 +22,7 @@ class Reservation(Base):
     guest_country_code = Column(String(50), nullable=True)
     room_type = Column(String(100), nullable=True)
     room_type_category = Column(String(10), nullable=True)   # "Room" or "Dorm"
+    rate_plan_name = Column(String(200), nullable=True)
     room_number = Column(String(50), nullable=True)
     source = Column(String(100), nullable=True)
     source_category = Column(String(20), nullable=True)      # "OTA" or "Direct"

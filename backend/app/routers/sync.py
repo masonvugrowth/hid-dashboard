@@ -12,7 +12,7 @@ from app.models.branch import Branch
 from app.models.reservation import Reservation
 from pathlib import Path
 
-from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total
+from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_rate_plan
 from app.services.ingest_csv import import_all_csvs, import_csv_file, CSV_CONFIGS
 from app.services import meta_ads as meta_service
 from app.services import angle_classifier
@@ -119,6 +119,78 @@ def trigger_backfill(
     return _envelope({
         "status": "started",
         "message": "Backfill running in background. Check Railway logs for progress.",
+        "window": {"from": df.isoformat(), "to": dt.isoformat()},
+        "branches_queued": [c["name"] for c in branch_configs],
+        "skipped": skipped,
+    })
+
+
+def _run_rate_plan_backfill_bg(branch_configs: list, df, dt):
+    """Background worker: runs rate plan backfill for each branch config."""
+    import logging
+    log = logging.getLogger(__name__)
+    for cfg in branch_configs:
+        try:
+            result = backfill_rate_plan(
+                cfg["branch_id"], cfg["property_id"],
+                api_key=cfg["api_key"], checkin_from=df, checkin_to=dt, limit=cfg.get("limit")
+            )
+            log.info("Rate plan backfill %s: fetched=%s rate_plans=%s room_types=%s",
+                     cfg["name"], result.get("fetched"), result.get("rate_plans_filled"), result.get("room_types_filled"))
+        except Exception as exc:
+            log.error("Rate plan backfill failed for %s: %s", cfg["name"], exc)
+
+
+@router.post("/backfill-rate-plan")
+def trigger_rate_plan_backfill(
+    background_tasks: BackgroundTasks,
+    branch_id: Optional[UUID] = Query(None),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD check-in from (default: 90 days ago)"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD check-in to (default: 180 days forward)"),
+    limit: Optional[int] = Query(None, description="Max reservations per branch (for testing)"),
+    db: Session = Depends(get_db),
+):
+    """
+    Backfill rate_plan_name for reservations where it is NULL.
+    Calls Cloudbeds getReservation (singular) for each reservation and extracts
+    ratePlanNamePublic from room data. Also backfills room_type if still NULL.
+    Returns immediately — backfill runs in background. Check Railway logs for progress.
+    """
+    from datetime import date as date_cls, timedelta
+
+    today = date_cls.today()
+    df = date_cls.fromisoformat(date_from) if date_from else today - timedelta(days=90)
+    dt = date_cls.fromisoformat(date_to) if date_to else today + timedelta(days=180)
+
+    branches_q = db.query(Branch).filter_by(is_active=True)
+    if branch_id:
+        branches_q = branches_q.filter(Branch.id == branch_id)
+    branches = branches_q.all()
+
+    branch_configs = []
+    skipped = []
+    for branch in branches:
+        pid = branch.cloudbeds_property_id
+        if not pid:
+            skipped.append({"branch": branch.name, "reason": "no property_id"})
+            continue
+        api_key = settings.get_api_key_for_property(str(pid))
+        if not api_key:
+            skipped.append({"branch": branch.name, "reason": f"no api_key for property {pid}"})
+            continue
+        branch_configs.append({
+            "branch_id": str(branch.id),
+            "property_id": str(pid),
+            "api_key": api_key,
+            "name": branch.name,
+            "limit": limit,
+        })
+
+    background_tasks.add_task(_run_rate_plan_backfill_bg, branch_configs, df, dt)
+
+    return _envelope({
+        "status": "started",
+        "message": "Rate plan backfill running in background. Check Railway logs for progress.",
         "window": {"from": df.isoformat(), "to": dt.isoformat()},
         "branches_queued": [c["name"] for c in branch_configs],
         "skipped": skipped,
