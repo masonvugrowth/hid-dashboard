@@ -121,7 +121,7 @@ export default function KPI() {
       {loading ? (
         <div className="text-center py-12">
           <div className="text-gray-400 animate-pulse text-lg">Loading\u2026</div>
-          <p className="text-xs text-gray-300 mt-2">Please wait ~30s on first load (data is cached for 1 hour)</p>
+          <p className="text-xs text-gray-300 mt-2">Please wait ~30s on first load (data is cached for 3 hours)</p>
         </div>
       ) : data.length === 0 ? (
         <div className="bg-white rounded-xl border p-8 text-center text-gray-400">

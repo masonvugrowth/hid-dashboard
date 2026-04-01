@@ -101,7 +101,7 @@ function AllBranchesTable({ data, loading }) {
   if (loading) return (
     <div className="bg-white rounded-xl border p-8 text-center">
       <div className="text-gray-400 animate-pulse text-lg">Loading\u2026</div>
-      <p className="text-xs text-gray-300 mt-2">Please wait ~30s on first load (data is cached for 1 hour)</p>
+      <p className="text-xs text-gray-300 mt-2">Please wait ~30s on first load (data is cached for 3 hours)</p>
     </div>
   );
   if (!data.length) return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No data \u2014 add branches and set KPI targets.</div>;
@@ -253,7 +253,12 @@ function SingleBranchView({ branch }) {
       .finally(() => setLoading(false));
   }, [branch && branch.id]);
 
-  if (loading) return <div className="p-8 text-gray-400 animate-pulse">Loading\u2026</div>;
+  if (loading) return (
+    <div className="p-8 text-center">
+      <div className="text-gray-400 animate-pulse text-lg">Loading\u2026</div>
+      <p className="text-xs text-gray-300 mt-2">Please wait ~30s on first load (data is cached for 3 hours)</p>
+    </div>
+  );
   if (error)   return <div className="p-8 text-red-500">Error: {error}</div>;
 
   return (

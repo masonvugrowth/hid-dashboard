@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 # ── In-memory cache for Insights API results (1-hour TTL) ─────────────────
 _insights_cache: dict[str, tuple[float, dict]] = {}  # key → (timestamp, data)
-_CACHE_TTL = 3600  # 1 hour
+_CACHE_TTL = 10800  # 3 hours
 
 
 def _get_cache_time(branch_id: str, year: int, month: int) -> str | None:
