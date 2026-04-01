@@ -506,6 +506,48 @@ def debug_cloudbeds_reservation(
     }}
 
 
+@router.get("/debug/cloudbeds-reservation-full")
+def debug_cloudbeds_reservation_full(
+    property_id: str = Query(...),
+    reservation_id: str = Query(...),
+):
+    """Fetch a single reservation from Cloudbeds API — return assigned/unassigned rooms with rate plan info."""
+    import httpx
+    api_key = settings.get_api_key_for_property(property_id)
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No API key for property")
+    r = httpx.get(
+        "https://hotels.cloudbeds.com/api/v1.2/getReservation",
+        params={"propertyID": property_id, "reservationID": reservation_id},
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=30,
+    )
+    data = r.json().get("data", {})
+    assigned = data.get("assigned", {})
+    unassigned = data.get("unassigned", {})
+    rooms_info = []
+    for key in ("assigned", "unassigned"):
+        rooms = data.get(key) or {}
+        if isinstance(rooms, dict):
+            rooms = list(rooms.values())
+        for room in rooms:
+            rooms_info.append({
+                "source": key,
+                "roomTypeName": room.get("roomTypeName"),
+                "roomTypeID": room.get("roomTypeID"),
+                "ratePlanID": room.get("ratePlanID"),
+                "ratePlanNamePublic": room.get("ratePlanNamePublic"),
+                "ratePlanNamePrivate": room.get("ratePlanNamePrivate"),
+                "roomRate": room.get("roomRate"),
+                "all_keys": list(room.keys()) if isinstance(room, dict) else [],
+            })
+    return {"success": True, "data": {
+        "reservation_id": reservation_id,
+        "status": data.get("status"),
+        "rooms": rooms_info,
+    }}
+
+
 @router.get("/debug/compute-day")
 def debug_compute_day(
     branch_id: UUID = Query(...),
