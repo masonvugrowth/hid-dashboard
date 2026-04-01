@@ -162,7 +162,7 @@ function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap 
   const kpis = [
     { label: "Total Bookings", value: summary.total_bookings, color: "text-indigo-700 bg-indigo-50" },
     { label: "Confirmed", value: summary.confirmed_bookings, color: "text-green-700 bg-green-50" },
-    { label: "Revenue (VND)", value: fmt(summary.total_revenue_vnd, "compact"), color: "text-blue-700 bg-blue-50" },
+    { label: "Revenue", value: fmt(summary.total_revenue_native, "compact"), color: "text-blue-700 bg-blue-50" },
     { label: "Avg Nights", value: summary.avg_nights, color: "text-purple-700 bg-purple-50" },
     { label: "Total Nights", value: summary.total_nights, color: "text-teal-700 bg-teal-50" },
     { label: "Cancel Rate", value: pct(summary.cancellation_rate), color: cancelBand(summary.cancellation_rate) },
@@ -183,10 +183,10 @@ function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap 
       {/* Revenue + Bookings Trend */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <TrendChart
-          title="Daily Revenue (VND)"
+          title="Daily Revenue"
           data={daily}
           xKey="date"
-          bars={[{ key: "revenue_vnd", name: "Revenue", color: "#6366f1" }]}
+          bars={[{ key: "revenue_native", name: "Revenue", color: "#6366f1" }]}
         />
         <TrendChart
           title="Daily Bookings"
@@ -207,7 +207,7 @@ function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap 
                 <th className="px-4 py-2 text-left">Branch</th>
                 <th className="px-4 py-2 text-right">Bookings</th>
                 <th className="px-4 py-2 text-right">Confirmed</th>
-                <th className="px-4 py-2 text-right">Revenue (VND)</th>
+                <th className="px-4 py-2 text-right">Revenue</th>
                 <th className="px-4 py-2 text-right">Nights</th>
                 <th className="px-4 py-2 text-right">ADR</th>
                 <th className="px-4 py-2 text-right">Cancel%</th>
@@ -221,7 +221,7 @@ function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap 
                   </td>
                   <td className="px-4 py-2 text-right tabular-nums">{r.bookings}</td>
                   <td className="px-4 py-2 text-right tabular-nums text-green-700">{r.confirmed}</td>
-                  <td className="px-4 py-2 text-right tabular-nums font-medium">{fmt(r.revenue_vnd)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums font-medium">{fmt(r.revenue_native)}</td>
                   <td className="px-4 py-2 text-right tabular-nums">{r.nights}</td>
                   <td className="px-4 py-2 text-right tabular-nums">{fmt(r.adr_native)}</td>
                   <td className="px-4 py-2 text-right">
@@ -244,8 +244,8 @@ function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap 
             <p className="text-sm font-semibold text-gray-700 mb-3">CRM Room Types</p>
             <div className="space-y-2">
               {roomTypes.map(rt => {
-                const totalRev = roomTypes.reduce((s, r) => s + r.revenue_vnd, 0);
-                const pctShare = totalRev > 0 ? (rt.revenue_vnd / totalRev) * 100 : 0;
+                const totalRev = roomTypes.reduce((s, r) => s + r.revenue_native, 0);
+                const pctShare = totalRev > 0 ? (rt.revenue_native / totalRev) * 100 : 0;
                 return (
                   <div key={rt.room_type} className="flex items-center justify-between text-sm">
                     <div className="flex-1 min-w-0">
@@ -256,7 +256,7 @@ function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap 
                     </div>
                     <div className="ml-3 text-right shrink-0">
                       <span className="text-xs text-gray-600">{rt.bookings} bk</span>
-                      <span className="text-xs text-gray-400 ml-2">{fmt(rt.revenue_vnd, "compact")}</span>
+                      <span className="text-xs text-gray-400 ml-2">{fmt(rt.revenue_native, "compact")}</span>
                     </div>
                   </div>
                 );
@@ -308,7 +308,7 @@ function MonthlyTab({ monthly }) {
 
   const chartData = monthly.map(m => ({
     label: `${m.year}-${String(m.month).padStart(2, "0")}`,
-    revenue_vnd: m.revenue_vnd,
+    revenue_native: m.revenue_native,
     bookings: m.bookings,
   }));
 
@@ -316,10 +316,10 @@ function MonthlyTab({ monthly }) {
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <TrendChart
-          title="Monthly Revenue (VND)"
+          title="Monthly Revenue"
           data={chartData}
           xKey="label"
-          bars={[{ key: "revenue_vnd", name: "Revenue", color: "#6366f1" }]}
+          bars={[{ key: "revenue_native", name: "Revenue", color: "#6366f1" }]}
         />
         <TrendChart
           title="Monthly Bookings"
@@ -337,7 +337,7 @@ function MonthlyTab({ monthly }) {
               <th className="px-4 py-3 text-left">Month</th>
               <th className="px-4 py-3 text-right">Bookings</th>
               <th className="px-4 py-3 text-right">Confirmed</th>
-              <th className="px-4 py-3 text-right">Revenue (VND)</th>
+              <th className="px-4 py-3 text-right">Revenue</th>
               <th className="px-4 py-3 text-right">Nights</th>
               <th className="px-4 py-3 text-right">ADR</th>
               <th className="px-4 py-3 text-right">Cancel%</th>
@@ -351,7 +351,7 @@ function MonthlyTab({ monthly }) {
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums">{m.bookings}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums text-green-700">{m.confirmed}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums font-medium">{fmt(m.revenue_vnd)}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums font-medium">{fmt(m.revenue_native)}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums">{m.nights}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums">{fmt(m.adr_native)}</td>
                 <td className="px-4 py-2.5 text-right">
@@ -396,7 +396,7 @@ function ReservationsTab({ reservations, branchMap }) {
               <th className="px-4 py-3 text-left">Source</th>
               <th className="px-4 py-3 text-left">Country</th>
               <th className="px-4 py-3 text-right">Nights</th>
-              <th className="px-4 py-3 text-right">Revenue (VND)</th>
+              <th className="px-4 py-3 text-right">Revenue</th>
               <th className="px-4 py-3 text-center">Status</th>
             </tr>
           </thead>
@@ -411,7 +411,7 @@ function ReservationsTab({ reservations, branchMap }) {
                 <td className="px-4 py-2 text-gray-600 text-xs">{r.source || "—"}</td>
                 <td className="px-4 py-2 text-gray-600 text-xs">{r.guest_country || "—"}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{r.nights}</td>
-                <td className="px-4 py-2 text-right tabular-nums font-medium">{fmt(r.grand_total_vnd)}</td>
+                <td className="px-4 py-2 text-right tabular-nums font-medium">{fmt(r.grand_total_native)}</td>
                 <td className="px-4 py-2 text-center">
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${statusColor(r.status)}`}>
                     {r.status}
