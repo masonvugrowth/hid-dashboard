@@ -12,7 +12,7 @@ from app.models.branch import Branch
 from app.models.reservation import Reservation
 from pathlib import Path
 
-from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_rate_plan
+from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_room_type_and_rate_plan
 from app.services.ingest_csv import import_all_csvs, import_csv_file, CSV_CONFIGS
 from app.services import meta_ads as meta_service
 from app.services import angle_classifier
@@ -131,7 +131,7 @@ def _run_rate_plan_backfill_bg(branch_configs: list, df, dt):
     log = logging.getLogger(__name__)
     for cfg in branch_configs:
         try:
-            result = backfill_rate_plan(
+            result = backfill_room_type_and_rate_plan(
                 cfg["branch_id"], cfg["property_id"],
                 api_key=cfg["api_key"], checkin_from=df, checkin_to=dt, limit=cfg.get("limit")
             )
