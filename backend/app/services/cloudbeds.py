@@ -1241,20 +1241,6 @@ def sync_cloudbeds_filtered(
         if total_sold_month <= 0:
             continue
 
-        # Ratios for distributing room/dorm across daily rows
-        room_sold_ratio = filtered["room_sold"] / total_sold_month if has_split else 1.0
-        dorm_sold_ratio = filtered["dorm_sold"] / total_sold_month if has_split else 0.0
-        room_rev_ratio = filtered["room_rev"] / filtered["total_rev"] if filtered["total_rev"] > 0 and has_split else 1.0
-        dorm_rev_ratio = filtered["dorm_rev"] / filtered["total_rev"] if filtered["total_rev"] > 0 and has_split else 0.0
-
-        # Room/Dorm ADR from filtered API (monthly level — same for all days)
-        room_adr = filtered.get("room_adr", 0)
-        dorm_adr = filtered.get("dorm_adr", 0)
-
-        # For rooms-only branches, room_adr = total_adr
-        if total_room_count > 0 and total_dorm_count == 0:
-            room_adr = filtered["total_adr"]
-
         # Update daily rows for this month
         first_day = date(year, month, 1)
         last_day = date(year, month, calendar.monthrange(year, month)[1])
@@ -1266,8 +1252,42 @@ def sync_cloudbeds_filtered(
             .all()
         )
 
+        # Compute revenue exclusion ratio: filtered_rev / unfiltered_rev
+        # stock report 110 revenue (already in daily_metrics) is unfiltered
+        unfiltered_rev_month = sum(float(dm.revenue_native or 0) for dm in daily_rows)
+        filtered_rev_month = filtered["total_rev"]  # excl Blogger/House Use/Special Case
+        rev_scale = filtered_rev_month / unfiltered_rev_month if unfiltered_rev_month > 0 else 1.0
+
+        # Ratios for distributing room/dorm across daily rows
+        room_sold_ratio = filtered["room_sold"] / total_sold_month if has_split else 1.0
+        dorm_sold_ratio = filtered["dorm_sold"] / total_sold_month if has_split else 0.0
+        room_rev_ratio = filtered["room_rev"] / filtered_rev_month if filtered_rev_month > 0 and has_split else 1.0
+        dorm_rev_ratio = filtered["dorm_rev"] / filtered_rev_month if filtered_rev_month > 0 and has_split else 0.0
+
+        # Room/Dorm ADR from filtered API (monthly level — same for all days)
+        room_adr = filtered.get("room_adr", 0)
+        dorm_adr = filtered.get("dorm_adr", 0)
+        filtered_adr = filtered.get("total_adr", 0)
+
+        # For rooms-only branches, room_adr = total_adr
+        if total_room_count > 0 and total_dorm_count == 0:
+            room_adr = filtered_adr
+
+        rate = get_cached_rate(currency, "VND")
+
         for dm in daily_rows:
             ts = int(dm.total_sold or 0)
+
+            # Scale revenue to exclude Blogger/House Use/Special Case
+            raw_rev = float(dm.revenue_native or 0)
+            dm.revenue_native = round(raw_rev * rev_scale, 2)
+            dm.revenue_vnd = round(dm.revenue_native * rate, 2) if rate else dm.revenue_vnd
+
+            # ADR & RevPAR from filtered data
+            dm.adr_native = round(filtered_adr, 2) if filtered_adr else dm.adr_native
+            dm.revpar_native = round(filtered_adr * float(dm.occ_pct or 0), 2) if filtered_adr else dm.revpar_native
+
+            # Room/Dorm split
             dm.rooms_sold = round(ts * room_sold_ratio)
             dm.dorms_sold = round(ts * dorm_sold_ratio)
             dm.room_revenue_native = round(float(dm.revenue_native or 0) * room_rev_ratio, 2)
