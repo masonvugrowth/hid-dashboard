@@ -1258,16 +1258,43 @@ def sync_cloudbeds_filtered(
         filtered_rev_month = filtered["total_rev"]  # excl Blogger/House Use/Special Case
         rev_scale = filtered_rev_month / unfiltered_rev_month if unfiltered_rev_month > 0 else 1.0
 
-        # Ratios for distributing room/dorm across daily rows
-        room_sold_ratio = filtered["room_sold"] / total_sold_month if has_split else 1.0
-        dorm_sold_ratio = filtered["dorm_sold"] / total_sold_month if has_split else 0.0
-        room_rev_ratio = filtered["room_rev"] / filtered_rev_month if filtered_rev_month > 0 and has_split else 1.0
-        dorm_rev_ratio = filtered["dorm_rev"] / filtered_rev_month if filtered_rev_month > 0 and has_split else 0.0
-
-        # Room/Dorm ADR from filtered API (monthly level — same for all days)
-        room_adr = filtered.get("room_adr", 0)
-        dorm_adr = filtered.get("dorm_adr", 0)
         filtered_adr = filtered.get("total_adr", 0)
+
+        # Room/Dorm split: use reservation_daily (local DB) for reliable
+        # room/dorm ratio, then scale to match Cloudbeds total ADR.
+        room_adr = 0
+        dorm_adr = 0
+        room_sold_ratio = 1.0
+        dorm_sold_ratio = 0.0
+        room_rev_ratio = 1.0
+        dorm_rev_ratio = 0.0
+
+        if has_split:
+            from app.services.kpi_engine import _get_room_dorm_adr_from_daily
+            raw_room_adr, raw_dorm_adr, r_rev, r_sold, d_rev, d_sold = \
+                _get_room_dorm_adr_from_daily(db, branch_id, first_day, last_day)
+
+            local_total_rev = r_rev + d_rev
+            local_total_sold = r_sold + d_sold
+
+            if local_total_sold > 0:
+                room_sold_ratio = r_sold / local_total_sold
+                dorm_sold_ratio = d_sold / local_total_sold
+
+            if local_total_rev > 0:
+                room_rev_ratio = r_rev / local_total_rev
+                dorm_rev_ratio = d_rev / local_total_rev
+
+            # Scale local ADR to match Cloudbeds total ADR
+            if raw_room_adr and raw_dorm_adr and local_total_rev > 0 and local_total_sold > 0:
+                local_avg_adr = local_total_rev / local_total_sold
+                scale = filtered_adr / local_avg_adr if local_avg_adr else 1
+                room_adr = round(raw_room_adr * scale, 2)
+                dorm_adr = round(raw_dorm_adr * scale, 2)
+            elif raw_room_adr:
+                room_adr = round(raw_room_adr, 2)
+            elif raw_dorm_adr:
+                dorm_adr = round(raw_dorm_adr, 2)
 
         # For rooms-only branches, room_adr = total_adr
         if total_room_count > 0 and total_dorm_count == 0:
