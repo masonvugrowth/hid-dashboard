@@ -1,14 +1,17 @@
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 from typing import Optional
 from uuid import UUID
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import func, extract
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.branch import Branch
 from app.models.kpi import KPITarget
+from app.models.daily_metrics import DailyMetrics
 from app.services.kpi_engine import compute_kpi_summary, compute_next_month_forecast
 
 router = APIRouter()
@@ -280,3 +283,100 @@ def kpi_summary_branch(
         raise HTTPException(status_code=404, detail="Branch not found")
 
     return _envelope(_branch_summary(db, branch, year, month))
+
+
+# ── Yearly Grid (Target vs Actual vs Hit Rate) ──────────────────────────────
+
+@router.get("/yearly-grid")
+def kpi_yearly_grid(
+    year: int = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Full-year KPI grid: Target, Actual, Hit% per branch per month.
+    Returns branches + 12-month grid + totals row.
+    """
+    if year is None:
+        year = datetime.now(timezone.utc).year
+
+    # Get active branches
+    branches = db.query(Branch).filter_by(is_active=True).order_by(Branch.name).all()
+    branch_list = [
+        {"id": str(b.id), "name": b.name, "currency": b.currency or "VND"}
+        for b in branches
+    ]
+    branch_ids = [b.id for b in branches]
+
+    # 1. Query all KPI targets for the year
+    targets = db.query(KPITarget).filter(
+        KPITarget.year == year,
+        KPITarget.branch_id.in_(branch_ids),
+    ).all()
+
+    # target_map[(branch_id, month)] = target_revenue_native
+    target_map = {}
+    for t in targets:
+        target_map[(str(t.branch_id), t.month)] = float(t.target_revenue_native or 0)
+
+    # 2. Query actual revenue from daily_metrics, grouped by branch + month
+    actuals = db.query(
+        DailyMetrics.branch_id,
+        extract("month", DailyMetrics.date).label("mo"),
+        func.coalesce(func.sum(DailyMetrics.revenue_native), 0).label("revenue"),
+    ).filter(
+        extract("year", DailyMetrics.date) == year,
+        DailyMetrics.branch_id.in_(branch_ids),
+    ).group_by(
+        DailyMetrics.branch_id, "mo",
+    ).all()
+
+    # actual_map[(branch_id, month)] = actual_revenue
+    actual_map = {}
+    for a in actuals:
+        actual_map[(str(a.branch_id), int(a.mo))] = float(a.revenue)
+
+    # 3. Build grid
+    months = []
+    totals = defaultdict(lambda: {"target": 0, "actual": 0})
+
+    for mo in range(1, 13):
+        row = {"month": mo}
+        branch_data = []
+        for b in branch_list:
+            bid = b["id"]
+            target = target_map.get((bid, mo), 0)
+            actual = actual_map.get((bid, mo), 0)
+            hit_pct = round(actual / target * 100, 1) if target > 0 else None
+
+            branch_data.append({
+                "branch_id": bid,
+                "target": target,
+                "actual": actual,
+                "hit_pct": hit_pct,
+            })
+
+            totals[bid]["target"] += target
+            totals[bid]["actual"] += actual
+
+        row["branches"] = branch_data
+        months.append(row)
+
+    # 4. Totals row
+    total_row = []
+    for b in branch_list:
+        bid = b["id"]
+        t = totals[bid]["target"]
+        a = totals[bid]["actual"]
+        total_row.append({
+            "branch_id": bid,
+            "target": t,
+            "actual": a,
+            "hit_pct": round(a / t * 100, 1) if t > 0 else None,
+        })
+
+    return _envelope({
+        "year": year,
+        "branches": branch_list,
+        "months": months,
+        "totals": total_row,
+    })
