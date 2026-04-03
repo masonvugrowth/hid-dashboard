@@ -375,136 +375,171 @@ def get_country_yoy_endpoint(
     return _envelope(rows)
 
 
-# ── Country Reservations (weekly + monthly, top 15) ──────────────────────────
+# ── Country Reservations Trend (7 weeks / 7 months, top 15) ──────────────────
 
 @router.get("/country-reservations")
 def get_country_reservations(
     view: str = Query("monthly", regex="^(weekly|monthly)$"),
-    month: Optional[str] = Query(None),
     branch_id: Optional[UUID] = Query(None),
     limit: int = Query(15, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
     """
-    Top N countries by reservation count.
-    - monthly view: grouped by month (last 6 months)
-    - weekly view: grouped by ISO week (last 12 weeks)
-    Returns current period + previous period for comparison.
+    Top N countries with trend data over 7 periods.
+    - monthly: last 7 months, grouped by month
+    - weekly: last 7 weeks, grouped by ISO week
+    Returns: top_countries (sorted by total) + trend data per period per country.
     """
     today = date.today()
 
     if view == "monthly":
-        result = _country_monthly(db, branch_id, limit, month, today)
+        periods = _build_monthly_periods(today, 7)
     else:
-        result = _country_weekly(db, branch_id, limit, today)
+        periods = _build_weekly_periods(today, 7)
 
-    return _envelope(result)
+    # Query all periods in one shot
+    overall_start = periods[0]["from"]
+    overall_end = periods[-1]["to"]
 
+    # 1) Find top N countries across the full range
+    top_countries = _query_top_countries(db, branch_id, overall_start, overall_end, limit)
+    country_names = [c["country"] for c in top_countries]
 
-def _country_monthly(db, branch_id, limit, month_str, today):
-    """Monthly country breakdown with MoM comparison."""
-    if month_str:
-        yr, mo = int(month_str[:4]), int(month_str[5:7])
+    if not country_names:
+        return _envelope({"view": view, "periods": [], "countries": [], "trend": []})
+
+    # 2) Query per-period × per-country breakdown
+    if view == "monthly":
+        trend = _query_monthly_trend(db, branch_id, overall_start, overall_end, country_names)
     else:
-        yr, mo = today.year, today.month
+        trend = _query_weekly_trend(db, branch_id, overall_start, overall_end, country_names)
 
-    d_from = date(yr, mo, 1)
-    d_to = date(yr, mo, calendar.monthrange(yr, mo)[1])
+    # 3) Build period labels
+    period_labels = [p["label"] for p in periods]
 
-    # Previous month
-    if mo == 1:
-        p_yr, p_mo = yr - 1, 12
-    else:
-        p_yr, p_mo = yr, mo - 1
-    p_from = date(p_yr, p_mo, 1)
-    p_to = date(p_yr, p_mo, calendar.monthrange(p_yr, p_mo)[1])
-
-    current = _query_country_agg(db, branch_id, d_from, d_to, limit)
-    previous = _query_country_agg(db, branch_id, p_from, p_to, limit=50)
-
-    # Build prev lookup
-    prev_map = {r["country"]: r for r in previous}
-
-    total_cur = sum(r["reservations"] for r in current)
-
-    for r in current:
-        r["pct_of_total"] = round(r["reservations"] / total_cur * 100, 1) if total_cur > 0 else 0
-        p = prev_map.get(r["country"])
-        r["prev_reservations"] = p["reservations"] if p else 0
-        r["prev_revenue"] = p["revenue"] if p else 0
-
-    return {
-        "view": "monthly",
-        "period": f"{yr}-{mo:02d}",
-        "prev_period": f"{p_yr}-{p_mo:02d}",
-        "rows": current,
-        "total_reservations": total_cur,
-    }
+    return _envelope({
+        "view": view,
+        "periods": period_labels,
+        "countries": top_countries,
+        "trend": trend,
+    })
 
 
-def _country_weekly(db, branch_id, limit, today):
-    """Weekly country breakdown with WoW comparison."""
-    # Current week (Mon-Sun)
+def _build_monthly_periods(today, count):
+    """Build list of last N month periods [{label, from, to}]."""
+    periods = []
+    yr, mo = today.year, today.month
+    for _ in range(count):
+        first = date(yr, mo, 1)
+        last = date(yr, mo, calendar.monthrange(yr, mo)[1])
+        periods.append({
+            "label": first.strftime("%b %Y"),
+            "from": first,
+            "to": last,
+        })
+        mo -= 1
+        if mo == 0:
+            mo = 12
+            yr -= 1
+    periods.reverse()
+    return periods
+
+
+def _build_weekly_periods(today, count):
+    """Build list of last N week periods (Mon-Sun)."""
+    periods = []
     week_start = today - timedelta(days=today.weekday())
-    week_end = week_start + timedelta(days=6)
-
-    # Previous week
-    p_start = week_start - timedelta(days=7)
-    p_end = p_start + timedelta(days=6)
-
-    current = _query_country_agg(db, branch_id, week_start, week_end, limit)
-    previous = _query_country_agg(db, branch_id, p_start, p_end, limit=50)
-
-    prev_map = {r["country"]: r for r in previous}
-    total_cur = sum(r["reservations"] for r in current)
-
-    for r in current:
-        r["pct_of_total"] = round(r["reservations"] / total_cur * 100, 1) if total_cur > 0 else 0
-        p = prev_map.get(r["country"])
-        r["prev_reservations"] = p["reservations"] if p else 0
-        r["prev_revenue"] = p["revenue"] if p else 0
-
-    return {
-        "view": "weekly",
-        "period": f"{week_start.isoformat()} to {week_end.isoformat()}",
-        "prev_period": f"{p_start.isoformat()} to {p_end.isoformat()}",
-        "rows": current,
-        "total_reservations": total_cur,
-    }
+    for _ in range(count):
+        week_end = week_start + timedelta(days=6)
+        periods.append({
+            "label": week_start.strftime("%d %b"),
+            "from": week_start,
+            "to": week_end,
+        })
+        week_start -= timedelta(days=7)
+    periods.reverse()
+    return periods
 
 
-def _query_country_agg(db, branch_id, d_from, d_to, limit=15):
-    """Query top N countries by reservation count in date range."""
+def _query_top_countries(db, branch_id, d_from, d_to, limit):
+    """Get top N countries by total reservations in the full date range."""
     q = db.query(
-        Reservation.guest_country_code.label("country_code"),
+        Reservation.guest_country_code.label("code"),
         Reservation.guest_country.label("country"),
-        func.count(Reservation.id).label("reservations"),
-        func.coalesce(func.sum(Reservation.grand_total_vnd), 0).label("revenue_vnd"),
-        func.coalesce(func.sum(Reservation.grand_total_native), 0).label("revenue_native"),
-        func.coalesce(func.sum(Reservation.nights), 0).label("room_nights"),
+        func.count(Reservation.id).label("total"),
+        func.coalesce(func.sum(Reservation.grand_total_vnd), 0).label("revenue"),
+        func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
     ).filter(
         Reservation.check_in_date >= d_from,
         Reservation.check_in_date <= d_to,
         ~Reservation.status.in_(list(_EXCLUDED_STATUSES)),
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
     ).group_by(
-        Reservation.guest_country_code,
-        Reservation.guest_country,
+        Reservation.guest_country_code, Reservation.guest_country,
     ).order_by(func.count(Reservation.id).desc())
 
     if branch_id:
         q = q.filter(Reservation.branch_id == branch_id)
 
-    rows = q.limit(limit).all()
-
     return [
         {
-            "country_code": r.country_code or "Unknown",
-            "country": r.country or r.country_code or "Unknown",
-            "reservations": int(r.reservations),
-            "revenue": float(r.revenue_vnd),
-            "revenue_native": float(r.revenue_native),
-            "room_nights": int(r.room_nights),
+            "country_code": r.code or "Unknown",
+            "country": r.country or r.code or "Unknown",
+            "total_reservations": int(r.total),
+            "total_revenue": float(r.revenue),
+            "total_nights": int(r.nights),
         }
-        for r in rows
+        for r in q.limit(limit).all()
     ]
+
+
+def _query_monthly_trend(db, branch_id, d_from, d_to, country_names):
+    """Per month × country reservation counts."""
+    q = db.query(
+        extract("year", Reservation.check_in_date).label("yr"),
+        extract("month", Reservation.check_in_date).label("mo"),
+        Reservation.guest_country.label("country"),
+        func.count(Reservation.id).label("cnt"),
+    ).filter(
+        Reservation.check_in_date >= d_from,
+        Reservation.check_in_date <= d_to,
+        Reservation.guest_country.in_(country_names),
+        ~Reservation.status.in_(list(_EXCLUDED_STATUSES)),
+        ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
+    ).group_by("yr", "mo", Reservation.guest_country)
+
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+
+    # Build {period_label: {country: count}}
+    result = defaultdict(lambda: defaultdict(int))
+    for yr, mo, country, cnt in q.all():
+        label = date(int(yr), int(mo), 1).strftime("%b %Y")
+        result[label][country] = int(cnt)
+
+    return dict(result)
+
+
+def _query_weekly_trend(db, branch_id, d_from, d_to, country_names):
+    """Per week × country reservation counts."""
+    q = db.query(
+        Reservation.check_in_date,
+        Reservation.guest_country,
+    ).filter(
+        Reservation.check_in_date >= d_from,
+        Reservation.check_in_date <= d_to,
+        Reservation.guest_country.in_(country_names),
+        ~Reservation.status.in_(list(_EXCLUDED_STATUSES)),
+        ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
+    )
+
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+
+    result = defaultdict(lambda: defaultdict(int))
+    for check_in, country in q.all():
+        week_start = check_in - timedelta(days=check_in.weekday())
+        label = week_start.strftime("%d %b")
+        result[label][country] += 1
+
+    return dict(result)
