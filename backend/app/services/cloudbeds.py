@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 CLOUDBEDS_BASE_URL = "https://hotels.cloudbeds.com/api/v1.2"
 PAGE_SIZE = 100
 SYNC_LOOKBACK_DAYS = 90
-# For initial/full sync: only fetch reservations with check-in in this window
-CHECKIN_LOOKBACK_DAYS = 365   # past: 1 year of check-ins
+# For nightly full sync: checked-out guests rarely change after 14 days
+CHECKIN_LOOKBACK_DAYS = 14    # past: 14 days (catch late adjustments/refunds)
 CHECKIN_FUTURE_DAYS = 180     # future: 6 months of upcoming check-ins
 
 # ── Mapping helpers ────────────────────────────────────────────────────────────
