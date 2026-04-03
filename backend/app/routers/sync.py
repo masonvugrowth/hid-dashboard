@@ -1213,7 +1213,7 @@ def trigger_insights_sync(
     """
     import calendar
     from datetime import date, timedelta
-    from app.services.cloudbeds import sync_cloudbeds_occupancy
+    from app.services.cloudbeds import sync_cloudbeds_occupancy, sync_cloudbeds_filtered
 
     today = date.today()
     sync_start = today - timedelta(days=14)
@@ -1239,6 +1239,13 @@ def trigger_insights_sync(
                 try:
                     sync_cloudbeds_occupancy(
                         db2, str(branch.id), pid, branch.currency, api_key,
+                        date_from=sync_start, date_to=sync_end,
+                    )
+                    sync_cloudbeds_filtered(
+                        db2, str(branch.id), pid, branch.currency, api_key,
+                        total_rooms=branch.total_rooms,
+                        total_room_count=branch.total_room_count or 0,
+                        total_dorm_count=branch.total_dorm_count or 0,
                         date_from=sync_start, date_to=sync_end,
                     )
                     log.info("Manual insights sync OK branch=%s [%s..%s]", branch.name, sync_start, sync_end)

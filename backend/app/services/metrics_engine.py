@@ -451,7 +451,7 @@ async def nightly_metrics_job(db_factory) -> None:
     """
     import calendar
     from app.config import settings
-    from app.services.cloudbeds import populate_reservation_daily, sync_cloudbeds_occupancy
+    from app.services.cloudbeds import populate_reservation_daily, sync_cloudbeds_occupancy, sync_cloudbeds_filtered
 
     db: Session = db_factory()
     try:
@@ -495,6 +495,14 @@ async def nightly_metrics_job(db_factory) -> None:
                             db, str(branch.id), pid, branch.currency, api_key,
                             date_from=insights_start, date_to=insights_end,
                         )
+                        # Step 4: sync room/dorm split from filtered Insights API
+                        sync_cloudbeds_filtered(
+                            db, str(branch.id), pid, branch.currency, api_key,
+                            total_rooms=branch.total_rooms,
+                            total_room_count=branch.total_room_count or 0,
+                            total_dorm_count=branch.total_dorm_count or 0,
+                            date_from=insights_start, date_to=insights_end,
+                        )
                     except Exception as occ_err:
                         logger.warning(
                             "Cloudbeds Insights sync failed branch=%s: %s (computed values retained)",
@@ -524,7 +532,7 @@ async def cloudbeds_insights_sync_job(db_factory) -> None:
     """
     import calendar
     from app.config import settings
-    from app.services.cloudbeds import sync_cloudbeds_occupancy
+    from app.services.cloudbeds import sync_cloudbeds_occupancy, sync_cloudbeds_filtered
 
     db: Session = db_factory()
     try:
@@ -544,6 +552,13 @@ async def cloudbeds_insights_sync_job(db_factory) -> None:
             try:
                 sync_cloudbeds_occupancy(
                     db, str(branch.id), pid, branch.currency, api_key,
+                    date_from=sync_start, date_to=month_end,
+                )
+                sync_cloudbeds_filtered(
+                    db, str(branch.id), pid, branch.currency, api_key,
+                    total_rooms=branch.total_rooms,
+                    total_room_count=branch.total_room_count or 0,
+                    total_dorm_count=branch.total_dorm_count or 0,
                     date_from=sync_start, date_to=month_end,
                 )
                 logger.info(f"Insights sync OK branch={branch.name} [{sync_start}..{month_end}]")

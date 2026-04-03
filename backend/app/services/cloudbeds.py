@@ -1184,6 +1184,115 @@ def sync_cloudbeds_occupancy(
     }
 
 
+def sync_cloudbeds_filtered(
+    db: Session,
+    branch_id: str,
+    property_id: str,
+    currency: str,
+    api_key: str,
+    total_rooms: int,
+    total_room_count: int = 0,
+    total_dorm_count: int = 0,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> dict:
+    """
+    Sync room/dorm split data from Cloudbeds Insights API into daily_metrics.
+
+    Uses fetch_occupancy_filtered() (custom reports) to get monthly room/dorm
+    split, then distributes proportionally across daily rows already populated
+    by sync_cloudbeds_occupancy().
+
+    Returns: { branch_id, months_synced }
+    """
+    from app.models.daily_metrics import DailyMetrics
+    import calendar
+
+    today = date.today()
+    if date_from is None:
+        date_from = today.replace(day=1)
+    if date_to is None:
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        date_to = today.replace(day=last_day)
+
+    has_split = total_room_count > 0 and total_dorm_count > 0
+
+    # Collect unique months in the date range
+    months_to_sync = set()
+    d = date_from.replace(day=1)
+    while d <= date_to:
+        months_to_sync.add((d.year, d.month))
+        if d.month == 12:
+            d = d.replace(year=d.year + 1, month=1)
+        else:
+            d = d.replace(month=d.month + 1)
+
+    months_synced = 0
+    now = datetime.now(timezone.utc)
+
+    for year, month in sorted(months_to_sync):
+        try:
+            filtered = fetch_occupancy_filtered(str(property_id), api_key, year, month)
+        except Exception as e:
+            logger.warning("Filtered sync failed branch=%s %d/%d: %s", branch_id, year, month, e)
+            continue
+
+        total_sold_month = filtered["total_sold"]
+        if total_sold_month <= 0:
+            continue
+
+        # Ratios for distributing room/dorm across daily rows
+        room_sold_ratio = filtered["room_sold"] / total_sold_month if has_split else 1.0
+        dorm_sold_ratio = filtered["dorm_sold"] / total_sold_month if has_split else 0.0
+        room_rev_ratio = filtered["room_rev"] / filtered["total_rev"] if filtered["total_rev"] > 0 and has_split else 1.0
+        dorm_rev_ratio = filtered["dorm_rev"] / filtered["total_rev"] if filtered["total_rev"] > 0 and has_split else 0.0
+
+        # Room/Dorm ADR from filtered API (monthly level — same for all days)
+        room_adr = filtered.get("room_adr", 0)
+        dorm_adr = filtered.get("dorm_adr", 0)
+
+        # For rooms-only branches, room_adr = total_adr
+        if total_room_count > 0 and total_dorm_count == 0:
+            room_adr = filtered["total_adr"]
+
+        # Update daily rows for this month
+        first_day = date(year, month, 1)
+        last_day = date(year, month, calendar.monthrange(year, month)[1])
+
+        daily_rows = (
+            db.query(DailyMetrics)
+            .filter_by(branch_id=branch_id)
+            .filter(DailyMetrics.date >= first_day, DailyMetrics.date <= last_day)
+            .all()
+        )
+
+        for dm in daily_rows:
+            ts = int(dm.total_sold or 0)
+            dm.rooms_sold = round(ts * room_sold_ratio)
+            dm.dorms_sold = round(ts * dorm_sold_ratio)
+            dm.room_revenue_native = round(float(dm.revenue_native or 0) * room_rev_ratio, 2)
+            dm.dorm_revenue_native = round(float(dm.revenue_native or 0) * dorm_rev_ratio, 2)
+            dm.room_adr_native = round(room_adr, 2) if room_adr else None
+            dm.dorm_adr_native = round(dorm_adr, 2) if dorm_adr else None
+
+            # Room/Dorm OCC
+            if total_room_count > 0 and dm.rooms_sold:
+                dm.room_occ_pct = round(dm.rooms_sold / total_room_count, 4)
+            if total_dorm_count > 0 and dm.dorms_sold:
+                dm.dorm_occ_pct = round(dm.dorms_sold / total_dorm_count, 4)
+
+            dm.computed_at = now
+
+        months_synced += 1
+
+    db.commit()
+    logger.info(
+        "Filtered split sync complete branch %s: %d months synced",
+        branch_id, months_synced,
+    )
+    return {"branch_id": branch_id, "months_synced": months_synced}
+
+
 # ── Filtered Insights via Custom Reports ──────────────────────────────────────
 
 # Sources excluded from REVENUE (but counted for rooms_sold / OCC)

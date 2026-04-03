@@ -175,19 +175,13 @@ def _get_insights_filtered(
     db: Session, branch_id: UUID, year: int, month: int,
 ) -> dict:
     """
-    Fetch revenue, rooms_sold, ADR from Cloudbeds Insights API with proper
-    filtering. Results are cached in-memory for 1 hour (_CACHE_TTL).
+    Get revenue, rooms_sold, ADR with room/dorm split.
 
-    Uses custom reports API to apply:
-    - Revenue: excludes Blogger, House Use, Special case sources
-    - Rooms sold: ALL sources (no exclusions)
-    - Room/Dorm split by room type (Dorm = contains 'Dorm')
+    Priority: DB (daily_metrics) first → instant.
+    Fallback: Cloudbeds API only if DB has no data for this month.
 
     Returns dict with keys: total_rev, total_sold, total_adr,
     room_rev, room_sold, room_adr, dorm_rev, dorm_sold, dorm_adr, has_dorm.
-
-    Falls back to stock report 110 if custom reports fail.
-    Final fallback: cached daily_metrics.
     """
     cache_key = f"{branch_id}:{year}:{month}"
 
@@ -198,12 +192,71 @@ def _get_insights_filtered(
             logger.debug("Insights cache HIT for %s %d/%d", branch_id, year, month)
             return cached_data
 
-    from app.models.branch import Branch
-    from app.config import settings
-
     empty = {"total_rev": 0, "total_sold": 0, "total_adr": 0,
              "room_rev": 0, "room_sold": 0, "room_adr": 0,
              "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
+
+    # ── PRIMARY: Read from daily_metrics (pre-synced by nightly job) ─────
+    first_day = date(year, month, 1)
+    last_day = date(year, month, _days_in_month(year, month))
+
+    row = db.query(
+        func.coalesce(func.sum(DailyMetrics.revenue_native), 0),
+        func.coalesce(func.sum(DailyMetrics.total_sold), 0),
+        func.coalesce(func.sum(DailyMetrics.rooms_sold), 0),
+        func.coalesce(func.sum(DailyMetrics.dorms_sold), 0),
+        func.coalesce(func.sum(DailyMetrics.room_revenue_native), 0),
+        func.coalesce(func.sum(DailyMetrics.dorm_revenue_native), 0),
+    ).filter(
+        DailyMetrics.branch_id == branch_id,
+        DailyMetrics.date >= first_day,
+        DailyMetrics.date <= last_day,
+    ).one()
+
+    total_rev = float(row[0])
+    total_sold = int(row[1])
+    room_sold = int(row[2])
+    dorm_sold = int(row[3])
+    room_rev = float(row[4])
+    dorm_rev = float(row[5])
+
+    if total_sold > 0:
+        total_adr = round(total_rev / total_sold, 2)
+        room_adr = round(room_rev / room_sold, 2) if room_sold > 0 else 0
+        dorm_adr = round(dorm_rev / dorm_sold, 2) if dorm_sold > 0 else 0
+
+        # Also try to get per-type ADR from daily_metrics if available
+        adr_row = db.query(
+            func.avg(DailyMetrics.room_adr_native),
+            func.avg(DailyMetrics.dorm_adr_native),
+        ).filter(
+            DailyMetrics.branch_id == branch_id,
+            DailyMetrics.date >= first_day,
+            DailyMetrics.date <= last_day,
+            DailyMetrics.room_adr_native.isnot(None),
+        ).one()
+
+        if adr_row[0] is not None:
+            room_adr = round(float(adr_row[0]), 2)
+        if adr_row[1] is not None:
+            dorm_adr = round(float(adr_row[1]), 2)
+
+        result = {
+            "total_rev": total_rev, "total_sold": total_sold, "total_adr": total_adr,
+            "room_rev": room_rev, "room_sold": room_sold, "room_adr": room_adr,
+            "dorm_rev": dorm_rev, "dorm_sold": dorm_sold, "dorm_adr": dorm_adr,
+            "has_dorm": dorm_sold > 0,
+        }
+        logger.debug(
+            "Insights from DB for %s %d/%d: rev=%.0f sold=%d adr=%.2f",
+            branch_id, year, month, total_rev, total_sold, total_adr,
+        )
+        _insights_cache[cache_key] = (time.time(), result)
+        return result
+
+    # ── FALLBACK: Cloudbeds API (only if DB has no data) ─────────────────
+    from app.models.branch import Branch
+    from app.config import settings
 
     branch = db.query(Branch).filter_by(id=branch_id, is_active=True).first()
     if not branch:
@@ -218,64 +271,17 @@ def _get_insights_filtered(
             result = fetch_occupancy_filtered(str(pid), api_key, year, month)
             if result.get("total_sold", 0) > 0:
                 logger.info(
-                    "Insights API for %s %d/%d: rev=%.0f sold=%d adr=%.2f "
-                    "room_adr=%.2f dorm_adr=%.2f (cached for %ds)",
+                    "Insights API fallback for %s %d/%d: rev=%.0f sold=%d adr=%.2f",
                     branch.name, year, month,
                     result["total_rev"], result["total_sold"], result["total_adr"],
-                    result.get("room_adr", 0), result.get("dorm_adr", 0),
-                    _CACHE_TTL,
                 )
                 _insights_cache[cache_key] = (time.time(), result)
                 return result
         except Exception as e:
-            logger.warning("Filtered Insights failed for %s: %s, falling back", branch.name, e)
+            logger.warning("Insights API fallback failed for %s: %s", branch.name, e)
 
-        # Fallback: stock report 110 (unfiltered) + reservation_daily for room/dorm ratio
-        try:
-            from app.services.cloudbeds import fetch_cloudbeds_occupancy
-            first_day = date(year, month, 1)
-            last_day = date(year, month, _days_in_month(year, month))
-            occ_data = fetch_cloudbeds_occupancy(str(pid), api_key, first_day, last_day)
-            total_rev = sum(d.get("room_revenue", 0) for d in occ_data.values())
-            total_sold = sum(int(d.get("rooms_sold", 0)) for d in occ_data.values())
-            adr = round(total_rev / total_sold, 2) if total_sold > 0 else 0
-            logger.info(
-                "Fallback stock report for %s %d/%d: rev=%.0f sold=%d adr=%.2f",
-                branch.name, year, month, total_rev, total_sold, adr,
-            )
-
-            fallback = {"total_rev": total_rev, "total_sold": total_sold, "total_adr": adr,
-                        "room_rev": 0, "room_sold": 0, "room_adr": 0,
-                        "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
-            if adr > 0:
-                raw_room_adr, raw_dorm_adr, r_rev, r_sold, d_rev, d_sold = \
-                    _get_room_dorm_adr_from_daily(db, branch_id, first_day, last_day)
-                daily_total_rev = r_rev + d_rev
-                daily_total_sold = r_sold + d_sold
-                if daily_total_rev > 0 and raw_room_adr and raw_dorm_adr and daily_total_sold > 0:
-                    daily_avg_adr = daily_total_rev / daily_total_sold
-                    scale = adr / daily_avg_adr if daily_avg_adr else 1
-                    fallback["room_adr"] = round(raw_room_adr * scale, 2)
-                    fallback["dorm_adr"] = round(raw_dorm_adr * scale, 2)
-                    fallback["room_sold"] = r_sold
-                    fallback["dorm_sold"] = d_sold
-                    fallback["has_dorm"] = d_sold > 0
-            _insights_cache[cache_key] = (time.time(), fallback)
-            return fallback
-        except Exception as e:
-            logger.warning("Stock report also failed for %s: %s", branch.name, e)
-
-    # Final fallback: cached daily_metrics
-    first_day = date(year, month, 1)
-    last_day = date(year, month, _days_in_month(year, month))
-    adr_cached, sold_cached = _get_adr_occ_from_insights(db, branch_id, first_day, last_day)
-    rev_cached, _ = _get_revenue_from_insights(db, branch_id, year, month)
-    result = {"total_rev": rev_cached, "total_sold": sold_cached,
-              "total_adr": adr_cached or 0,
-              "room_rev": 0, "room_sold": 0, "room_adr": 0,
-              "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
-    _insights_cache[cache_key] = (time.time(), result)
-    return result
+    _insights_cache[cache_key] = (time.time(), empty)
+    return empty
 
 
 def _get_room_dorm_adr_from_daily(
