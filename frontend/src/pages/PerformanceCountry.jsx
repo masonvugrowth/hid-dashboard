@@ -26,6 +26,7 @@ export default function PerformanceCountry() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState("monthly");
+  const [filterCountry, setFilterCountry] = useState("");
 
   const load = () => {
     setLoading(true);
@@ -41,8 +42,15 @@ export default function PerformanceCountry() {
   useEffect(load, [selected, isAll, view]);
 
   const periods = data?.periods || [];
-  const countries = data?.countries || [];
+  const allCountries = data?.countries || [];
   const trend = data?.trend || {};
+
+  // Filter countries
+  const countries = useMemo(() => {
+    if (!filterCountry) return allCountries;
+    return allCountries.filter((c) => c.country === filterCountry);
+  }, [allCountries, filterCountry]);
+
   const countryNames = countries.map((c) => c.country);
 
   // Build chart data: [{period, Country1: N, Country2: N, ...}, ...]
@@ -75,15 +83,24 @@ export default function PerformanceCountry() {
             Top 15 countries — last 7 {view === "monthly" ? "months" : "weeks"}
           </p>
         </div>
-        <div className="flex rounded-lg border overflow-hidden">
-          {["weekly", "monthly"].map((v) => (
-            <button key={v} onClick={() => setView(v)}
-              className={`px-4 py-1.5 text-sm font-medium ${
-                view === v ? "bg-indigo-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-              }`}>
-              {v === "weekly" ? "Weekly" : "Monthly"}
-            </button>
-          ))}
+        <div className="flex items-center gap-3">
+          <select value={filterCountry} onChange={(e) => setFilterCountry(e.target.value)}
+            className="border rounded px-2 py-1.5 text-sm">
+            <option value="">All Countries</option>
+            {allCountries.map((c) => (
+              <option key={c.country_code} value={c.country}>{c.country}</option>
+            ))}
+          </select>
+          <div className="flex rounded-lg border overflow-hidden">
+            {["weekly", "monthly"].map((v) => (
+              <button key={v} onClick={() => setView(v)}
+                className={`px-4 py-1.5 text-sm font-medium ${
+                  view === v ? "bg-indigo-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+                }`}>
+                {v === "weekly" ? "Weekly" : "Monthly"}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
