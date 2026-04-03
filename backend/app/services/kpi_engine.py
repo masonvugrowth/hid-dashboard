@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import calendar
 import logging
-import time
+
 from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import UUID
@@ -35,18 +35,16 @@ from app.models.reservation_daily import ReservationDaily
 
 logger = logging.getLogger(__name__)
 
-# ── In-memory cache for Insights API results (1-hour TTL) ─────────────────
-_insights_cache: dict[str, tuple[float, dict]] = {}  # key → (timestamp, data)
-_CACHE_TTL = 10800  # 3 hours
-
-
-def _get_cache_time(branch_id: str, year: int, month: int) -> str | None:
-    """Return ISO timestamp of when the cache entry was last refreshed."""
-    key = f"{branch_id}:{year}:{month}"
-    if key in _insights_cache:
-        cached_at, _ = _insights_cache[key]
-        return datetime.fromtimestamp(cached_at, tz=timezone.utc).isoformat()
-    return None
+def _get_last_synced(db: Session, branch_id: str, year: int, month: int) -> str | None:
+    """Return ISO timestamp of the latest computed_at for this branch/month."""
+    first_day = date(year, month, 1)
+    last_day = date(year, month, _days_in_month(year, month))
+    row = db.query(func.max(DailyMetrics.computed_at)).filter(
+        DailyMetrics.branch_id == branch_id,
+        DailyMetrics.date >= first_day,
+        DailyMetrics.date <= last_day,
+    ).scalar()
+    return row.isoformat() if row else None
 
 # Statuses excluded from all queries (cancelled / no-show reservations)
 _EXCLUDED_STATUSES = {"cancelled", "canceled", "no_show", "noshow", "no show", "no-show"}
@@ -183,15 +181,6 @@ def _get_insights_filtered(
     Returns dict with keys: total_rev, total_sold, total_adr,
     room_rev, room_sold, room_adr, dorm_rev, dorm_sold, dorm_adr, has_dorm.
     """
-    cache_key = f"{branch_id}:{year}:{month}"
-
-    # Check in-memory cache
-    if cache_key in _insights_cache:
-        cached_at, cached_data = _insights_cache[cache_key]
-        if time.time() - cached_at < _CACHE_TTL:
-            logger.debug("Insights cache HIT for %s %d/%d", branch_id, year, month)
-            return cached_data
-
     empty = {"total_rev": 0, "total_sold": 0, "total_adr": 0,
              "room_rev": 0, "room_sold": 0, "room_adr": 0,
              "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
@@ -251,7 +240,6 @@ def _get_insights_filtered(
             "Insights from DB for %s %d/%d: rev=%.0f sold=%d adr=%.2f",
             branch_id, year, month, total_rev, total_sold, total_adr,
         )
-        _insights_cache[cache_key] = (time.time(), result)
         return result
 
     # ── FALLBACK: Cloudbeds API (only if DB has no data) ─────────────────
@@ -275,12 +263,10 @@ def _get_insights_filtered(
                     branch.name, year, month,
                     result["total_rev"], result["total_sold"], result["total_adr"],
                 )
-                _insights_cache[cache_key] = (time.time(), result)
                 return result
         except Exception as e:
             logger.warning("Insights API fallback failed for %s: %s", branch.name, e)
 
-    _insights_cache[cache_key] = (time.time(), empty)
     return empty
 
 
@@ -621,5 +607,5 @@ def compute_kpi_summary(
         # Room/Dorm capability flag
         "has_room_dorm_split": can_split,
         # Sync metadata — when was the Insights cache last refreshed
-        "data_synced_at": _get_cache_time(str(branch_id), year, month),
+        "data_synced_at": _get_last_synced(db, str(branch_id), year, month),
     }
