@@ -27,28 +27,9 @@ const NAV = [
     ],
   },
   {
-    label: "KOL",
+    label: "Marketing",
     items: [
-      { to: "/kol", label: "KOL", icon: "◈" },
-    ],
-  },
-  {
-    label: "Paid Ads",
-    items: [
-      { to: "/ads",         label: "Paid Ads",    icon: "◇" },
-      { to: "/angles",      label: "Ad Angles",   icon: "◐" },
-      { to: "/insights",    label: "Insights",    icon: "◑" },
-      { to: "/combos",      label: "Ad Combos",   icon: "◎" },
-      { to: "/ad-analyzer", label: "Ad Analyzer", icon: "⬡" },
-      { to: "/copies",      label: "Copy",        icon: "◫" },
-      { to: "/materials",   label: "Materials",   icon: "◰" },
-    ],
-  },
-  {
-    label: "CRM",
-    items: [
-      { to: "/crm", label: "CRM Dashboard", icon: "◉" },
-      { to: "/email-marketing", label: "Email Marketing", icon: "◈" },
+      { to: "/marketing-activity", label: "Marketing Activity", icon: "◈" },
     ],
   },
   {

@@ -23,26 +23,13 @@ import CountryDetail     from "./pages/CountryDetail";
 
 // Phase 3 pages
 import CountryIntel from "./pages/CountryIntel";
-import Ads      from "./pages/Ads";
-import KOL      from "./pages/KOL";
 import Marketing from "./pages/Marketing";
-import Angles   from "./pages/Angles";
-import Insights from "./pages/Insights";
 import Report    from "./pages/Report";
 import Settings  from "./pages/Settings";
 import Users     from "./pages/Users";
 
-// Phase 4 — Creative Intelligence Library
-import AdCombos          from "./pages/AdCombos";
-import AdAnalyzer        from "./pages/AdAnalyzer";
-import CreativeCopies    from "./pages/CreativeCopies";
-import CreativeMaterials from "./pages/CreativeMaterials";
-
-// CRM Dashboard
-import CRMDashboard from "./pages/CRMDashboard";
-
-// Email Marketing (GHL)
-import EmailMarketing from "./pages/EmailMarketing";
+// Marketing Activity (consolidated)
+import MarketingActivity from "./pages/MarketingActivity";
 
 // Government Visitor Data
 import GovVisitorData from "./pages/GovVisitorData";
@@ -101,21 +88,10 @@ function AppRoutes() {
             {/* Phase 3 — Marketing */}
             <Route path="/country-intel" element={<CountryIntel />} />
             <Route path="/marketing" element={<Marketing />} />
-            <Route path="/ads"       element={<Ads />} />
-            <Route path="/kol"       element={<KOL />} />
-            <Route path="/angles"    element={<Angles />} />
-            <Route path="/insights"  element={<Insights />} />
             <Route path="/report"    element={<Report />} />
 
-            {/* Phase 4 — Creative Intelligence Library */}
-            <Route path="/combos"       element={<AdCombos />} />
-            <Route path="/ad-analyzer" element={<AdAnalyzer />} />
-            <Route path="/copies"      element={<CreativeCopies />} />
-            <Route path="/materials" element={<CreativeMaterials />} />
-
-            {/* CRM Dashboard */}
-            <Route path="/crm" element={<CRMDashboard />} />
-            <Route path="/email-marketing" element={<EmailMarketing />} />
+            {/* Marketing Activity (consolidated) */}
+            <Route path="/marketing-activity" element={<MarketingActivity />} />
 
             {/* Settings & Admin */}
             <Route path="/settings" element={<Settings />} />
