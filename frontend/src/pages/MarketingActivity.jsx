@@ -1,8 +1,9 @@
 /**
  * Marketing Activity — Consolidated view of Paid Ads, KOL, and CRM performance.
+ * Currency: VND when "All Branches", native currency per branch.
  */
 import { useEffect, useState, useMemo } from "react";
-import { useBranch } from "../context/BranchContext";
+import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 import { getMarketingActivitySummary } from "../api/marketingActivity";
 
 function fmtNum(val) {
@@ -10,13 +11,14 @@ function fmtNum(val) {
   return new Intl.NumberFormat("en").format(Math.round(val));
 }
 
-function fmtVND(val) {
-  if (val == null) return "—";
-  return new Intl.NumberFormat("en").format(Math.round(val)) + " VND";
+function fmtMoney(val, cur) {
+  if (val == null) return "\u2014";
+  const sym = CURRENCY_SYMBOLS[cur] || "";
+  return sym + new Intl.NumberFormat("en").format(Math.round(val));
 }
 
 function RoasBadge({ value }) {
-  if (value == null || value === 0) return <span className="text-gray-400">—</span>;
+  if (value == null || value === 0) return <span className="text-gray-400">{"\u2014"}</span>;
   const cls =
     value >= 3
       ? "text-green-700 bg-green-50"
@@ -64,12 +66,11 @@ function KPICard({ label, value, sub }) {
 }
 
 export default function MarketingActivity() {
-  const { isAll, selected } = useBranch();
+  const { isAll, selected, currency: branchCurrency } = useBranch();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("overview");
 
-  // Default: year-to-date
   const today = new Date();
   const pad = (n) => String(n).padStart(2, "0");
   const fmtDate = (d) =>
@@ -79,8 +80,6 @@ export default function MarketingActivity() {
     fmtDate(new Date(today.getFullYear(), 0, 1))
   );
   const [dateTo, setDateTo] = useState(fmtDate(today));
-
-  // Country filter for monthly tab
   const [filterCountry, setFilterCountry] = useState("");
 
   const load = () => {
@@ -98,11 +97,13 @@ export default function MarketingActivity() {
 
   useEffect(load, [selected, isAll, dateFrom, dateTo]);
 
+  // Currency: VND for all branches, native for single branch
+  const cur = isAll ? "VND" : (data?.currency || branchCurrency || "VND");
+
   const overview = data?.overview;
   const monthly = data?.monthly_by_country || [];
   const suggestions = data?.kol_suggestions || [];
 
-  // Unique countries for filter
   const countries = useMemo(() => {
     const set = new Set(monthly.map((r) => r.country));
     return [...set].sort();
@@ -121,61 +122,40 @@ export default function MarketingActivity() {
 
   return (
     <div className="space-y-4">
-      {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-lg font-bold text-gray-900">Marketing Activity</h1>
         <div className="flex items-center gap-2">
-          <input
-            type="date"
-            value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-            className="border rounded px-2 py-1 text-sm"
-          />
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+            className="border rounded px-2 py-1 text-sm" />
           <span className="text-gray-400">to</span>
-          <input
-            type="date"
-            value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-            className="border rounded px-2 py-1 text-sm"
-          />
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+            className="border rounded px-2 py-1 text-sm" />
         </div>
       </div>
 
-      {/* Tabs */}
       <div className="flex gap-1 border-b">
         {TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
+          <button key={t.key} onClick={() => setTab(t.key)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               tab === t.key
                 ? "border-indigo-600 text-indigo-600"
                 : "border-transparent text-gray-500 hover:text-gray-700"
-            }`}
-          >
+            }`}>
             {t.label}
           </button>
         ))}
       </div>
 
       {loading ? (
-        <div className="text-center text-gray-400 py-16 text-sm animate-pulse">
-          Loading...
-        </div>
+        <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
       ) : !data ? (
-        <div className="text-center text-gray-400 py-16 text-sm">
-          No data available
-        </div>
+        <div className="text-center text-gray-400 py-16 text-sm">No data available</div>
       ) : (
         <>
-          {tab === "overview" && <OverviewTab overview={overview} />}
+          {tab === "overview" && <OverviewTab overview={overview} cur={cur} />}
           {tab === "monthly" && (
-            <MonthlyTab
-              rows={filteredMonthly}
-              countries={countries}
-              filterCountry={filterCountry}
-              setFilterCountry={setFilterCountry}
-            />
+            <MonthlyTab rows={filteredMonthly} countries={countries}
+              filterCountry={filterCountry} setFilterCountry={setFilterCountry} cur={cur} />
           )}
           {tab === "kol-suggest" && <KOLSuggestTab rows={suggestions} />}
         </>
@@ -185,81 +165,66 @@ export default function MarketingActivity() {
 }
 
 /* ── Overview Tab ──────────────────────────────────────────────────────────── */
-function OverviewTab({ overview }) {
+function OverviewTab({ overview, cur }) {
   if (!overview) return null;
   const { paid_ads, kol, crm, total } = overview;
 
   return (
     <div className="space-y-6">
-      {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KPICard label="Total Bookings" value={fmtNum(total.bookings)} />
-        <KPICard label="Total Revenue" value={fmtVND(total.revenue_vnd)} />
-        <KPICard label="Total Cost" value={fmtVND(total.cost_vnd)} />
-        <KPICard
-          label="Blended ROAS"
-          value={total.roas ? total.roas.toFixed(2) + "x" : "—"}
-        />
+        <KPICard label="Total Revenue" value={fmtMoney(total.revenue, cur)} />
+        <KPICard label="Total Cost" value={fmtMoney(total.cost, cur)} />
+        <KPICard label="Blended ROAS" value={total.roas ? total.roas.toFixed(2) + "x" : "\u2014"} />
       </div>
 
-      {/* Breakdown table */}
       <div className="bg-white rounded-lg border overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Source</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Bookings</th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue (VND)</th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">Cost (VND)</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue ({cur})</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Cost ({cur})</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">ROAS</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             <tr className="hover:bg-gray-50">
               <td className="px-4 py-3 font-medium">
-                <span className="inline-block w-2 h-2 rounded-full bg-blue-500 mr-2" />
-                Paid Ads
+                <span className="inline-block w-2 h-2 rounded-full bg-blue-500 mr-2" />Paid Ads
               </td>
               <td className="px-4 py-3 text-right">{fmtNum(paid_ads.bookings)}</td>
-              <td className="px-4 py-3 text-right">{fmtNum(paid_ads.revenue_vnd)}</td>
-              <td className="px-4 py-3 text-right">{fmtNum(paid_ads.cost_vnd)}</td>
-              <td className="px-4 py-3 text-right">
-                <RoasBadge value={paid_ads.roas} />
-              </td>
+              <td className="px-4 py-3 text-right">{fmtNum(paid_ads.revenue)}</td>
+              <td className="px-4 py-3 text-right">{fmtNum(paid_ads.cost)}</td>
+              <td className="px-4 py-3 text-right"><RoasBadge value={paid_ads.roas} /></td>
             </tr>
             <tr className="hover:bg-gray-50">
               <td className="px-4 py-3 font-medium">
-                <span className="inline-block w-2 h-2 rounded-full bg-purple-500 mr-2" />
-                KOL
+                <span className="inline-block w-2 h-2 rounded-full bg-purple-500 mr-2" />KOL
               </td>
               <td className="px-4 py-3 text-right">{fmtNum(kol.bookings)}</td>
-              <td className="px-4 py-3 text-right">{fmtNum(kol.revenue_vnd)}</td>
-              <td className="px-4 py-3 text-right">{fmtNum(kol.cost_vnd)}</td>
+              <td className="px-4 py-3 text-right">{fmtNum(kol.revenue)}</td>
+              <td className="px-4 py-3 text-right">{fmtNum(kol.cost)}</td>
               <td className="px-4 py-3 text-right">
-                <RoasBadge
-                  value={kol.cost_vnd > 0 ? kol.revenue_vnd / kol.cost_vnd : null}
-                />
+                <RoasBadge value={kol.cost > 0 ? kol.revenue / kol.cost : null} />
               </td>
             </tr>
             <tr className="hover:bg-gray-50">
               <td className="px-4 py-3 font-medium">
-                <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-2" />
-                CRM
+                <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-2" />CRM
               </td>
               <td className="px-4 py-3 text-right">{fmtNum(crm.bookings)}</td>
-              <td className="px-4 py-3 text-right">{fmtNum(crm.revenue_vnd)}</td>
-              <td className="px-4 py-3 text-right text-gray-400">—</td>
-              <td className="px-4 py-3 text-right text-gray-400">—</td>
+              <td className="px-4 py-3 text-right">{fmtNum(crm.revenue)}</td>
+              <td className="px-4 py-3 text-right text-gray-400">{"\u2014"}</td>
+              <td className="px-4 py-3 text-right text-gray-400">{"\u2014"}</td>
             </tr>
-            {/* Total row */}
             <tr className="bg-gray-50 font-semibold">
               <td className="px-4 py-3">Total</td>
               <td className="px-4 py-3 text-right">{fmtNum(total.bookings)}</td>
-              <td className="px-4 py-3 text-right">{fmtNum(total.revenue_vnd)}</td>
-              <td className="px-4 py-3 text-right">{fmtNum(total.cost_vnd)}</td>
-              <td className="px-4 py-3 text-right">
-                <RoasBadge value={total.roas} />
-              </td>
+              <td className="px-4 py-3 text-right">{fmtNum(total.revenue)}</td>
+              <td className="px-4 py-3 text-right">{fmtNum(total.cost)}</td>
+              <td className="px-4 py-3 text-right"><RoasBadge value={total.roas} /></td>
             </tr>
           </tbody>
         </table>
@@ -269,30 +234,20 @@ function OverviewTab({ overview }) {
 }
 
 /* ── Monthly by Country Tab ────────────────────────────────────────────────── */
-function MonthlyTab({ rows, countries, filterCountry, setFilterCountry }) {
+function MonthlyTab({ rows, countries, filterCountry, setFilterCountry, cur }) {
   return (
     <div className="space-y-4">
-      {/* Country filter */}
       <div className="flex items-center gap-2">
         <label className="text-sm text-gray-600">Country:</label>
-        <select
-          value={filterCountry}
-          onChange={(e) => setFilterCountry(e.target.value)}
-          className="border rounded px-2 py-1 text-sm"
-        >
+        <select value={filterCountry} onChange={(e) => setFilterCountry(e.target.value)}
+          className="border rounded px-2 py-1 text-sm">
           <option value="">All</option>
-          {countries.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
+          {countries.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
       </div>
 
       {rows.length === 0 ? (
-        <p className="text-gray-400 text-sm text-center py-8">
-          No marketing activity found for this period.
-        </p>
+        <p className="text-gray-400 text-sm text-center py-8">No marketing activity found for this period.</p>
       ) : (
         <div className="bg-white rounded-lg border overflow-x-auto">
           <table className="w-full text-sm">
@@ -302,8 +257,8 @@ function MonthlyTab({ rows, countries, filterCountry, setFilterCountry }) {
                 <th className="text-left px-4 py-3 font-semibold text-gray-600">Country</th>
                 <th className="text-left px-4 py-3 font-semibold text-gray-600">Activities</th>
                 <th className="text-right px-4 py-3 font-semibold text-gray-600">Bookings</th>
-                <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue (VND)</th>
-                <th className="text-right px-4 py-3 font-semibold text-gray-600">Cost (VND)</th>
+                <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue ({cur})</th>
+                <th className="text-right px-4 py-3 font-semibold text-gray-600">Cost ({cur})</th>
                 <th className="text-right px-4 py-3 font-semibold text-gray-600">ROAS</th>
               </tr>
             </thead>
@@ -312,17 +267,13 @@ function MonthlyTab({ rows, countries, filterCountry, setFilterCountry }) {
                 <tr key={i} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-700">{r.month}</td>
                   <td className="px-4 py-3">{r.country}</td>
-                  <td className="px-4 py-3">
-                    <ActivityBadges activities={r.activities} />
-                  </td>
+                  <td className="px-4 py-3"><ActivityBadges activities={r.activities} /></td>
                   <td className="px-4 py-3 text-right">{fmtNum(r.total_bookings)}</td>
-                  <td className="px-4 py-3 text-right">{fmtNum(r.total_revenue_vnd)}</td>
+                  <td className="px-4 py-3 text-right">{fmtNum(r.total_revenue)}</td>
                   <td className="px-4 py-3 text-right">
-                    {r.total_cost_vnd > 0 ? fmtNum(r.total_cost_vnd) : "—"}
+                    {r.total_cost > 0 ? fmtNum(r.total_cost) : "\u2014"}
                   </td>
-                  <td className="px-4 py-3 text-right">
-                    <RoasBadge value={r.roas} />
-                  </td>
+                  <td className="px-4 py-3 text-right"><RoasBadge value={r.roas} /></td>
                 </tr>
               ))}
             </tbody>
@@ -355,19 +306,11 @@ function KOLSuggestTab({ rows }) {
               <th className="text-left px-4 py-3 font-semibold text-gray-600">KOL</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Country</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Branch</th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">
-                Organic Bookings
-              </th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">
-                Organic Revenue (VND)
-              </th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Organic Bookings</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Organic Revenue (VND)</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Nationality</th>
-              <th className="text-left px-4 py-3 font-semibold text-gray-600">
-                Usage Rights Until
-              </th>
-              <th className="text-center px-4 py-3 font-semibold text-gray-600">
-                Ads Eligible
-              </th>
+              <th className="text-left px-4 py-3 font-semibold text-gray-600">Usage Rights Until</th>
+              <th className="text-center px-4 py-3 font-semibold text-gray-600">Ads Eligible</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -378,32 +321,20 @@ function KOLSuggestTab({ rows }) {
                 </td>
                 <td className="px-4 py-3">{r.country}</td>
                 <td className="px-4 py-3 text-gray-600">{r.branch}</td>
-                <td className="px-4 py-3 text-right font-medium">
-                  {fmtNum(r.organic_bookings)}
-                </td>
+                <td className="px-4 py-3 text-right font-medium">{fmtNum(r.organic_bookings)}</td>
                 <td className="px-4 py-3 text-right">{fmtNum(r.organic_revenue_vnd)}</td>
-                <td className="px-4 py-3 text-gray-600">{r.kol_nationality || "—"}</td>
+                <td className="px-4 py-3 text-gray-600">{r.kol_nationality || "\u2014"}</td>
                 <td className="px-4 py-3">
                   {r.usage_rights_until ? (
-                    <span
-                      className={
-                        new Date(r.usage_rights_until) < new Date()
-                          ? "text-red-600"
-                          : "text-gray-700"
-                      }
-                    >
+                    <span className={new Date(r.usage_rights_until) < new Date() ? "text-red-600" : "text-gray-700"}>
                       {r.usage_rights_until}
                     </span>
-                  ) : (
-                    <span className="text-gray-400">—</span>
-                  )}
+                  ) : <span className="text-gray-400">{"\u2014"}</span>}
                 </td>
                 <td className="px-4 py-3 text-center">
-                  {r.paid_ads_eligible ? (
-                    <span className="text-green-600 font-medium">Yes</span>
-                  ) : (
-                    <span className="text-gray-400">No</span>
-                  )}
+                  {r.paid_ads_eligible
+                    ? <span className="text-green-600 font-medium">Yes</span>
+                    : <span className="text-gray-400">No</span>}
                 </td>
               </tr>
             ))}
