@@ -2,14 +2,18 @@
 Metrics router — Phase 2
 Daily / Weekly / Monthly performance metrics + Country YoY comparison.
 """
+import calendar
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, extract
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.reservation import Reservation
 from app.services.metrics_engine import (
     get_daily_metrics,
     get_ota_mix,
@@ -18,6 +22,9 @@ from app.services.metrics_engine import (
     get_rates_trend,
     get_country_yoy,
 )
+
+_EXCLUDED_STATUSES = {"Cancelled", "Canceled", "No-Show", "No_Show"}
+_EXCLUDED_SOURCES_REV = {"blogger", "house use", "houseuse", "special case"}
 
 router = APIRouter()
 
@@ -366,3 +373,138 @@ def get_country_yoy_endpoint(
     """Country YoY comparison: current year vs previous year."""
     rows = get_country_yoy(db, branch_id, year, month)
     return _envelope(rows)
+
+
+# ── Country Reservations (weekly + monthly, top 15) ──────────────────────────
+
+@router.get("/country-reservations")
+def get_country_reservations(
+    view: str = Query("monthly", regex="^(weekly|monthly)$"),
+    month: Optional[str] = Query(None),
+    branch_id: Optional[UUID] = Query(None),
+    limit: int = Query(15, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    """
+    Top N countries by reservation count.
+    - monthly view: grouped by month (last 6 months)
+    - weekly view: grouped by ISO week (last 12 weeks)
+    Returns current period + previous period for comparison.
+    """
+    today = date.today()
+
+    if view == "monthly":
+        result = _country_monthly(db, branch_id, limit, month, today)
+    else:
+        result = _country_weekly(db, branch_id, limit, today)
+
+    return _envelope(result)
+
+
+def _country_monthly(db, branch_id, limit, month_str, today):
+    """Monthly country breakdown with MoM comparison."""
+    if month_str:
+        yr, mo = int(month_str[:4]), int(month_str[5:7])
+    else:
+        yr, mo = today.year, today.month
+
+    d_from = date(yr, mo, 1)
+    d_to = date(yr, mo, calendar.monthrange(yr, mo)[1])
+
+    # Previous month
+    if mo == 1:
+        p_yr, p_mo = yr - 1, 12
+    else:
+        p_yr, p_mo = yr, mo - 1
+    p_from = date(p_yr, p_mo, 1)
+    p_to = date(p_yr, p_mo, calendar.monthrange(p_yr, p_mo)[1])
+
+    current = _query_country_agg(db, branch_id, d_from, d_to, limit)
+    previous = _query_country_agg(db, branch_id, p_from, p_to, limit=50)
+
+    # Build prev lookup
+    prev_map = {r["country"]: r for r in previous}
+
+    total_cur = sum(r["reservations"] for r in current)
+
+    for r in current:
+        r["pct_of_total"] = round(r["reservations"] / total_cur * 100, 1) if total_cur > 0 else 0
+        p = prev_map.get(r["country"])
+        r["prev_reservations"] = p["reservations"] if p else 0
+        r["prev_revenue"] = p["revenue"] if p else 0
+
+    return {
+        "view": "monthly",
+        "period": f"{yr}-{mo:02d}",
+        "prev_period": f"{p_yr}-{p_mo:02d}",
+        "rows": current,
+        "total_reservations": total_cur,
+    }
+
+
+def _country_weekly(db, branch_id, limit, today):
+    """Weekly country breakdown with WoW comparison."""
+    # Current week (Mon-Sun)
+    week_start = today - timedelta(days=today.weekday())
+    week_end = week_start + timedelta(days=6)
+
+    # Previous week
+    p_start = week_start - timedelta(days=7)
+    p_end = p_start + timedelta(days=6)
+
+    current = _query_country_agg(db, branch_id, week_start, week_end, limit)
+    previous = _query_country_agg(db, branch_id, p_start, p_end, limit=50)
+
+    prev_map = {r["country"]: r for r in previous}
+    total_cur = sum(r["reservations"] for r in current)
+
+    for r in current:
+        r["pct_of_total"] = round(r["reservations"] / total_cur * 100, 1) if total_cur > 0 else 0
+        p = prev_map.get(r["country"])
+        r["prev_reservations"] = p["reservations"] if p else 0
+        r["prev_revenue"] = p["revenue"] if p else 0
+
+    return {
+        "view": "weekly",
+        "period": f"{week_start.isoformat()} to {week_end.isoformat()}",
+        "prev_period": f"{p_start.isoformat()} to {p_end.isoformat()}",
+        "rows": current,
+        "total_reservations": total_cur,
+    }
+
+
+def _query_country_agg(db, branch_id, d_from, d_to, limit=15):
+    """Query top N countries by reservation count in date range."""
+    q = db.query(
+        Reservation.guest_country_code.label("country_code"),
+        Reservation.guest_country.label("country"),
+        func.count(Reservation.id).label("reservations"),
+        func.coalesce(func.sum(Reservation.grand_total_vnd), 0).label("revenue_vnd"),
+        func.coalesce(func.sum(Reservation.grand_total_native), 0).label("revenue_native"),
+        func.coalesce(func.sum(Reservation.nights), 0).label("room_nights"),
+    ).filter(
+        Reservation.check_in_date >= d_from,
+        Reservation.check_in_date <= d_to,
+        ~Reservation.status.in_(list(_EXCLUDED_STATUSES)),
+        ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
+    ).group_by(
+        Reservation.guest_country_code,
+        Reservation.guest_country,
+    ).order_by(func.count(Reservation.id).desc())
+
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+
+    rows = q.limit(limit).all()
+
+    return [
+        {
+            "country_code": r.country_code or "Unknown",
+            "country": r.country or r.country_code or "Unknown",
+            "reservations": int(r.reservations),
+            "revenue": float(r.revenue_vnd),
+            "revenue_native": float(r.revenue_native),
+            "room_nights": int(r.room_nights),
+        }
+        for r in rows
+    ]
