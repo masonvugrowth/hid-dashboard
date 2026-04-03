@@ -290,17 +290,22 @@ def kpi_summary_branch(
 @router.get("/yearly-grid")
 def kpi_yearly_grid(
     year: int = Query(None),
+    branch_id: Optional[UUID] = Query(None),
     db: Session = Depends(get_db),
 ):
     """
     Full-year KPI grid: Target, Actual, Hit% per branch per month.
     Returns branches + 12-month grid + totals row.
+    Optionally filter to a single branch.
     """
     if year is None:
         year = datetime.now(timezone.utc).year
 
     # Get active branches
-    branches = db.query(Branch).filter_by(is_active=True).order_by(Branch.name).all()
+    q = db.query(Branch).filter_by(is_active=True)
+    if branch_id:
+        q = q.filter(Branch.id == branch_id)
+    branches = q.order_by(Branch.name).all()
     branch_list = [
         {"id": str(b.id), "name": b.name, "currency": b.currency or "VND"}
         for b in branches

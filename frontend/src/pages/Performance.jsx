@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
-import { CURRENCY_SYMBOLS } from "../context/BranchContext";
+import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 
 const CARDS = [
   {
@@ -60,6 +60,7 @@ function hitBg(pct) {
 }
 
 export default function Performance() {
+  const { isAll, selected } = useBranch();
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(currentYear);
   const [grid, setGrid] = useState(null);
@@ -67,11 +68,13 @@ export default function Performance() {
 
   useEffect(() => {
     setLoading(true);
-    axios.get("/api/kpi/yearly-grid", { params: { year } })
+    const params = { year };
+    if (!isAll && selected) params.branch_id = selected;
+    axios.get("/api/kpi/yearly-grid", { params })
       .then((r) => setGrid(r.data.data))
       .catch(() => setGrid(null))
       .finally(() => setLoading(false));
-  }, [year]);
+  }, [year, selected, isAll]);
 
   const branches = grid?.branches || [];
   const months = grid?.months || [];
