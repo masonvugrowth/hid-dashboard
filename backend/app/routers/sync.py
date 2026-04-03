@@ -12,7 +12,7 @@ from app.models.branch import Branch
 from app.models.reservation import Reservation
 from pathlib import Path
 
-from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_room_type_and_rate_plan
+from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_room_type_and_rate_plan, map_country_code
 from app.services.ingest_csv import import_all_csvs, import_csv_file, CSV_CONFIGS
 from app.services import meta_ads as meta_service
 from app.services import angle_classifier
@@ -1263,3 +1263,47 @@ def trigger_insights_sync(
         "date_from": str(sync_start),
         "date_to": str(sync_end),
     })
+
+
+# ── Country normalization ────────────────────────────────────────────────────
+
+@router.post("/normalize-countries")
+def normalize_countries(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    One-time normalization: re-map guest_country_code for all reservations
+    using the expanded COUNTRY_MAP. Also normalizes guest_country.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+
+    def _run():
+        db2 = next(get_db())
+        try:
+            rows = db2.query(Reservation).filter(
+                Reservation.guest_country.isnot(None),
+            ).all()
+
+            updated = 0
+            for r in rows:
+                new_code = map_country_code(r.guest_country)
+                # Also normalize guest_country itself if it's a short code
+                new_country = new_code  # use canonical name for display too
+
+                if r.guest_country_code != new_code or r.guest_country != new_country:
+                    r.guest_country_code = new_code
+                    r.guest_country = new_country
+                    updated += 1
+
+            db2.commit()
+            log.info("Country normalization complete: %d/%d updated", updated, len(rows))
+        except Exception:
+            db2.rollback()
+            log.exception("Country normalization failed")
+        finally:
+            db2.close()
+
+    background_tasks.add_task(_run)
+    return _envelope({"status": "started", "message": "Country normalization running in background"})
