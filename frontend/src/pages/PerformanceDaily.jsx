@@ -89,7 +89,7 @@ export default function PerformanceDaily() {
         <div>
           <h1 className="text-xl font-bold text-gray-800">Daily Brief</h1>
           <p className="text-sm text-gray-500">OCC%, Revenue, ADR, RevPAR</p>
-          <p className="text-xs text-gray-400 mt-0.5">Excludes: Cancelled · No-show · KOL · Blogger · Maintenance · House Use · Day Use</p>
+          <p className="text-xs text-gray-400 mt-0.5">OCC: all sources (excl. Cancelled · No-show) · Revenue/ADR/RevPAR: excl. Blogger · House Use · Special Case</p>
         </div>
         <div className="flex gap-2 items-center text-sm">
           <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
