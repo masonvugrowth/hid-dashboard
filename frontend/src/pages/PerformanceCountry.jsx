@@ -5,7 +5,7 @@
 import { useEffect, useState, useMemo } from "react";
 import axios from "axios";
 import {
-  AreaChart, Area, BarChart, Bar,
+  AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
 import { useBranch } from "../context/BranchContext";
@@ -160,38 +160,6 @@ export default function PerformanceCountry() {
                   />
                 ))}
               </AreaChart>
-            </ResponsiveContainer>
-          </div>
-
-          {/* Bar Chart — latest period breakdown */}
-          <div className="bg-white rounded-lg border p-4">
-            <h2 className="text-sm font-semibold text-gray-700 mb-4">
-              {latestPeriod} — Reservations by Country
-            </h2>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart
-                data={countryNames.map((name, i) => ({
-                  country: name,
-                  reservations: latestData[name] || 0,
-                  prev: prevData[name] || 0,
-                  fill: COLORS[i % COLORS.length],
-                }))}
-                layout="vertical"
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis type="number" tick={{ fontSize: 12 }} />
-                <YAxis type="category" dataKey="country" width={120} tick={{ fontSize: 11 }} />
-                <Tooltip
-                  contentStyle={{ fontSize: 12, borderRadius: 8 }}
-                  formatter={(val) => [fmtNum(val), "Reservations"]}
-                />
-                <Bar dataKey="reservations" name={latestPeriod} radius={[0, 4, 4, 0]}>
-                  {countryNames.map((_, i) => (
-                    <rect key={i} fill={COLORS[i % COLORS.length]} />
-                  ))}
-                </Bar>
-                <Bar dataKey="prev" name={prevPeriod} fill="#e5e7eb" radius={[0, 4, 4, 0]} />
-              </BarChart>
             </ResponsiveContainer>
           </div>
 
