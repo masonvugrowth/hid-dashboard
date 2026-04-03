@@ -1148,7 +1148,7 @@ def sync_cloudbeds_occupancy(
 
     for d, metrics in sorted(occ_data.items()):
         rooms_sold = int(metrics["rooms_sold"])
-        occ_pct = round(metrics["occupancy"] / 100.0, 4)  # store as 0.xxxx
+        occ_pct = round(metrics["mfd_occupancy"] / 100.0, 4)  # mfd = modified occupancy (excludes blocked/OOS), matches Cloudbeds UI
         adr_native = round(metrics["adr"], 2)
         revpar_native = round(metrics["revpar"], 2)
         revenue_native = round(metrics["room_revenue"], 2)
