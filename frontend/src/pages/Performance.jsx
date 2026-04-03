@@ -1,40 +1,16 @@
 /**
- * Performance Hub — links to sub-pages + KPI Target vs Actual grid
+ * Performance Hub — links to sub-pages + KPI Target vs Actual grid (editable)
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 
 const CARDS = [
-  {
-    to: "/performance/daily",
-    title: "Daily Brief",
-    desc: "OCC%, Revenue, ADR, RevPAR per branch with color bands and event pins",
-    color: "bg-indigo-50 border-indigo-200",
-    icon: "\uD83D\uDCC5",
-  },
-  {
-    to: "/performance/weekly",
-    title: "Weekly Brief",
-    desc: "Revenue trend, cancellation %, OTA mix, conversion %",
-    color: "bg-emerald-50 border-emerald-200",
-    icon: "\uD83D\uDCCA",
-  },
-  {
-    to: "/performance/monthly",
-    title: "Monthly Brief",
-    desc: "OCC/Revenue/ADR/RevPAR + country breakdown multi-year",
-    color: "bg-amber-50 border-amber-200",
-    icon: "\uD83D\uDDD3\uFE0F",
-  },
-  {
-    to: "/performance/ota",
-    title: "OTA Channel Mix",
-    desc: "OTA vs Direct split by bookings and revenue",
-    color: "bg-rose-50 border-rose-200",
-    icon: "\uD83D\uDD00",
-  },
+  { to: "/performance/daily", title: "Daily Brief", desc: "OCC%, Revenue, ADR, RevPAR per branch", color: "bg-indigo-50 border-indigo-200", icon: "\uD83D\uDCC5" },
+  { to: "/performance/weekly", title: "Weekly Brief", desc: "Revenue trend, cancellation %, OTA mix", color: "bg-emerald-50 border-emerald-200", icon: "\uD83D\uDCCA" },
+  { to: "/performance/monthly", title: "Monthly Brief", desc: "OCC/Revenue/ADR/RevPAR + country breakdown", color: "bg-amber-50 border-amber-200", icon: "\uD83D\uDDD3\uFE0F" },
+  { to: "/performance/ota", title: "OTA Channel Mix", desc: "OTA vs Direct split by bookings and revenue", color: "bg-rose-50 border-rose-200", icon: "\uD83D\uDD00" },
 ];
 
 const MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -66,7 +42,7 @@ export default function Performance() {
   const [grid, setGrid] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true);
     const params = { year };
     if (!isAll && selected) params.branch_id = selected;
@@ -76,9 +52,20 @@ export default function Performance() {
       .finally(() => setLoading(false));
   }, [year, selected, isAll]);
 
+  useEffect(load, [load]);
+
   const branches = grid?.branches || [];
   const months = grid?.months || [];
   const totals = grid?.totals || [];
+
+  const handleSaveActual = (branchId, month, value) => {
+    axios.put("/api/kpi/actual-override", {
+      branch_id: branchId,
+      year,
+      month,
+      actual_revenue: value,
+    }).then(() => load());
+  };
 
   return (
     <div className="space-y-6">
@@ -100,7 +87,10 @@ export default function Performance() {
       {/* KPI Target vs Actual Grid */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold text-gray-800">Revenue KPI</h2>
+          <div>
+            <h2 className="text-lg font-bold text-gray-800">Revenue KPI</h2>
+            <p className="text-xs text-gray-400">Click on Actual cells to edit (accounting override)</p>
+          </div>
           <select value={year} onChange={(e) => setYear(Number(e.target.value))}
             className="border rounded px-3 py-1.5 text-sm font-medium">
             {[currentYear, currentYear - 1, currentYear - 2].map((y) => (
@@ -117,7 +107,6 @@ export default function Performance() {
           <div className="bg-white rounded-lg border overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
-                {/* Branch header row */}
                 <tr className="bg-gray-900 text-white">
                   <th className="px-4 py-2.5 text-left font-semibold sticky left-0 bg-gray-900 z-10">{year}</th>
                   {branches.map((b) => (
@@ -126,17 +115,13 @@ export default function Performance() {
                     </th>
                   ))}
                 </tr>
-                {/* Sub-header: Target | Actual | Hit % */}
                 <tr className="bg-gray-100">
                   <th className="px-4 py-2 text-left text-xs text-gray-500 font-medium sticky left-0 bg-gray-100 z-10">Month</th>
-                  {branches.map((b) => {
-                    const sym = CURRENCY_SYMBOLS[b.currency] || "";
-                    return [
-                      <th key={b.id + "-t"} className="px-2 py-2 text-right text-xs text-gray-500 font-medium border-l border-gray-200">Target</th>,
-                      <th key={b.id + "-a"} className="px-2 py-2 text-right text-xs text-gray-500 font-medium">Actual</th>,
-                      <th key={b.id + "-h"} className="px-2 py-2 text-center text-xs text-gray-500 font-medium">Hit %</th>,
-                    ];
-                  })}
+                  {branches.map((b) => [
+                    <th key={b.id + "-t"} className="px-2 py-2 text-right text-xs text-gray-500 font-medium border-l border-gray-200">Target</th>,
+                    <th key={b.id + "-a"} className="px-2 py-2 text-right text-xs text-gray-500 font-medium">Actual</th>,
+                    <th key={b.id + "-h"} className="px-2 py-2 text-center text-xs text-gray-500 font-medium">Hit %</th>,
+                  ])}
                 </tr>
               </thead>
               <tbody>
@@ -146,11 +131,16 @@ export default function Performance() {
                       {MONTHS[row.month]}
                     </td>
                     {row.branches.map((bd, bi) => (
-                      <BranchCells key={bd.branch_id} data={bd} currency={branches[bi]?.currency} />
+                      <BranchCells
+                        key={bd.branch_id}
+                        data={bd}
+                        currency={branches[bi]?.currency}
+                        month={row.month}
+                        onSave={handleSaveActual}
+                      />
                     ))}
                   </tr>
                 ))}
-                {/* Total row */}
                 <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold">
                   <td className="px-4 py-2.5 font-bold text-gray-900 sticky left-0 bg-gray-50 z-10">Total</td>
                   {totals.map((td, bi) => (
@@ -166,18 +156,57 @@ export default function Performance() {
   );
 }
 
-function BranchCells({ data, currency, isTotal }) {
+function BranchCells({ data, currency, isTotal, month, onSave }) {
   const sym = CURRENCY_SYMBOLS[currency] || "";
   const hc = hitColor(data.hit_pct);
   const bg = isTotal ? "" : hitBg(data.hit_pct);
+  const [editing, setEditing] = useState(false);
+  const [editVal, setEditVal] = useState("");
+
+  const startEdit = () => {
+    if (isTotal || !onSave) return;
+    setEditVal(data.actual > 0 ? String(Math.round(data.actual)) : "");
+    setEditing(true);
+  };
+
+  const save = () => {
+    setEditing(false);
+    const num = parseFloat(editVal.replace(/,/g, ""));
+    if (isNaN(num) && editVal !== "") return;
+    // Empty = clear override (revert to Cloudbeds)
+    onSave(data.branch_id, month, editVal === "" ? null : num);
+  };
+
+  const handleKey = (e) => {
+    if (e.key === "Enter") save();
+    if (e.key === "Escape") setEditing(false);
+  };
 
   return (
     <>
       <td className={`px-2 py-2 text-right tabular-nums border-l border-gray-100 ${bg}`}>
         {data.target > 0 ? sym + fmtNum(data.target) : <span className="text-gray-300">{"\u2014"}</span>}
       </td>
-      <td className={`px-2 py-2 text-right tabular-nums ${bg}`}>
-        {data.actual > 0 ? sym + fmtNum(data.actual) : <span className="text-gray-300">{"\u2014"}</span>}
+      <td
+        className={`px-2 py-2 text-right tabular-nums ${bg} ${!isTotal ? "cursor-pointer hover:bg-indigo-50" : ""}`}
+        onClick={startEdit}
+        title={!isTotal ? (data.is_override ? "Manually overridden (click to edit)" : "Click to override Cloudbeds value") : undefined}
+      >
+        {editing ? (
+          <input
+            type="text"
+            value={editVal}
+            onChange={(e) => setEditVal(e.target.value)}
+            onBlur={save}
+            onKeyDown={handleKey}
+            autoFocus
+            className="w-24 px-1 py-0.5 text-right text-sm border border-indigo-400 rounded outline-none"
+          />
+        ) : (
+          <span className={data.is_override ? "border-b border-dashed border-indigo-400" : ""}>
+            {data.actual > 0 ? sym + fmtNum(data.actual) : <span className="text-gray-300">{"\u2014"}</span>}
+          </span>
+        )}
       </td>
       <td className={`px-2 py-2 text-center tabular-nums ${bg}`}>
         {data.hit_pct != null ? (

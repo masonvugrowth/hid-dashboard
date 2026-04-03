@@ -318,10 +318,13 @@ def kpi_yearly_grid(
         KPITarget.branch_id.in_(branch_ids),
     ).all()
 
-    # target_map[(branch_id, month)] = target_revenue_native
+    # target_map[(branch_id, month)] = {target, override}
     target_map = {}
     for t in targets:
-        target_map[(str(t.branch_id), t.month)] = float(t.target_revenue_native or 0)
+        target_map[(str(t.branch_id), t.month)] = {
+            "target": float(t.target_revenue_native or 0),
+            "override": float(t.actual_revenue_override) if t.actual_revenue_override is not None else None,
+        }
 
     # 2. Query actual revenue from daily_metrics, grouped by branch + month
     actuals = db.query(
@@ -335,12 +338,12 @@ def kpi_yearly_grid(
         DailyMetrics.branch_id, "mo",
     ).all()
 
-    # actual_map[(branch_id, month)] = actual_revenue
+    # actual_map[(branch_id, month)] = actual_revenue (from Cloudbeds)
     actual_map = {}
     for a in actuals:
         actual_map[(str(a.branch_id), int(a.mo))] = float(a.revenue)
 
-    # 3. Build grid
+    # 3. Build grid — override takes precedence over Cloudbeds actual
     months = []
     totals = defaultdict(lambda: {"target": 0, "actual": 0})
 
@@ -349,14 +352,19 @@ def kpi_yearly_grid(
         branch_data = []
         for b in branch_list:
             bid = b["id"]
-            target = target_map.get((bid, mo), 0)
-            actual = actual_map.get((bid, mo), 0)
+            kpi = target_map.get((bid, mo), {})
+            target = kpi.get("target", 0)
+            override = kpi.get("override")
+            cloudbeds_actual = actual_map.get((bid, mo), 0)
+            actual = override if override is not None else cloudbeds_actual
             hit_pct = round(actual / target * 100, 1) if target > 0 else None
 
             branch_data.append({
                 "branch_id": bid,
                 "target": target,
                 "actual": actual,
+                "cloudbeds_actual": cloudbeds_actual,
+                "is_override": override is not None,
                 "hit_pct": hit_pct,
             })
 
@@ -385,3 +393,38 @@ def kpi_yearly_grid(
         "months": months,
         "totals": total_row,
     })
+
+
+class ActualOverride(BaseModel):
+    branch_id: UUID
+    year: int
+    month: int
+    actual_revenue: Optional[float] = None  # None = clear override, use Cloudbeds
+
+
+@router.put("/actual-override")
+def save_actual_override(payload: ActualOverride, db: Session = Depends(get_db)):
+    """Save or clear a manual actual revenue override for a branch/month."""
+    existing = (
+        db.query(KPITarget)
+        .filter_by(branch_id=payload.branch_id, year=payload.year, month=payload.month)
+        .first()
+    )
+    if existing:
+        existing.actual_revenue_override = payload.actual_revenue
+        db.commit()
+        return _envelope({"saved": True, "override": payload.actual_revenue})
+    elif payload.actual_revenue is not None:
+        # Create minimal KPI target row to store override
+        target = KPITarget(
+            branch_id=payload.branch_id,
+            year=payload.year,
+            month=payload.month,
+            target_revenue_native=0,
+            target_revenue_vnd=0,
+            actual_revenue_override=payload.actual_revenue,
+        )
+        db.add(target)
+        db.commit()
+        return _envelope({"saved": True, "override": payload.actual_revenue})
+    return _envelope({"saved": False, "message": "No target row exists and no override value provided"})

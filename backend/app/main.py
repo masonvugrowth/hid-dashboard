@@ -99,11 +99,29 @@ def _patch_branch_currencies():
     finally:
         db.close()
 
+
+def _ensure_kpi_override_column():
+    """Add actual_revenue_override column to kpi_targets if missing."""
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        db.execute(text(
+            "ALTER TABLE kpi_targets ADD COLUMN IF NOT EXISTS "
+            "actual_revenue_override NUMERIC(15,2)"
+        ))
+        db.commit()
+        logger.info("Ensured actual_revenue_override column exists")
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
 @app.on_event("startup")
 async def _startup():
     import asyncio
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _patch_branch_currencies)
+    loop.run_in_executor(None, _ensure_kpi_override_column)
 
 
 @app.get("/health")
