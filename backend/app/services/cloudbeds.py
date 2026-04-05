@@ -1615,3 +1615,111 @@ async def sync_all_branches(incremental: bool = True) -> list[dict]:
         db.close()
 
     return results
+
+
+# ── Country Insights via Custom Reports (Dataset #3 — Reservations) ───────────
+
+def fetch_country_insights(
+    property_id: str,
+    api_key: str,
+    year: int,
+    month: int,
+) -> dict[str, dict]:
+    """
+    Fetch country-level reservation data from Cloudbeds Data Insights API.
+
+    Uses a temporary custom report on dataset #3 (Reservations) grouped by
+    primary_guest_residence_country. This is much lighter than pulling raw
+    reservation data.
+
+    Returns: {
+        "Australia": {"nights": 101, "revenue": 72287486, "guests": 45},
+        "China":     {"nights": 188, "revenue": 163195287, "guests": 163},
+        ...
+    }
+    """
+    import calendar
+
+    first_day = f"{year}-{month:02d}-01"
+    last_day_num = calendar.monthrange(year, month)[1]
+    last_day = f"{year}-{month:02d}-{last_day_num:02d}"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "X-PROPERTY-ID": str(property_id),
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "title": f"HiD-country-{year}{month:02d}",
+        "dataset_id": 3,
+        "property_id": str(property_id),
+        "property_ids": [str(property_id)],
+        "columns": [
+            {"cdf": {"type": "default", "column": "room_nights_count"}, "metrics": ["sum"]},
+            {"cdf": {"type": "default", "column": "room_revenue_total_amount"}, "metrics": ["sum"]},
+            {"cdf": {"type": "default", "column": "guest_count"}, "metrics": ["sum"]},
+        ],
+        "group_rows": [
+            {"cdf": {"type": "default", "column": "primary_guest_residence_country"}},
+        ],
+        "filters": {
+            "and": [
+                {
+                    "cdf": {"type": "default", "column": "checkin_date"},
+                    "operator": "greater_than_or_equal",
+                    "value": first_day,
+                },
+                {
+                    "cdf": {"type": "default", "column": "checkin_date"},
+                    "operator": "less_than_or_equal",
+                    "value": last_day,
+                },
+            ]
+        },
+    }
+
+    with httpx.Client(timeout=60) as client:
+        resp = client.post(
+            f"{INSIGHTS_BASE_URL}/reports", headers=headers, json=payload,
+        )
+        if resp.status_code not in (200, 201):
+            logger.warning(
+                "Country insights report create failed for %s %d-%02d: %s %s",
+                property_id, year, month, resp.status_code, resp.text[:200],
+            )
+            return {}
+
+        report_id = resp.json().get("id")
+        try:
+            resp2 = client.get(
+                f"{INSIGHTS_BASE_URL}/reports/{report_id}/data",
+                headers=headers,
+                params={"property_ids": str(property_id)},
+            )
+        finally:
+            client.delete(f"{INSIGHTS_BASE_URL}/reports/{report_id}", headers=headers)
+
+        if resp2.status_code != 200:
+            logger.warning(
+                "Country insights data fetch failed for %s %d-%02d: %s",
+                property_id, year, month, resp2.text[:200],
+            )
+            return {}
+
+        records = resp2.json().get("records", {})
+        result: dict[str, dict] = {}
+        for country_name, metrics in records.items():
+            if not country_name or country_name == "-":
+                continue
+            result[country_name] = {
+                "nights": int(metrics.get("room_nights_count", {}).get("sum", 0)),
+                "revenue": float(metrics.get("room_revenue_total_amount", {}).get("sum", 0)),
+                "guests": int(metrics.get("guest_count", {}).get("sum", 0)),
+            }
+
+        logger.info(
+            "Country insights fetched for property %s %d-%02d: %d countries",
+            property_id, year, month, len(result),
+        )
+        return result
