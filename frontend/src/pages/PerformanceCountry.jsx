@@ -115,15 +115,18 @@ export default function PerformanceCountry() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {view !== "compare" && (
-            <select value={filterCountry} onChange={(e) => setFilterCountry(e.target.value)}
-              className="border rounded px-2 py-1.5 text-sm">
-              <option value="">All Countries</option>
-              {allCountries.map((c) => (
-                <option key={c.country_code} value={c.country}>{c.country}</option>
-              ))}
-            </select>
-          )}
+          <select value={filterCountry} onChange={(e) => setFilterCountry(e.target.value)}
+            className="border rounded px-2 py-1.5 text-sm">
+            <option value="">All Countries</option>
+            {view === "compare"
+              ? (cmpData?.countries || []).map((c) => (
+                  <option key={c.country} value={c.country}>{c.country}</option>
+                ))
+              : allCountries.map((c) => (
+                  <option key={c.country_code} value={c.country}>{c.country}</option>
+                ))
+            }
+          </select>
           {view === "compare" && (
             <div className="flex items-center gap-2">
               <select value={cmpMonth} onChange={(e) => setCmpMonth(Number(e.target.value))}
@@ -160,7 +163,7 @@ export default function PerformanceCountry() {
         ) : !cmpData || cmpData.countries?.length === 0 ? (
           <div className="text-center text-gray-400 py-16 text-sm">No data available.</div>
         ) : (
-          <CompareView data={cmpData} />
+          <CompareView data={cmpData} filterCountry={filterCountry} />
         )
       ) : (
         /* ── Trend View (Weekly / Monthly) ── */
@@ -279,8 +282,11 @@ export default function PerformanceCountry() {
 
 /* ── Compare View Component ─────────────────────────────────────────────────── */
 
-function CompareView({ data }) {
-  const { year, month, countries } = data;
+function CompareView({ data, filterCountry }) {
+  const { year, month } = data;
+  const countries = filterCountry
+    ? data.countries.filter((c) => c.country === filterCountry)
+    : data.countries;
   const monthName = MONTHS[month - 1];
 
   // Summary KPIs
