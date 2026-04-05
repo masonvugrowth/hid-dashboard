@@ -45,12 +45,13 @@ def setup_scheduler(app):
             replace_existing=True,
         )
 
-        # Cloudbeds Insights sync at 8:00am and 2:00pm Vietnam time
+        # Cloudbeds Insights sync at 9:00am and 2:00pm Vietnam time
         # Keeps OCC/ADR/RevPAR/Revenue fresh throughout the day
+        # Revenue KPI table pulls actual revenue entirely from this Insights data
         scheduler.add_job(
             cloudbeds_insights_sync_job,
             args=[SessionLocal],
-            trigger=CronTrigger(hour=8, minute=0),
+            trigger=CronTrigger(hour=9, minute=0),
             id="insights_sync_morning",
             replace_existing=True,
         )
@@ -303,7 +304,7 @@ def setup_scheduler(app):
             "Cloudbeds reservation sync at 02:00, 10:00 ICT, "
             "metrics compute (14-day lookback + next month) at 03:00 ICT, "
             "Ads sync (Meta + Google) at 06:00 ICT, "
-            "Insights refresh (14-day lookback) at 08:00 & 14:00 ICT, "
+            "Insights refresh (14-day lookback) at 09:00 & 14:00 ICT, "
             "verdict sync at 03:30 ICT, "
             "email stats at 04:00 ICT, "
             "GHL email sync at 05:00 ICT"

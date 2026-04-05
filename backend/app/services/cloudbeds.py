@@ -1392,7 +1392,7 @@ def sync_cloudbeds_filtered(
 # ── Filtered Insights via Custom Reports ──────────────────────────────────────
 
 # Sources excluded from REVENUE (but counted for rooms_sold / OCC)
-_REVENUE_EXCLUDED_SOURCES = ["Blogger", "House Use", "Special case"]
+_REVENUE_EXCLUDED_SOURCES = ["Blogger", "House Use", "KOL", "Special case"]
 
 
 def _make_date_filters(date_from: str, date_to: str) -> list[dict]:
@@ -1403,7 +1403,7 @@ def _make_date_filters(date_from: str, date_to: str) -> list[dict]:
 
 
 def _make_source_exclude_filters() -> list[dict]:
-    """Filters to exclude Blogger, House Use, Special case from revenue."""
+    """Filters to exclude Blogger, House Use, KOL, Special case from revenue."""
     return [
         {"cdf": {"type": "default", "column": "reservation_source", "multi_level_id": 4},
          "operator": "not_contains", "value": src}

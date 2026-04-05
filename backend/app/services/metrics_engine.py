@@ -441,13 +441,14 @@ def recompute_branch_range(
 
 async def nightly_metrics_job(db_factory) -> None:
     """
-    v2.3: Nightly job — populate reservation_daily, recompute daily_metrics,
+    v2.4: Nightly job — populate reservation_daily, recompute daily_metrics,
     then overlay Cloudbeds Data Insights OCC/ADR/RevPAR/Revenue.
 
     Coverage:
       - reservation_daily + compute_day: last 14 days + today (catch retroactive updates)
-      - Cloudbeds Insights: last 14 days through end of NEXT month (for forecast)
-    This ensures Daily Brief, Weekly, and Monthly dashboards always show fresh data.
+      - Cloudbeds Insights: Jan 1 of current year through end of NEXT month
+    This ensures Revenue KPI yearly grid + Daily/Weekly/Monthly dashboards
+    always have complete Insights data for the entire year.
     """
     import calendar
     from app.config import settings
@@ -458,13 +459,14 @@ async def nightly_metrics_job(db_factory) -> None:
         today = datetime.now(timezone.utc).date()
         lookback_start = today - timedelta(days=14)
 
-        # Insights sync boundaries: from 14 days ago through end of NEXT month
-        # This covers: recent past (retroactive updates) + current month + next month (forecast)
+        # Insights sync boundaries: Jan 1 of current year through end of NEXT month
+        # Full-year coverage ensures Revenue KPI yearly grid has accurate actuals
+        # for ALL months, not just the last 14 days
         if today.month == 12:
             next_month_year, next_month = today.year + 1, 1
         else:
             next_month_year, next_month = today.year, today.month + 1
-        insights_start = lookback_start
+        insights_start = date(today.year, 1, 1)
         insights_end = date(next_month_year, next_month,
                            calendar.monthrange(next_month_year, next_month)[1])
 
@@ -510,7 +512,7 @@ async def nightly_metrics_job(db_factory) -> None:
                         )
 
                 logger.info(
-                    f"Metrics v2.3 OK branch={branch.name} "
+                    f"Metrics v2.4 OK branch={branch.name} "
                     f"compute={lookback_start}..{today}, "
                     f"insights={insights_start}..{insights_end}"
                 )
@@ -526,9 +528,9 @@ async def cloudbeds_insights_sync_job(db_factory) -> None:
     Runs independently of nightly_metrics_job so revenue/OCC stays fresh
     throughout the day.
 
-    Coverage: last 14 days through end of current month.
-    This catches retroactive Cloudbeds updates for recent past dates
-    and keeps the Daily Brief accurate.
+    Coverage: Jan 1 of current year through end of current month.
+    This ensures the Revenue KPI yearly grid always has complete, accurate
+    actual revenue from Cloudbeds Insights API for ALL months of the year.
     """
     import calendar
     from app.config import settings
@@ -537,9 +539,9 @@ async def cloudbeds_insights_sync_job(db_factory) -> None:
     db: Session = db_factory()
     try:
         today = datetime.now(timezone.utc).date()
-        # Start from 14 days ago to catch retroactive updates (e.g. late check-outs,
-        # revenue adjustments, OCC corrections that Cloudbeds applies retroactively)
-        sync_start = today - timedelta(days=14)
+        # Start from Jan 1 of current year — ensures Revenue KPI yearly grid
+        # has accurate Insights data for ALL months, not just the last 14 days
+        sync_start = date(today.year, 1, 1)
         # End at end of current month (next month handled by nightly job only)
         month_end = today.replace(day=calendar.monthrange(today.year, today.month)[1])
 

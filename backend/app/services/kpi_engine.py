@@ -52,6 +52,7 @@ _EXCLUDED_STATUSES = {"cancelled", "canceled", "no_show", "noshow", "no show", "
 # Sources excluded from revenue, ADR, OCC, and rooms sold — consistent everywhere
 _EXCLUDED_SOURCES = {
     "blogger", "house use", "houseuse",
+    "kol",
     "special case",
 }
 
