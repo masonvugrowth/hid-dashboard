@@ -156,8 +156,12 @@ function AllBranchesTable({ data, loading }) {
                                 </span>
                               : null}
                           </span>
-                          {row.predicted_occ_pct != null && (
-                            <div className="text-[10px] text-gray-400 mt-0.5">OCC {Math.round(row.predicted_occ_pct * 100)}%</div>
+                          {(row.predicted_room_occ_pct != null || row.predicted_dorm_occ_pct != null) && (
+                            <div className="text-[10px] text-gray-400 mt-0.5">
+                              {row.predicted_room_occ_pct != null && <span>R:{Math.round(row.predicted_room_occ_pct * 100)}%</span>}
+                              {row.predicted_room_occ_pct != null && row.predicted_dorm_occ_pct != null && <span> · </span>}
+                              {row.predicted_dorm_occ_pct != null && <span>D:{Math.round(row.predicted_dorm_occ_pct * 100)}%</span>}
+                            </div>
                           )}
                         </div>
                       : <span className="text-gray-300 text-xs">Enter OCC%</span>}
@@ -223,8 +227,12 @@ function AllBranchesTable({ data, loading }) {
                                 </span>
                               : null}
                           </span>
-                          {row.predicted_occ_next != null && (
-                            <div className="text-[10px] text-gray-400 mt-0.5">OCC {Math.round(row.predicted_occ_next * 100)}%</div>
+                          {(row.predicted_room_occ_next != null || row.predicted_dorm_occ_next != null) && (
+                            <div className="text-[10px] text-gray-400 mt-0.5">
+                              {row.predicted_room_occ_next != null && <span>R:{Math.round(row.predicted_room_occ_next * 100)}%</span>}
+                              {row.predicted_room_occ_next != null && row.predicted_dorm_occ_next != null && <span> · </span>}
+                              {row.predicted_dorm_occ_next != null && <span>D:{Math.round(row.predicted_dorm_occ_next * 100)}%</span>}
+                            </div>
                           )}
                         </div>
                       : <span className="text-gray-300">{"\u2014"}</span>}
