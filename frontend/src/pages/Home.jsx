@@ -125,7 +125,6 @@ function AllBranchesTable({ data, loading }) {
               <th className="px-3 py-3 text-right">Revenue</th>
               <th className="px-3 py-3 text-right">Target</th>
               <th className="px-3 py-3 text-center">KPI %</th>
-              <th className="px-3 py-3 text-center whitespace-nowrap">OCC %</th>
               <th className="px-3 py-3 text-center">Forecast</th>
               <th className="px-3 py-3 text-center whitespace-nowrap">Deduct %</th>
               <th className="px-3 py-3 text-center">Adjusted</th>
@@ -145,23 +144,22 @@ function AllBranchesTable({ data, loading }) {
                   <td className="px-3 py-3.5 text-right font-mono">{fmt(row.actual_revenue_native, cur)}</td>
                   <td className="px-3 py-3.5 text-right font-mono text-gray-500">{fmt(row.target_revenue_native, cur)}</td>
                   <td className="px-3 py-3.5 text-center"><AchievementBadge value={row.achievement_pct != null ? row.achievement_pct * 100 : null} /></td>
-                  {/* Manual OCC % */}
-                  <td className="px-3 py-3.5 text-center">
-                    {row.predicted_occ_pct != null
-                      ? <span className="font-mono text-gray-700">{Math.round(row.predicted_occ_pct * 100)}%</span>
-                      : <span className="text-gray-300 text-xs">—</span>}
-                  </td>
                   {/* Forecast this month */}
                   <td className="px-3 py-3.5 text-center">
                     {row.occ_forecast_native != null
-                      ? <span className="text-indigo-700 font-medium">
-                          {fmt(row.occ_forecast_native, cur)}
-                          {row.target_revenue_native
-                            ? <span className="ml-1 text-xs text-gray-400 font-normal">
-                                ({Math.round(row.occ_forecast_native / row.target_revenue_native * 100)}%)
-                              </span>
-                            : null}
-                        </span>
+                      ? <div>
+                          <span className="text-indigo-700 font-medium">
+                            {fmt(row.occ_forecast_native, cur)}
+                            {row.target_revenue_native
+                              ? <span className="ml-1 text-xs text-gray-400 font-normal">
+                                  ({Math.round(row.occ_forecast_native / row.target_revenue_native * 100)}%)
+                                </span>
+                              : null}
+                          </span>
+                          {row.predicted_occ_pct != null && (
+                            <div className="text-[10px] text-gray-400 mt-0.5">OCC {Math.round(row.predicted_occ_pct * 100)}%</div>
+                          )}
+                        </div>
                       : <span className="text-gray-300 text-xs">Enter OCC%</span>}
                   </td>
                   {/* Deduction % input — auto-saves */}
@@ -216,14 +214,19 @@ function AllBranchesTable({ data, loading }) {
                   {/* Next month forecast — always shows adjusted */}
                   <td className="px-3 py-3.5 text-center">
                     {row.adjusted_next_forecast != null
-                      ? <span className={dedPct > 0 ? "text-orange-600 font-medium" : "text-purple-700 font-medium"}>
-                          {fmt(row.adjusted_next_forecast, cur)}
-                          {row.next_month_target_native
-                            ? <span className="ml-1 text-xs text-gray-400 font-normal">
-                                ({Math.round(row.adjusted_next_forecast / row.next_month_target_native * 100)}%)
-                              </span>
-                            : null}
-                        </span>
+                      ? <div>
+                          <span className={dedPct > 0 ? "text-orange-600 font-medium" : "text-purple-700 font-medium"}>
+                            {fmt(row.adjusted_next_forecast, cur)}
+                            {row.next_month_target_native
+                              ? <span className="ml-1 text-xs text-gray-400 font-normal">
+                                  ({Math.round(row.adjusted_next_forecast / row.next_month_target_native * 100)}%)
+                                </span>
+                              : null}
+                          </span>
+                          {row.predicted_occ_next != null && (
+                            <div className="text-[10px] text-gray-400 mt-0.5">OCC {Math.round(row.predicted_occ_next * 100)}%</div>
+                          )}
+                        </div>
                       : <span className="text-gray-300">{"\u2014"}</span>}
                   </td>
                 </tr>
