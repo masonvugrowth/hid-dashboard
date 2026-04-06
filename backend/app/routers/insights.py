@@ -357,40 +357,42 @@ def country_intelligence(
         ORDER BY r.branch_id, r.guest_country, cnt DESC
     """), b_params).fetchall()
 
-    # rt_map: branch_id -> { country_lower -> { room_type -> { total, adults_dist } } }
+    # rt_map: branch_id -> { country_lower -> { adults_count -> { room_type -> cnt } } }
     rt_map: dict[str, dict] = {}
+    rt_totals: dict[str, dict] = {}  # branch_id -> { country_lower -> total }
     for row in rt_rows:
         bid_s = str(row[0])
         gc = (row[1] or "").lower()
         rt = row[2] or "Unknown"
-        adults = int(row[3]) if row[3] is not None else None
+        adults = int(row[3]) if row[3] is not None else 0
         cnt = int(row[4])
-        rt_map.setdefault(bid_s, {}).setdefault(gc, {}).setdefault(rt, {"total": 0, "adults": {}})
-        rt_map[bid_s][gc][rt]["total"] += cnt
-        if adults is not None:
-            rt_map[bid_s][gc][rt]["adults"][adults] = rt_map[bid_s][gc][rt]["adults"].get(adults, 0) + cnt
+        rt_map.setdefault(bid_s, {}).setdefault(gc, {}).setdefault(adults, {})
+        rt_map[bid_s][gc][adults][rt] = rt_map[bid_s][gc][adults].get(rt, 0) + cnt
+        rt_totals.setdefault(bid_s, {}).setdefault(gc, 0)
+        rt_totals[bid_s][gc] += cnt
 
     def _get_room_type_stats(bid_str, country):
         gc = country.lower()
-        country_rt = rt_map.get(bid_str, {}).get(gc, {})
-        if not country_rt:
+        adults_data = rt_map.get(bid_str, {}).get(gc, {})
+        if not adults_data:
             return []
-        total_bookings = sum(v["total"] for v in country_rt.values())
-        sorted_rts = sorted(country_rt.items(), key=lambda x: x[1]["total"], reverse=True)[:5]
-        result = []
-        for rt_name, data in sorted_rts:
-            pct = round(data["total"] / total_bookings * 100, 1) if total_bookings > 0 else 0
-            adults_total = sum(data["adults"].values())
-            adults_dist = {}
-            for a_count in sorted(data["adults"].keys()):
-                adults_dist[str(a_count)] = round(data["adults"][a_count] / adults_total * 100, 1) if adults_total > 0 else 0
-            result.append({
-                "room_type": rt_name,
-                "booking_count": data["total"],
+        total_bookings = rt_totals.get(bid_str, {}).get(gc, 0)
+        # Build segments sorted by total bookings desc
+        segments = []
+        for adults_count, room_types in sorted(adults_data.items(), key=lambda x: sum(x[1].values()), reverse=True):
+            segment_total = sum(room_types.values())
+            pct = round(segment_total / total_bookings * 100, 1) if total_bookings > 0 else 0
+            top_rooms = sorted(room_types.items(), key=lambda x: x[1], reverse=True)[:3]
+            segments.append({
+                "adults": adults_count,
+                "booking_count": segment_total,
                 "pct": pct,
-                "adults_distribution": adults_dist,
+                "top_rooms": [
+                    {"room_type": rt, "count": c, "pct": round(c / segment_total * 100, 1) if segment_total > 0 else 0}
+                    for rt, c in top_rooms
+                ],
             })
-        return result
+        return segments
 
     # ── 5. Helper: build a country entry with KOL/Ads coverage ──────────────
     def _build_country(bid_str, country, country_code):
