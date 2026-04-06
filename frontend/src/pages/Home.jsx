@@ -125,6 +125,7 @@ function AllBranchesTable({ data, loading }) {
               <th className="px-3 py-3 text-right">Revenue</th>
               <th className="px-3 py-3 text-right">Target</th>
               <th className="px-3 py-3 text-center">KPI %</th>
+              <th className="px-3 py-3 text-center whitespace-nowrap">OCC %</th>
               <th className="px-3 py-3 text-center">Forecast</th>
               <th className="px-3 py-3 text-center whitespace-nowrap">Deduct %</th>
               <th className="px-3 py-3 text-center">Adjusted</th>
@@ -144,6 +145,12 @@ function AllBranchesTable({ data, loading }) {
                   <td className="px-3 py-3.5 text-right font-mono">{fmt(row.actual_revenue_native, cur)}</td>
                   <td className="px-3 py-3.5 text-right font-mono text-gray-500">{fmt(row.target_revenue_native, cur)}</td>
                   <td className="px-3 py-3.5 text-center"><AchievementBadge value={row.achievement_pct != null ? row.achievement_pct * 100 : null} /></td>
+                  {/* Manual OCC % */}
+                  <td className="px-3 py-3.5 text-center">
+                    {row.predicted_occ_pct != null
+                      ? <span className="font-mono text-gray-700">{Math.round(row.predicted_occ_pct * 100)}%</span>
+                      : <span className="text-gray-300 text-xs">—</span>}
+                  </td>
                   {/* Forecast this month */}
                   <td className="px-3 py-3.5 text-center">
                     {row.occ_forecast_native != null
