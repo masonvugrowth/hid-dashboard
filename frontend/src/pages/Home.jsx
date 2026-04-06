@@ -156,13 +156,29 @@ function AllBranchesTable({ data, loading }) {
                                 </span>
                               : null}
                           </span>
-                          {(row.predicted_room_occ_pct != null || row.predicted_dorm_occ_pct != null) && (
-                            <div className="text-[10px] text-gray-400 mt-0.5">
-                              {row.predicted_room_occ_pct != null && <span>R:{Math.round(row.predicted_room_occ_pct * 100)}%</span>}
-                              {row.predicted_room_occ_pct != null && row.predicted_dorm_occ_pct != null && <span> · </span>}
-                              {row.predicted_dorm_occ_pct != null && <span>D:{Math.round(row.predicted_dorm_occ_pct * 100)}%</span>}
-                            </div>
-                          )}
+                          {(() => {
+                            const rOcc = row.predicted_room_occ_pct;
+                            const dOcc = row.predicted_dorm_occ_pct;
+                            const fallback = row.predicted_occ_pct;
+                            const hasDorm = row.total_dorm_count > 0;
+                            if (rOcc != null || dOcc != null) {
+                              return (
+                                <div className="text-[10px] text-gray-400 mt-0.5">
+                                  {rOcc != null && <span>R:{Math.round(rOcc * 100)}%</span>}
+                                  {rOcc != null && dOcc != null && hasDorm && <span> · </span>}
+                                  {dOcc != null && hasDorm && <span>D:{Math.round(dOcc * 100)}%</span>}
+                                </div>
+                              );
+                            }
+                            if (fallback != null) {
+                              return (
+                                <div className="text-[10px] text-gray-400 mt-0.5">
+                                  {hasDorm ? `R:${Math.round(fallback * 100)}% · D:${Math.round(fallback * 100)}%` : `R:${Math.round(fallback * 100)}%`}
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                       : <span className="text-gray-300 text-xs">Enter OCC%</span>}
                   </td>
@@ -227,13 +243,29 @@ function AllBranchesTable({ data, loading }) {
                                 </span>
                               : null}
                           </span>
-                          {(row.predicted_room_occ_next != null || row.predicted_dorm_occ_next != null) && (
-                            <div className="text-[10px] text-gray-400 mt-0.5">
-                              {row.predicted_room_occ_next != null && <span>R:{Math.round(row.predicted_room_occ_next * 100)}%</span>}
-                              {row.predicted_room_occ_next != null && row.predicted_dorm_occ_next != null && <span> · </span>}
-                              {row.predicted_dorm_occ_next != null && <span>D:{Math.round(row.predicted_dorm_occ_next * 100)}%</span>}
-                            </div>
-                          )}
+                          {(() => {
+                            const rOcc = row.predicted_room_occ_next;
+                            const dOcc = row.predicted_dorm_occ_next;
+                            const fallback = row.predicted_occ_next;
+                            const hasDorm = row.total_dorm_count > 0;
+                            if (rOcc != null || dOcc != null) {
+                              return (
+                                <div className="text-[10px] text-gray-400 mt-0.5">
+                                  {rOcc != null && <span>R:{Math.round(rOcc * 100)}%</span>}
+                                  {rOcc != null && dOcc != null && hasDorm && <span> · </span>}
+                                  {dOcc != null && hasDorm && <span>D:{Math.round(dOcc * 100)}%</span>}
+                                </div>
+                              );
+                            }
+                            if (fallback != null) {
+                              return (
+                                <div className="text-[10px] text-gray-400 mt-0.5">
+                                  {hasDorm ? `R:${Math.round(fallback * 100)}% · D:${Math.round(fallback * 100)}%` : `R:${Math.round(fallback * 100)}%`}
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                       : <span className="text-gray-300">{"\u2014"}</span>}
                   </td>
