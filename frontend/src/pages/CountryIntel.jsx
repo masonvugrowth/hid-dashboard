@@ -195,8 +195,34 @@ function CoverageDetail({ item }) {
   const hasGov = !!item.gov_visitor_data;
   return (
     <div className="space-y-4 mt-2">
-      {hasGov && (
-        <GovDataBadge gov={item.gov_visitor_data} />
+      {/* Room Type Breakdown */}
+      {item.room_type_stats?.length > 0 && (
+        <div className="bg-purple-50 border border-purple-200 rounded p-3 text-xs">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-semibold text-purple-800">Top Room Types</span>
+            <span className="text-[10px] text-gray-400 italic">Last 90 days</span>
+          </div>
+          <div className="space-y-1.5">
+            {item.room_type_stats.map((rt) => (
+              <div key={rt.room_type} className="flex items-center gap-3">
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="font-medium text-gray-700">{rt.room_type}</span>
+                    <span className="font-mono text-purple-700">{rt.booking_count} bookings ({rt.pct}%)</span>
+                  </div>
+                  <div className="w-full bg-purple-100 rounded-full h-1.5">
+                    <div className="bg-purple-500 h-1.5 rounded-full" style={{ width: `${rt.pct}%` }} />
+                  </div>
+                </div>
+                <div className="text-gray-500 whitespace-nowrap">
+                  {rt.adults_distribution && Object.entries(rt.adults_distribution).map(([count, pctVal]) => (
+                    <span key={count} className="mr-2">{count} adult{count !== "1" ? "s" : ""}: <span className="font-mono text-purple-600">{pctVal}%</span></span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
