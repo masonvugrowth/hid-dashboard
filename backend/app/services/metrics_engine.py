@@ -459,16 +459,11 @@ async def nightly_metrics_job(db_factory) -> None:
         today = datetime.now(timezone.utc).date()
         lookback_start = today - timedelta(days=14)
 
-        # Insights sync boundaries: Jan 1 of current year through end of NEXT month
+        # Insights sync boundaries: Jan 1 through Dec 31 of current year
         # Full-year coverage ensures Revenue KPI yearly grid has accurate actuals
-        # for ALL months, not just the last 14 days
-        if today.month == 12:
-            next_month_year, next_month = today.year + 1, 1
-        else:
-            next_month_year, next_month = today.year, today.month + 1
+        # for ALL months including forward bookings (Jun–Dec)
         insights_start = date(today.year, 1, 1)
-        insights_end = date(next_month_year, next_month,
-                           calendar.monthrange(next_month_year, next_month)[1])
+        insights_end = date(today.year, 12, 31)
 
         branches = db.query(Branch).filter_by(is_active=True).all()
         for branch in branches:
@@ -528,22 +523,19 @@ async def cloudbeds_insights_sync_job(db_factory) -> None:
     Runs independently of nightly_metrics_job so revenue/OCC stays fresh
     throughout the day.
 
-    Coverage: Jan 1 of current year through end of current month.
+    Coverage: Jan 1 through Dec 31 of current year.
     This ensures the Revenue KPI yearly grid always has complete, accurate
-    actual revenue from Cloudbeds Insights API for ALL months of the year.
+    actual revenue from Cloudbeds Insights API for ALL months of the year,
+    including forward bookings for future months.
     """
-    import calendar
     from app.config import settings
     from app.services.cloudbeds import sync_cloudbeds_occupancy, sync_cloudbeds_filtered
 
     db: Session = db_factory()
     try:
         today = datetime.now(timezone.utc).date()
-        # Start from Jan 1 of current year — ensures Revenue KPI yearly grid
-        # has accurate Insights data for ALL months, not just the last 14 days
         sync_start = date(today.year, 1, 1)
-        # End at end of current month (next month handled by nightly job only)
-        month_end = today.replace(day=calendar.monthrange(today.year, today.month)[1])
+        sync_end = date(today.year, 12, 31)
 
         branches = db.query(Branch).filter_by(is_active=True).all()
         for branch in branches:
@@ -554,16 +546,16 @@ async def cloudbeds_insights_sync_job(db_factory) -> None:
             try:
                 sync_cloudbeds_occupancy(
                     db, str(branch.id), pid, branch.currency, api_key,
-                    date_from=sync_start, date_to=month_end,
+                    date_from=sync_start, date_to=sync_end,
                 )
                 sync_cloudbeds_filtered(
                     db, str(branch.id), pid, branch.currency, api_key,
                     total_rooms=branch.total_rooms,
                     total_room_count=branch.total_room_count or 0,
                     total_dorm_count=branch.total_dorm_count or 0,
-                    date_from=sync_start, date_to=month_end,
+                    date_from=sync_start, date_to=sync_end,
                 )
-                logger.info(f"Insights sync OK branch={branch.name} [{sync_start}..{month_end}]")
+                logger.info(f"Insights sync OK branch={branch.name} [{sync_start}..{sync_end}]")
             except Exception as e:
                 logger.warning(f"Insights sync FAIL branch={branch.name}: {e}")
     finally:
