@@ -1707,7 +1707,19 @@ def fetch_country_insights(
             )
             return {}
 
-        records = resp2.json().get("records", {})
+        raw_json = resp2.json()
+        records = raw_json.get("records", {})
+
+        # Debug: log raw response structure for empty results
+        if not records:
+            logger.warning(
+                "Country insights EMPTY records for property %s %d-%02d. "
+                "Status: %s, Keys: %s, Raw (first 500): %s",
+                property_id, year, month, resp2.status_code,
+                list(raw_json.keys()),
+                str(raw_json)[:500],
+            )
+
         result: dict[str, dict] = {}
         for country_name, metrics in records.items():
             if not country_name or country_name == "-":
