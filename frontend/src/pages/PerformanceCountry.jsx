@@ -25,7 +25,7 @@ function fmtNum(val) {
 }
 
 export default function PerformanceCountry() {
-  const { isAll, selected } = useBranch();
+  const { isAll, selected, branches } = useBranch();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState("monthly"); // weekly | monthly | compare
@@ -37,6 +37,18 @@ export default function PerformanceCountry() {
   const [cmpMonth, setCmpMonth] = useState(now.getMonth() + 1);
   const [cmpData, setCmpData] = useState(null);
   const [cmpLoading, setCmpLoading] = useState(false);
+
+  // Branch compare state
+  const [compareBranch, setCompareBranch] = useState("");
+  const [compareBranchData, setCompareBranchData] = useState(null);
+
+  // Reset compareBranch when switching away from compare view or to "all"
+  useEffect(() => {
+    if (view !== "compare" || isAll) {
+      setCompareBranch("");
+      setCompareBranchData(null);
+    }
+  }, [view, isAll]);
 
   // Load trend data (weekly/monthly)
   const loadTrend = () => {
@@ -56,9 +68,26 @@ export default function PerformanceCountry() {
     const params = { year: cmpYear, month: cmpMonth };
     if (!isAll && selected) params.branch_id = selected;
 
-    axios.get("/api/metrics/country-yoy-insights", { params })
-      .then((r) => setCmpData(r.data.data))
-      .catch(() => setCmpData(null))
+    const requests = [axios.get("/api/metrics/country-yoy-insights", { params })];
+
+    // If comparing with another branch, fetch that too
+    if (compareBranch) {
+      requests.push(
+        axios.get("/api/metrics/country-yoy-insights", {
+          params: { year: cmpYear, month: cmpMonth, branch_id: compareBranch },
+        })
+      );
+    }
+
+    Promise.all(requests)
+      .then(([mainRes, cmpBranchRes]) => {
+        setCmpData(mainRes.data.data);
+        setCompareBranchData(cmpBranchRes ? cmpBranchRes.data.data : null);
+      })
+      .catch(() => {
+        setCmpData(null);
+        setCompareBranchData(null);
+      })
       .finally(() => setCmpLoading(false));
   };
 
@@ -68,11 +97,39 @@ export default function PerformanceCountry() {
     } else {
       loadTrend();
     }
-  }, [selected, isAll, view, cmpYear, cmpMonth]);
+  }, [selected, isAll, view, cmpYear, cmpMonth, compareBranch]);
 
   const periods = data?.periods || [];
   const allCountries = data?.countries || [];
   const trend = data?.trend || {};
+
+  // Other branches for compare dropdown (exclude current)
+  const otherBranches = useMemo(() => {
+    if (isAll || !selected) return [];
+    return branches.filter((b) => b.id !== selected);
+  }, [branches, selected, isAll]);
+
+  const compareBranchName = useMemo(() => {
+    if (!compareBranch) return "";
+    const b = branches.find((br) => br.id === compareBranch);
+    return b?.name || "";
+  }, [branches, compareBranch]);
+
+  const currentBranchName = useMemo(() => {
+    if (isAll || !selected) return "Current";
+    const b = branches.find((br) => br.id === selected);
+    return b?.name || "Current";
+  }, [branches, selected, isAll]);
+
+  // Union of countries for filter dropdown when branch compare is active
+  const compareCountryList = useMemo(() => {
+    if (!compareBranchData || !cmpData) return [];
+    const names = new Set([
+      ...(cmpData.countries || []).map((c) => c.country),
+      ...(compareBranchData.countries || []).map((c) => c.country),
+    ]);
+    return [...names].sort();
+  }, [cmpData, compareBranchData]);
 
   // Filter countries
   const countries = useMemo(() => {
@@ -118,7 +175,11 @@ export default function PerformanceCountry() {
           <select value={filterCountry} onChange={(e) => setFilterCountry(e.target.value)}
             className="border rounded px-2 py-1.5 text-sm">
             <option value="">All Countries</option>
-            {view === "compare"
+            {view === "compare" && compareBranch
+              ? compareCountryList.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))
+              : view === "compare"
               ? (cmpData?.countries || []).map((c) => (
                   <option key={c.country} value={c.country}>{c.country}</option>
                 ))
@@ -143,6 +204,15 @@ export default function PerformanceCountry() {
               </select>
             </div>
           )}
+          {view === "compare" && !isAll && selected && (
+            <select value={compareBranch} onChange={(e) => setCompareBranch(e.target.value)}
+              className="border rounded px-2 py-1.5 text-sm bg-indigo-50 border-indigo-300 text-indigo-700">
+              <option value="">Compare Branch...</option>
+              {otherBranches.map((b) => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
+            </select>
+          )}
           <div className="flex rounded-lg border overflow-hidden">
             {["weekly", "monthly", "compare"].map((v) => (
               <button key={v} onClick={() => setView(v)}
@@ -162,6 +232,14 @@ export default function PerformanceCountry() {
           <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
         ) : !cmpData || cmpData.countries?.length === 0 ? (
           <div className="text-center text-gray-400 py-16 text-sm">No data available.</div>
+        ) : compareBranch && compareBranchData ? (
+          <BranchCompareView
+            dataA={cmpData}
+            dataB={compareBranchData}
+            nameA={currentBranchName}
+            nameB={compareBranchName}
+            filterCountry={filterCountry}
+          />
         ) : (
           <CompareView data={cmpData} filterCountry={filterCountry} />
         )
@@ -379,6 +457,141 @@ function CompareView({ data, filterCountry }) {
                 </td>
                 <td className="px-4 py-2.5 text-right font-semibold">{fmtNum(c.current_guests)}</td>
                 <td className="px-4 py-2.5 text-right text-gray-500">{fmtNum(c.prev_guests)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+
+/* ── Branch Compare View Component ─────────────────────────────────────────── */
+
+function BranchCompareView({ dataA, dataB, nameA, nameB, filterCountry }) {
+  const { year, month } = dataA;
+  const monthName = MONTHS[month - 1];
+
+  // Build lookup maps
+  const mapA = {};
+  for (const c of dataA.countries) mapA[c.country] = c;
+  const mapB = {};
+  for (const c of dataB.countries) mapB[c.country] = c;
+
+  // Union of countries, filtered
+  let allCountryNames = [...new Set([
+    ...dataA.countries.map((c) => c.country),
+    ...dataB.countries.map((c) => c.country),
+  ])];
+  if (filterCountry) {
+    allCountryNames = allCountryNames.filter((c) => c === filterCountry);
+  }
+
+  // Build merged rows sorted by branch A nights desc
+  const rows = allCountryNames.map((country) => {
+    const a = mapA[country] || { current_nights: 0, current_revenue: 0, current_guests: 0 };
+    const b = mapB[country] || { current_nights: 0, current_revenue: 0, current_guests: 0 };
+    return { country, a, b };
+  }).sort((x, y) => y.a.current_nights - x.a.current_nights);
+
+  // Totals
+  const totA = { nights: 0, revenue: 0, guests: 0 };
+  const totB = { nights: 0, revenue: 0, guests: 0 };
+  for (const r of rows) {
+    totA.nights += r.a.current_nights;
+    totA.revenue += r.a.current_revenue;
+    totA.guests += r.a.current_guests;
+    totB.nights += r.b.current_nights;
+    totB.revenue += r.b.current_revenue;
+    totB.guests += r.b.current_guests;
+  }
+
+  function diffPct(valA, valB) {
+    if (valB === 0) return valA === 0 ? null : 100.0;
+    return ((valA - valB) / valB) * 100;
+  }
+
+  return (
+    <>
+      {/* KPI Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-white rounded-lg border p-4">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+            {nameA} Nights
+          </p>
+          <p className="text-2xl font-bold text-gray-900">{fmtNum(totA.nights)}</p>
+          <p className="text-xs text-gray-400 mt-1">{monthName} {year}</p>
+        </div>
+        <div className="bg-white rounded-lg border p-4 border-indigo-200 bg-indigo-50/30">
+          <p className="text-xs text-indigo-500 uppercase tracking-wider mb-1">
+            {nameB} Nights
+          </p>
+          <p className="text-2xl font-bold text-indigo-700">{fmtNum(totB.nights)}</p>
+          <p className="text-xs text-gray-400 mt-1">{monthName} {year}</p>
+        </div>
+        <div className="bg-white rounded-lg border p-4">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+            {nameA} Revenue
+          </p>
+          <p className="text-2xl font-bold text-gray-900">{fmtNum(totA.revenue)}</p>
+          <p className="text-xs text-gray-400 mt-1">{monthName} {year}</p>
+        </div>
+        <div className="bg-white rounded-lg border p-4 border-indigo-200 bg-indigo-50/30">
+          <p className="text-xs text-indigo-500 uppercase tracking-wider mb-1">
+            {nameB} Revenue
+          </p>
+          <p className="text-2xl font-bold text-indigo-700">{fmtNum(totB.revenue)}</p>
+          <p className="text-xs text-gray-400 mt-1">{monthName} {year}</p>
+        </div>
+      </div>
+
+      {/* Branch Comparison Table */}
+      <div className="bg-white rounded-lg border overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="text-center px-3 py-3 font-semibold text-gray-600 w-10">#</th>
+              <th className="text-left px-4 py-3 font-semibold text-gray-600">Country</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">
+                {nameA}<br /><span className="text-xs font-normal text-gray-400">Nights</span>
+              </th>
+              <th className="text-right px-4 py-3 font-semibold text-indigo-600">
+                {nameB}<br /><span className="text-xs font-normal text-indigo-400">Nights</span>
+              </th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Diff</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">
+                {nameA}<br /><span className="text-xs font-normal text-gray-400">Revenue</span>
+              </th>
+              <th className="text-right px-4 py-3 font-semibold text-indigo-600">
+                {nameB}<br /><span className="text-xs font-normal text-indigo-400">Revenue</span>
+              </th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Diff</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">
+                {nameA}<br /><span className="text-xs font-normal text-gray-400">Guests</span>
+              </th>
+              <th className="text-right px-4 py-3 font-semibold text-indigo-600">
+                {nameB}<br /><span className="text-xs font-normal text-indigo-400">Guests</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {rows.map((r, i) => (
+              <tr key={r.country} className="hover:bg-gray-50">
+                <td className="px-3 py-2.5 text-center text-gray-400 font-mono text-xs">{i + 1}</td>
+                <td className="px-4 py-2.5 font-medium text-gray-900">{r.country}</td>
+                <td className="px-4 py-2.5 text-right font-semibold">{fmtNum(r.a.current_nights)}</td>
+                <td className="px-4 py-2.5 text-right font-semibold text-indigo-700">{fmtNum(r.b.current_nights)}</td>
+                <td className="px-4 py-2.5 text-right">
+                  <ChangeBadge value={diffPct(r.a.current_nights, r.b.current_nights)} />
+                </td>
+                <td className="px-4 py-2.5 text-right font-semibold">{fmtNum(r.a.current_revenue)}</td>
+                <td className="px-4 py-2.5 text-right font-semibold text-indigo-700">{fmtNum(r.b.current_revenue)}</td>
+                <td className="px-4 py-2.5 text-right">
+                  <ChangeBadge value={diffPct(r.a.current_revenue, r.b.current_revenue)} />
+                </td>
+                <td className="px-4 py-2.5 text-right font-semibold">{fmtNum(r.a.current_guests)}</td>
+                <td className="px-4 py-2.5 text-right font-semibold text-indigo-700">{fmtNum(r.b.current_guests)}</td>
               </tr>
             ))}
           </tbody>
