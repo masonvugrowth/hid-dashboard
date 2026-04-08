@@ -1,4 +1,4 @@
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 from collections import defaultdict
@@ -428,3 +428,104 @@ def save_actual_override(payload: ActualOverride, db: Session = Depends(get_db))
         db.commit()
         return _envelope({"saved": True, "override": payload.actual_revenue})
     return _envelope({"saved": False, "message": "No target row exists and no override value provided"})
+
+
+# ── Period Achievement ────────────────────────────────────────────────────────
+
+@router.get("/period-achievement")
+def kpi_period_achievement(
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    branch_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    KPI achievement for an arbitrary date range.
+    Daily Goal = monthly target / days_in_month for each day.
+    Period target = sum of daily goals across the range.
+    Actual revenue = sum of daily_metrics.revenue_native for the range.
+    """
+    import calendar
+
+    q = db.query(Branch).filter_by(is_active=True)
+    if branch_id:
+        q = q.filter(Branch.id == branch_id)
+    branches = q.all()
+
+    # Pre-load all KPI targets covering the date range months
+    # Determine unique (year, month) pairs in the range
+    ym_pairs = set()
+    d = date_from
+    while d <= date_to:
+        ym_pairs.add((d.year, d.month))
+        # Jump to next month
+        if d.month == 12:
+            d = date(d.year + 1, 1, 1)
+        else:
+            d = date(d.year, d.month + 1, 1)
+
+    branch_ids = [b.id for b in branches]
+
+    # Load targets for all relevant months
+    targets = db.query(KPITarget).filter(
+        KPITarget.branch_id.in_(branch_ids),
+    ).all()
+
+    # target_map[(branch_id, year, month)] = target_revenue_native
+    target_map = {}
+    for t in targets:
+        key = (str(t.branch_id), t.year, t.month)
+        target_map[key] = float(t.target_revenue_native or 0)
+
+    # Load actual revenue from daily_metrics grouped by branch
+    actuals = db.query(
+        DailyMetrics.branch_id,
+        func.coalesce(func.sum(DailyMetrics.revenue_native), 0).label("revenue"),
+    ).filter(
+        DailyMetrics.branch_id.in_(branch_ids),
+        DailyMetrics.date >= date_from,
+        DailyMetrics.date <= date_to,
+    ).group_by(DailyMetrics.branch_id).all()
+
+    actual_map = {str(a.branch_id): float(a.revenue) for a in actuals}
+
+    # Count total days in range
+    total_days = (date_to - date_from).days + 1
+
+    results = []
+    for branch in branches:
+        bid = str(branch.id)
+        cur = branch.currency or branch.native_currency or "VND"
+
+        # Calculate period target by summing daily goals
+        period_target = 0.0
+        d = date_from
+        while d <= date_to:
+            yr, mo = d.year, d.month
+            monthly_target = target_map.get((bid, yr, mo), 0)
+            dim = calendar.monthrange(yr, mo)[1]
+            daily_goal = monthly_target / dim if dim > 0 else 0
+            period_target += daily_goal
+            d += timedelta(days=1)
+
+        actual_revenue = actual_map.get(bid, 0)
+        achievement_pct = round(actual_revenue / period_target, 4) if period_target > 0 else None
+
+        avg_daily_goal = round(period_target / total_days, 2) if total_days > 0 else 0
+        avg_daily_actual = round(actual_revenue / total_days, 2) if total_days > 0 else 0
+
+        results.append({
+            "branch_id": bid,
+            "branch_name": branch.name,
+            "currency": cur,
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "actual_revenue": round(actual_revenue, 2),
+            "target_revenue": round(period_target, 2),
+            "achievement_pct": achievement_pct,
+            "daily_goal": avg_daily_goal,
+            "daily_actual": avg_daily_actual,
+            "total_days": total_days,
+        })
+
+    return _envelope(results)
