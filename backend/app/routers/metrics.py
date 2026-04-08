@@ -412,13 +412,16 @@ def get_country_yoy_insights(
     # Aggregate across branches
     current_totals: dict[str, dict] = {}   # country -> {nights, revenue, guests}
     prev_totals: dict[str, dict] = {}
+    _debug_branches = []
 
     for branch in branches:
         pid = branch.cloudbeds_property_id
         if not pid:
+            _debug_branches.append({"name": branch.name, "status": "skipped_no_pid"})
             continue
         api_key = settings.get_api_key_for_property(str(pid))
         if not api_key:
+            _debug_branches.append({"name": branch.name, "pid": str(pid), "status": "skipped_no_api_key"})
             continue
 
         # Fetch current year month
@@ -426,6 +429,7 @@ def get_country_yoy_insights(
             curr = fetch_country_insights(str(pid), api_key, year, month)
         except Exception as exc:
             logger.warning("Country insights current failed %s: %s", branch.name, exc)
+            _debug_branches.append({"name": branch.name, "pid": str(pid), "status": f"error_current: {exc}"})
             curr = {}
 
         # Fetch same month last year
@@ -434,6 +438,11 @@ def get_country_yoy_insights(
         except Exception as exc:
             logger.warning("Country insights prev failed %s: %s", branch.name, exc)
             prev = {}
+
+        _debug_branches.append({
+            "name": branch.name, "pid": str(pid), "status": "ok",
+            "current_countries": len(curr), "prev_countries": len(prev),
+        })
 
         # Merge into totals
         for country, data in curr.items():
@@ -482,6 +491,7 @@ def get_country_yoy_insights(
         "year": year,
         "month": month,
         "countries": rows,
+        "_debug": _debug_branches,
     })
 
 
