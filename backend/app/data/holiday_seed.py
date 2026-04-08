@@ -1,6 +1,7 @@
 """
 Static holiday seed data for 25 source markets.
 Each entry maps to one row in holiday_calendars.
+All holiday names in English for consistency.
 """
 
 def _h(code, name, hname, htype, ms, ds, me, de, dur, long, prop, notes=""):
@@ -23,12 +24,12 @@ def _h(code, name, hname, htype, ms, ds, me, de, dur, long, prop, notes=""):
 
 HOLIDAY_SEED = [
     # ── Vietnam (VN) ─────────────────────────────────────────────────────
-    _h("VN", "Vietnam", "Tết Nguyên Đán", "cultural", 1, 20, 2, 5, 9, True, "HIGH",
-       "Biggest domestic travel surge — Lunar New Year"),
-    _h("VN", "Vietnam", "Lễ 30/4 – 1/5 (Reunification + Labour Day)", "national", 4, 28, 5, 3, 5, True, "HIGH",
-       "4–5 day holiday block — peak domestic travel"),
-    _h("VN", "Vietnam", "Quốc Khánh 2/9", "national", 9, 1, 9, 4, 4, True, "MEDIUM",
-       "National Day — 4-day weekend"),
+    _h("VN", "Vietnam", "Lunar New Year (Tet)", "cultural", 1, 20, 2, 5, 9, True, "HIGH",
+       "Biggest domestic travel surge — 7–10 day Lunar New Year holiday"),
+    _h("VN", "Vietnam", "Reunification & Labour Day", "national", 4, 28, 5, 3, 5, True, "HIGH",
+       "Apr 30 + May 1 combined — 4–5 day holiday block, peak domestic travel"),
+    _h("VN", "Vietnam", "National Day", "national", 9, 1, 9, 4, 4, True, "MEDIUM",
+       "Sep 2 Independence Day — 4-day weekend"),
 
     # ── Taiwan (TW) ──────────────────────────────────────────────────────
     _h("TW", "Taiwan", "Lunar New Year", "cultural", 1, 20, 2, 5, 9, True, "HIGH",
@@ -45,15 +46,15 @@ HOLIDAY_SEED = [
        "Cluster of national holidays — very high outbound volume"),
     _h("JP", "Japan", "Obon Festival", "cultural", 8, 10, 8, 20, 10, True, "HIGH",
        "7–10 day summer holiday — peak outbound season"),
-    _h("JP", "Japan", "Shōgatsu (New Year)", "cultural", 12, 28, 1, 5, 7, True, "MEDIUM",
+    _h("JP", "Japan", "New Year", "cultural", 12, 28, 1, 5, 7, True, "MEDIUM",
        "Traditional New Year — domestic focus, some outbound"),
     _h("JP", "Japan", "Silver Week", "national", 9, 18, 9, 23, 5, True, "MEDIUM",
        "4–5 day holiday when Equinox falls right"),
 
     # ── South Korea (KR) ─────────────────────────────────────────────────
-    _h("KR", "South Korea", "Seollal (Lunar New Year)", "cultural", 1, 25, 2, 2, 5, True, "HIGH",
+    _h("KR", "South Korea", "Lunar New Year (Seollal)", "cultural", 1, 25, 2, 2, 5, True, "HIGH",
        "5-day Lunar New Year — heavy outbound"),
-    _h("KR", "South Korea", "Chuseok", "cultural", 9, 14, 9, 20, 5, True, "HIGH",
+    _h("KR", "South Korea", "Harvest Festival (Chuseok)", "cultural", 9, 14, 9, 20, 5, True, "HIGH",
        "Korean Thanksgiving — 5-day holiday block"),
     _h("KR", "South Korea", "Summer Vacation", "school_break", 7, 20, 8, 20, 30, True, "HIGH",
        "School summer break — family travel peak"),
@@ -83,8 +84,8 @@ HOLIDAY_SEED = [
        "2-week mid-year break — Southeast Asia popular"),
 
     # ── Thailand (TH) ───────────────────────────────────────────────────
-    _h("TH", "Thailand", "Songkran", "cultural", 4, 12, 4, 16, 5, True, "HIGH",
-       "Thai New Year — peak outbound travel"),
+    _h("TH", "Thailand", "Songkran (Thai New Year)", "cultural", 4, 12, 4, 16, 5, True, "HIGH",
+       "Thai New Year water festival — peak outbound travel"),
     _h("TH", "Thailand", "New Year Holiday", "national", 12, 29, 1, 3, 5, True, "HIGH",
        "5-day New Year block"),
 
@@ -99,7 +100,7 @@ HOLIDAY_SEED = [
        "Year-end school break — strong outbound"),
 
     # ── Malaysia (MY) ───────────────────────────────────────────────────
-    _h("MY", "Malaysia", "Hari Raya Aidilfitri", "religious", 3, 28, 4, 5, 5, True, "HIGH",
+    _h("MY", "Malaysia", "End of Ramadan (Hari Raya)", "religious", 3, 28, 4, 5, 5, True, "HIGH",
        "End of Ramadan — floating, biggest outbound surge"),
     _h("MY", "Malaysia", "School Holiday (Mar)", "school_break", 3, 22, 3, 30, 9, True, "HIGH",
        "Mid-term school break"),
@@ -117,13 +118,13 @@ HOLIDAY_SEED = [
        "Chinese tourist spillover + local holiday"),
 
     # ── India (IN) ──────────────────────────────────────────────────────
-    _h("IN", "India", "Diwali", "religious", 10, 20, 11, 3, 5, True, "MEDIUM",
+    _h("IN", "India", "Diwali (Festival of Lights)", "religious", 10, 20, 11, 3, 5, True, "MEDIUM",
        "Festival of lights — moderate outbound"),
     _h("IN", "India", "Summer School Break", "school_break", 4, 15, 6, 15, 60, True, "HIGH",
        "2-month school break — peak family segment"),
 
     # ── Indonesia (ID) ─────────────────────────────────────────────────
-    _h("ID", "Indonesia", "Idul Fitri (Lebaran)", "religious", 3, 28, 4, 8, 5, True, "HIGH",
+    _h("ID", "Indonesia", "End of Ramadan (Idul Fitri)", "religious", 3, 28, 4, 8, 5, True, "HIGH",
        "End of Ramadan — floating, largest outbound surge"),
     _h("ID", "Indonesia", "Christmas – New Year", "cultural", 12, 20, 1, 5, 14, True, "HIGH",
        "10+ day holiday — strong outbound"),
@@ -149,51 +150,51 @@ HOLIDAY_SEED = [
        "Extended Christmas holiday"),
 
     # ── France (FR) ─────────────────────────────────────────────────────
-    _h("FR", "France", "Grandes Vacances", "school_break", 7, 1, 8, 31, 60, True, "HIGH",
+    _h("FR", "France", "Summer Holiday (Grandes Vacances)", "school_break", 7, 1, 8, 31, 60, True, "HIGH",
        "Full 2 months — highest outbound in Europe"),
-    _h("FR", "France", "Toussaint", "school_break", 10, 19, 11, 3, 14, True, "MEDIUM",
+    _h("FR", "France", "Autumn Break (Toussaint)", "school_break", 10, 19, 11, 3, 14, True, "MEDIUM",
        "2-week autumn school break"),
     _h("FR", "France", "Christmas – New Year", "cultural", 12, 20, 1, 5, 14, True, "HIGH",
        "Extended holiday season"),
 
     # ── Germany (DE) ────────────────────────────────────────────────────
-    _h("DE", "Germany", "Summer Schulferien", "school_break", 6, 20, 9, 10, 60, True, "HIGH",
+    _h("DE", "Germany", "Summer School Holiday", "school_break", 6, 20, 9, 10, 60, True, "HIGH",
        "Varies by state (Jun–Sep) — staggered outbound"),
     _h("DE", "Germany", "Christmas Fortnight", "cultural", 12, 20, 1, 5, 14, True, "HIGH",
        "2-week Christmas break"),
 
     # ── Netherlands (NL) ───────────────────────────────────────────────
-    _h("NL", "Netherlands", "Meivakantie (May Holiday)", "school_break", 4, 26, 5, 4, 9, True, "MEDIUM",
+    _h("NL", "Netherlands", "May Holiday", "school_break", 4, 26, 5, 4, 9, True, "MEDIUM",
        "Spring school break — short trips"),
-    _h("NL", "Netherlands", "Zomervakantie", "school_break", 7, 6, 8, 18, 42, True, "HIGH",
+    _h("NL", "Netherlands", "Summer Holiday", "school_break", 7, 6, 8, 18, 42, True, "HIGH",
        "6-week summer break — long-haul travel peak"),
 
     # ── Spain (ES) ──────────────────────────────────────────────────────
-    _h("ES", "Spain", "Semana Santa", "religious", 3, 28, 4, 5, 7, True, "HIGH",
+    _h("ES", "Spain", "Holy Week (Semana Santa)", "religious", 3, 28, 4, 5, 7, True, "HIGH",
        "Holy Week — 1 week off"),
-    _h("ES", "Spain", "Agosto (August Holiday)", "cultural", 8, 1, 8, 31, 30, True, "HIGH",
+    _h("ES", "Spain", "August Holiday", "cultural", 8, 1, 8, 31, 30, True, "HIGH",
        "Entire month — Spain shuts down for travel"),
 
     # ── Italy (IT) ──────────────────────────────────────────────────────
-    _h("IT", "Italy", "Ferragosto", "cultural", 8, 1, 8, 20, 14, True, "HIGH",
+    _h("IT", "Italy", "Mid-August Holiday (Ferragosto)", "cultural", 8, 1, 8, 20, 14, True, "HIGH",
        "Aug 15 + surrounding 2 weeks — peak outbound"),
     _h("IT", "Italy", "Christmas – New Year", "cultural", 12, 20, 1, 6, 17, True, "HIGH",
        "Extended to Epiphany (Jan 6)"),
 
     # ── Switzerland (CH) ───────────────────────────────────────────────
-    _h("CH", "Switzerland", "Summer Ferien", "school_break", 7, 1, 8, 10, 35, True, "HIGH",
+    _h("CH", "Switzerland", "Summer Holiday", "school_break", 7, 1, 8, 10, 35, True, "HIGH",
        "5-week summer break — high ADR profile"),
     _h("CH", "Switzerland", "Christmas – New Year", "cultural", 12, 20, 1, 5, 14, True, "HIGH",
        "2-week winter holiday"),
 
     # ── Sweden (SE) ─────────────────────────────────────────────────────
-    _h("SE", "Sweden", "Sommarlov (Summer)", "school_break", 6, 10, 8, 20, 56, True, "HIGH",
+    _h("SE", "Sweden", "Summer Holiday", "school_break", 6, 10, 8, 20, 56, True, "HIGH",
        "8-week summer break — Nordics travel heavily"),
     _h("SE", "Sweden", "Christmas – New Year", "cultural", 12, 20, 1, 5, 14, True, "HIGH",
        "2-week winter holiday"),
 
     # ── Denmark (DK) ───────────────────────────────────────────────────
-    _h("DK", "Denmark", "Sommerferie (Summer)", "school_break", 6, 25, 8, 10, 42, True, "HIGH",
+    _h("DK", "Denmark", "Summer Holiday", "school_break", 6, 25, 8, 10, 42, True, "HIGH",
        "6-week summer break"),
     _h("DK", "Denmark", "Autumn Break", "school_break", 10, 12, 10, 19, 7, True, "MEDIUM",
        "1-week autumn school break"),
@@ -201,7 +202,7 @@ HOLIDAY_SEED = [
        "2-week winter holiday"),
 
     # ── Norway (NO) ────────────────────────────────────────────────────
-    _h("NO", "Norway", "Sommerferie (Summer)", "school_break", 6, 20, 8, 15, 56, True, "HIGH",
+    _h("NO", "Norway", "Summer Holiday", "school_break", 6, 20, 8, 15, 56, True, "HIGH",
        "8-week summer break"),
     _h("NO", "Norway", "Christmas – New Year", "cultural", 12, 20, 1, 3, 14, True, "HIGH",
        "2-week winter holiday"),
