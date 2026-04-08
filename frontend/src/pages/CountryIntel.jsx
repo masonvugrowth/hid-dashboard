@@ -409,7 +409,29 @@ function GrowthRow({ item }) {
   );
 }
 
-function ForecastTable({ forecast }) {
+/* Map country name → ISO-2 code for holiday lookup */
+function nameToCode(name) {
+  if (!name) return null;
+  const n = name.trim().toLowerCase();
+  return NAME_TO_2[n] || (n.length === 2 ? n.toUpperCase() : null);
+}
+
+/* Holiday tag for country rows */
+function HolidayTag({ countryName, holidays }) {
+  if (!holidays || !holidays.length) return null;
+  const code = nameToCode(countryName);
+  if (!code) return null;
+  const match = holidays.find(h => h.country_code === code && h.duration_days >= 4);
+  if (!match) return null;
+  return (
+    <span className="px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 text-[10px] font-medium"
+      title={`${match.holiday_name} — ${match.duration_days}d, starts in ${match.days_until}d`}>
+      {match.holiday_name} ({match.days_until}d)
+    </span>
+  );
+}
+
+function ForecastTable({ forecast, holidays }) {
   const countries = forecast?.countries || [];
   const allGov = forecast?.all_gov_countries || [];
   const hasMatches = countries.length > 0;
@@ -432,7 +454,7 @@ function ForecastTable({ forecast }) {
             Below is the full gov visitor ranking for reference.
           </span>
         </div>
-        <GovOnlyTable countries={allGov} monthName={forecast?.month_name} />
+        <GovOnlyTable countries={allGov} monthName={forecast?.month_name} holidays={holidays} />
       </div>
     );
   }
@@ -472,6 +494,7 @@ function ForecastTable({ forecast }) {
                   <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-600 text-[10px] font-medium">
                     Booking #{c.booking_rank}
                   </span>
+                  <HolidayTag countryName={c.source_country} holidays={holidays} />
                 </div>
               </td>
               <td className="px-3 py-2 text-sm text-right font-mono font-bold text-gray-800">
@@ -522,6 +545,7 @@ function ForecastTable({ forecast }) {
               )
             )}
             monthName={forecast?.month_name}
+            holidays={holidays}
           />
         </div>
       )}
@@ -529,7 +553,7 @@ function ForecastTable({ forecast }) {
   );
 }
 
-function GovOnlyTable({ countries, monthName }) {
+function GovOnlyTable({ countries, monthName, holidays }) {
   if (!countries || countries.length === 0) return null;
   const maxV = Math.max(...countries.map((c) => c.visitor_count), 1);
   return (
@@ -556,6 +580,7 @@ function GovOnlyTable({ countries, monthName }) {
                     Gov #{c.gov_rank}
                   </span>
                 )}
+                <HolidayTag countryName={c.source_country} holidays={holidays} />
               </div>
             </td>
             <td className="px-3 py-2 text-sm text-right font-mono font-bold text-gray-800">
@@ -585,7 +610,7 @@ const TABS = [
   { key: "next_2_months", label: "Next 2 Months" },
 ];
 
-function BranchSection({ branch }) {
+function BranchSection({ branch, holidays }) {
   const [collapsed, setCollapsed] = useState(false);
   const [tab, setTab] = useState("current");
   const allItems = [...(branch.top_volume || []), ...(branch.top_growth || [])];
@@ -720,7 +745,7 @@ function BranchSection({ branch }) {
                   {forecast.next_month?.month_name || "Next Month"} — Gov Forecast + Top Bookings
                 </span>
               </div>
-              <ForecastTable forecast={forecast.next_month} />
+              <ForecastTable forecast={forecast.next_month} holidays={holidays} />
             </div>
           )}
 
@@ -731,7 +756,7 @@ function BranchSection({ branch }) {
                   {forecast.next_2_months?.month_name || "+2 Months"} — Gov Forecast + Top Bookings
                 </span>
               </div>
-              <ForecastTable forecast={forecast.next_2_months} />
+              <ForecastTable forecast={forecast.next_2_months} holidays={holidays} />
             </div>
           )}
         </>
@@ -762,11 +787,12 @@ export default function CountryIntel() {
       .finally(() => setLoading(false));
   }, [selected, isAll]);
 
-  // Upcoming holiday alerts
-  const [holidayAlerts, setHolidayAlerts] = useState([]);
+  // Upcoming holiday alerts (full list for tags, top 5 for banner)
+  const [allHolidays, setAllHolidays] = useState([]);
   useEffect(() => {
-    getUpcomingWindows().then(d => setHolidayAlerts((d || []).slice(0, 5))).catch(() => {});
+    getUpcomingWindows().then(d => setAllHolidays(d || [])).catch(() => {});
   }, []);
+  const holidayAlerts = allHolidays.slice(0, 5);
 
   const allItems = data.flatMap((b) => [
     ...(b.top_volume || []),
@@ -841,7 +867,7 @@ export default function CountryIntel() {
         <div className="text-center py-16 text-gray-400">No reservation data found.</div>
       )}
       {!loading && !error && data.map((branch) => (
-        <BranchSection key={branch.branch_id} branch={branch} />
+        <BranchSection key={branch.branch_id} branch={branch} holidays={allHolidays} />
       ))}
     </div>
   );
