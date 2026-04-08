@@ -550,7 +550,7 @@ def debug_country_insights(
     }
 
     with httpx.Client(timeout=60) as client:
-        r1 = client.post("https://api.cloudbeds.com/insights/v1/reports", headers=headers, json=payload)
+        r1 = client.post("https://api.cloudbeds.com/datainsights/v1.1/reports", headers=headers, json=payload)
         if r1.status_code not in (200, 201):
             return _envelope({
                 "step": "create_report", "status": r1.status_code,
@@ -560,11 +560,11 @@ def debug_country_insights(
         report_id = r1.json().get("id")
         try:
             r2 = client.get(
-                f"https://api.cloudbeds.com/insights/v1/reports/{report_id}/data",
+                f"https://api.cloudbeds.com/datainsights/v1.1/reports/{report_id}/data",
                 headers=headers, params={"property_ids": property_id},
             )
         finally:
-            client.delete(f"https://api.cloudbeds.com/insights/v1/reports/{report_id}", headers=headers)
+            client.delete(f"https://api.cloudbeds.com/datainsights/v1.1/reports/{report_id}", headers=headers)
 
         return _envelope({
             "step": "fetch_data",
