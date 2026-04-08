@@ -5,12 +5,10 @@
  */
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import axios from "axios";
-import { Link } from "react-router-dom";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 import KPICard from "../components/KPICard";
 import CountryBadge from "../components/CountryBadge";
 import OCCHeatmap from "../components/OCCHeatmap";
-import { getUpcomingWindows } from "../api/holidayIntel";
 
 const now        = new Date();
 const YEAR       = now.getFullYear();
@@ -330,37 +328,6 @@ function SingleBranchView({ branch }) {
   );
 }
 
-/* ── Campaign Alerts widget (Holiday Intelligence) ────────────────────── */
-function CampaignAlerts() {
-  const [alerts, setAlerts] = useState([]);
-  useEffect(() => {
-    getUpcomingWindows().then(d => setAlerts((d || []).slice(0, 3))).catch(() => {});
-  }, []);
-  if (!alerts.length) return null;
-  const peakCount = alerts.filter(a => a.travel_propensity === "HIGH").length;
-  return (
-    <div className="bg-white rounded-xl border p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-gray-800">Campaign Alerts</h3>
-        <Link to="/holiday-intel" className="text-xs text-indigo-600 hover:underline">View all</Link>
-      </div>
-      {peakCount > 0 && (
-        <p className="text-xs text-orange-600 font-medium mb-2">{peakCount} market{peakCount > 1 ? "s" : ""} peaking soon</p>
-      )}
-      <div className="space-y-2">
-        {alerts.map((a, i) => (
-          <div key={i} className="flex items-center justify-between text-xs border-b border-gray-100 pb-1.5">
-            <span className="text-gray-700 font-medium">{a.country_name} — {a.holiday_name}</span>
-            <span className={`font-bold ${a.days_until <= 14 ? "text-red-600" : a.days_until <= 30 ? "text-orange-600" : "text-gray-500"}`}>
-              {a.days_until}d
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 export default function Home() {
   const { isAll, currentBranch } = useBranch();
   const [allData, setAllData]       = useState([]);
@@ -383,7 +350,6 @@ export default function Home() {
         </h1>
         <p className="text-xs text-gray-400 mt-0.5">{MONTH_NAME}</p>
       </div>
-      <CampaignAlerts />
       {isAll
         ? <AllBranchesTable data={allData} loading={allLoading} />
         : currentBranch

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { getSeasonMatrix, getCountryHolidays, getUpcomingWindows } from "../api/holidayIntel";
+import { getSeasonMatrix, getCountryHolidays } from "../api/holidayIntel";
 
 /* ── Country metadata ──────────────────────────────────────────────────── */
 const ALL_COUNTRIES = [
@@ -125,18 +125,18 @@ function CountrySearch({ value, onChange }) {
 /* ═══════════════════════════════════════════════════════════════════════ */
 export default function HolidayIntel() {
   const [matrix, setMatrix] = useState([]);
-  const [upcoming, setUpcoming] = useState([]);
   const [loading, setLoading] = useState(true);
 
   // Filter + expand state
   const [visibleCountries, setVisibleCountries] = useState(ALL_COUNTRIES);
   const [expandedCountry, setExpandedCountry] = useState(null);
+  const [expandedMonth, setExpandedMonth] = useState(null);   // null = show all, 1-12 = filter
   const [expandedHolidays, setExpandedHolidays] = useState([]);
 
   // ── Load initial data ─────────────────────────────────────────────
   useEffect(() => {
-    Promise.all([getSeasonMatrix(), getUpcomingWindows()])
-      .then(([m, u]) => { setMatrix(m); setUpcoming(u); })
+    getSeasonMatrix()
+      .then(m => setMatrix(m))
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
@@ -156,7 +156,30 @@ export default function HolidayIntel() {
 
   const toggleCountry = (code) => {
     setExpandedCountry(prev => prev === code ? null : code);
+    setExpandedMonth(null);
   };
+
+  const clickMonthCell = (code, month) => {
+    if (expandedCountry === code && expandedMonth === month) {
+      setExpandedCountry(null);
+      setExpandedMonth(null);
+    } else {
+      setExpandedCountry(code);
+      setExpandedMonth(month);
+    }
+  };
+
+  // Filter holidays by selected month (holiday spans month_start to month_end)
+  const filteredHolidays = useMemo(() => {
+    if (!expandedMonth) return expandedHolidays;
+    return expandedHolidays.filter(h => {
+      if (h.month_end >= h.month_start) {
+        return expandedMonth >= h.month_start && expandedMonth <= h.month_end;
+      }
+      // Wraps around year (e.g. Dec–Feb)
+      return expandedMonth >= h.month_start || expandedMonth <= h.month_end;
+    });
+  }, [expandedHolidays, expandedMonth]);
 
   const currentMonth = new Date().getMonth() + 1;
 
@@ -171,37 +194,6 @@ export default function HolidayIntel() {
         <h1 className="text-2xl font-bold text-gray-900">Holiday Intelligence</h1>
         <p className="text-sm text-gray-500 mt-1">Country travel season planner — click any country to see holiday details</p>
       </div>
-
-      {/* ═══ Upcoming Windows (Alert Panel) ════════════════════════════ */}
-      {upcoming.length > 0 && (
-        <section className="bg-white rounded-lg shadow p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold text-gray-800">Upcoming Windows <span className="text-sm font-normal text-gray-400">(next 60 days)</span></h2>
-            <span className="bg-red-100 text-red-700 text-xs font-bold px-2 py-1 rounded-full">{upcoming.length} alerts</span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-            {upcoming.map((w,i) => (
-              <div key={i} className="border border-gray-200 rounded-lg p-3 hover:shadow-md transition-shadow cursor-pointer"
-                onClick={() => { setExpandedCountry(w.country_code); }}>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-lg">{FLAG[w.country_code]}</span>
-                  <span className="font-semibold text-gray-800 text-sm">{COUNTRY_NAME[w.country_code]}</span>
-                </div>
-                <p className="font-medium text-gray-700 text-sm">{w.holiday_name}</p>
-                <p className="text-xs text-gray-500 mt-1">
-                  {MONTHS[w.month_start-1]}{w.day_start ? ` ${w.day_start}` : ""} – {MONTHS[w.month_end-1]}{w.day_end ? ` ${w.day_end}` : ""} ({w.duration_days}d)
-                </p>
-                <div className="flex items-center justify-between mt-2">
-                  <PropBadge level={w.travel_propensity} />
-                  <span className={`text-xs font-bold ${w.days_until <= 14 ? "text-red-600" : w.days_until <= 30 ? "text-orange-600" : "text-gray-600"}`}>
-                    {w.days_until === 0 ? "Today!" : `in ${w.days_until}d`}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
 
       {/* ═══ Season Heatmap ════════════════════════════════════════════ */}
       <section className="bg-white rounded-lg shadow p-5">
@@ -236,10 +228,12 @@ export default function HolidayIntel() {
                       {Array.from({length:12},(_,i)=>i+1).map(m => {
                         const cell = matrixMap[`${code}_${m}`];
                         const days = cell?.long_holiday_days || 0;
+                        const isMonthSelected = isExpanded && expandedMonth === m;
                         return (
                           <td key={m} className="text-center py-1.5 px-0.5"
-                            title={cell ? `${days}d holidays | ${(cell.holiday_names||[]).join(", ")}` : "No holidays"}>
-                            <div className={`mx-auto w-11 py-1 rounded text-[11px] font-semibold ${durationColor(days)}`}>
+                            title={cell ? `${days}d holidays | ${(cell.holiday_names||[]).join(", ")}` : "No holidays"}
+                            onClick={(e) => { e.stopPropagation(); if (days > 0) clickMonthCell(code, m); }}>
+                            <div className={`mx-auto w-11 py-1 rounded text-[11px] font-semibold transition-all ${durationColor(days)} ${days > 0 ? "hover:ring-2 hover:ring-indigo-400" : ""} ${isMonthSelected ? "ring-2 ring-indigo-600" : ""}`}>
                               {durationLabel(days) || "\u2014"}
                             </div>
                           </td>
@@ -255,24 +249,24 @@ export default function HolidayIntel() {
                             <p className="text-xs text-gray-400 animate-pulse">Loading holidays...</p>
                           ) : (
                             <div>
-                              {/* 12-month timeline bar */}
-                              <div className="flex gap-0.5 mb-3">
-                                {Array.from({length:12},(_,i)=>i+1).map(m => {
-                                  const cell = matrixMap[`${code}_${m}`];
-                                  const days = cell?.long_holiday_days || 0;
-                                  return (
-                                    <div key={m} className="flex-1 text-center">
-                                      <div className={`h-5 rounded-sm flex items-center justify-center text-[10px] font-semibold ${durationColor(days)}`}>
-                                        {MONTHS[m-1]}
-                                      </div>
-                                    </div>
-                                  );
-                                })}
+                              {/* Month filter hint */}
+                              <div className="flex items-center gap-2 mb-3">
+                                {expandedMonth ? (
+                                  <>
+                                    <span className="text-xs text-indigo-700 font-medium">
+                                      Showing holidays in {MONTHS[expandedMonth-1]} ({filteredHolidays.length})
+                                    </span>
+                                    <button onClick={(e) => { e.stopPropagation(); setExpandedMonth(null); }}
+                                      className="text-[10px] text-indigo-600 hover:underline">Show all</button>
+                                  </>
+                                ) : (
+                                  <span className="text-xs text-gray-500">All holidays ({expandedHolidays.length}) — click a month cell above to filter</span>
+                                )}
                               </div>
 
                               {/* Holiday cards */}
                               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
-                                {expandedHolidays.map(h => (
+                                {filteredHolidays.map(h => (
                                   <div key={h.id} className="bg-white border border-gray-200 rounded-lg p-2.5">
                                     <div className="flex items-start justify-between mb-1">
                                       <h3 className="font-semibold text-gray-800 text-xs leading-tight">{h.holiday_name}</h3>
@@ -293,6 +287,9 @@ export default function HolidayIntel() {
                                     {h.notes && <p className="text-[10px] text-gray-400 mt-1">{h.notes}</p>}
                                   </div>
                                 ))}
+                                {filteredHolidays.length === 0 && (
+                                  <p className="text-xs text-gray-400 col-span-full py-2">No holidays in {MONTHS[expandedMonth-1]}.</p>
+                                )}
                               </div>
                             </div>
                           )}
