@@ -425,8 +425,8 @@ function HolidayTag({ countryName, holidays }) {
   if (!match) return null;
   return (
     <span className="px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 text-[10px] font-medium"
-      title={`${match.holiday_name} — ${match.duration_days}d, starts in ${match.days_until}d`}>
-      {match.holiday_name} ({match.days_until}d)
+      title={`${match.holiday_name} — ${match.duration_days} days off, starts in ${match.days_until}d`}>
+      {match.holiday_name} ({match.duration_days}d off)
     </span>
   );
 }
