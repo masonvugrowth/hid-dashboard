@@ -6,6 +6,247 @@ import { Link } from "react-router-dom";
 import axios from "axios";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 
+// ── Period helpers ──────────────────────────────────────────────────────────
+
+function toISO(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function getPeriodRange(key) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const to = new Date(today);
+  let from;
+  switch (key) {
+    case "7d":
+      from = new Date(today); from.setDate(from.getDate() - 6); break;
+    case "30d":
+      from = new Date(today); from.setDate(from.getDate() - 29); break;
+    case "90d":
+      from = new Date(today); from.setDate(from.getDate() - 89); break;
+    case "this_month":
+      from = new Date(today.getFullYear(), today.getMonth(), 1); break;
+    case "last_month": {
+      const lm = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      from = lm;
+      to.setTime(new Date(today.getFullYear(), today.getMonth(), 0).getTime());
+      break;
+    }
+    case "ytd":
+      from = new Date(today.getFullYear(), 0, 1); break;
+    default:
+      from = new Date(today); from.setDate(from.getDate() - 29);
+  }
+  return { from: toISO(from), to: toISO(to) };
+}
+
+const PERIOD_OPTIONS = [
+  { key: "7d", label: "7 Days" },
+  { key: "30d", label: "30 Days" },
+  { key: "90d", label: "90 Days" },
+  { key: "this_month", label: "This Month" },
+  { key: "last_month", label: "Last Month" },
+  { key: "ytd", label: "Year to Date" },
+];
+
+// ── KPI Achievement Component ───────────────────────────────────────────────
+
+function KPIAchievement({ branchId }) {
+  const [period, setPeriod] = useState("90d");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const { from, to } = getPeriodRange(period);
+    setLoading(true);
+    const params = `date_from=${from}&date_to=${to}` + (branchId ? `&branch_id=${branchId}` : "");
+    axios.get("/api/kpi/period-achievement?" + params)
+      .then(r => {
+        const rows = r.data.data || [];
+        if (branchId) {
+          setData(rows[0] || null);
+        } else {
+          if (!rows.length) { setData(null); return; }
+          const agg = {
+            actual_revenue: 0, target_revenue: 0, daily_goal: 0, daily_actual: 0,
+            total_days: rows[0].total_days, date_from: rows[0].date_from, date_to: rows[0].date_to,
+            branches: rows,
+          };
+          for (const r of rows) {
+            agg.actual_revenue += r.actual_revenue;
+            agg.target_revenue += r.target_revenue;
+            agg.daily_goal += r.daily_goal;
+            agg.daily_actual += r.daily_actual;
+          }
+          agg.achievement_pct = agg.target_revenue > 0 ? agg.actual_revenue / agg.target_revenue : null;
+          setData(agg);
+        }
+      })
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, [period, branchId]);
+
+  const fmtDate = (s) => {
+    const d = new Date(s + "T00:00:00");
+    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" });
+  };
+
+  const pct = data?.achievement_pct;
+  const pctDisplay = pct != null ? (pct * 100).toFixed(1) + "%" : "\u2014";
+  const pctColor =
+    pct == null ? "text-gray-400" :
+    pct >= 1.0  ? "text-green-600" :
+    pct >= 0.8  ? "text-yellow-600" :
+    pct >= 0.6  ? "text-orange-600" :
+                  "text-red-600";
+  const barColor =
+    pct == null ? "bg-gray-300" :
+    pct >= 1.0  ? "bg-green-500" :
+    pct >= 0.8  ? "bg-yellow-400" :
+    pct >= 0.6  ? "bg-orange-400" :
+                  "bg-red-500";
+  const barWidth = pct != null ? Math.min(pct * 100, 100).toFixed(1) + "%" : "0%";
+
+  const cur = data?.currency || (data?.branches?.[0]?.currency) || "";
+  const fmtVal = (v) => {
+    if (v == null) return "\u2014";
+    const sym = CURRENCY_SYMBOLS[cur] || cur || "";
+    return sym + new Intl.NumberFormat("en").format(Math.round(v));
+  };
+
+  const fmtBranch = (v, c) => {
+    if (v == null) return "\u2014";
+    const sym = CURRENCY_SYMBOLS[c] || c || "";
+    return sym + new Intl.NumberFormat("en").format(Math.round(v));
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+      <div className="px-5 py-4 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <div className="w-2.5 h-2.5 rounded-full bg-indigo-500" />
+          <h2 className="font-semibold text-gray-800">Goal Achievement</h2>
+          {data && (
+            <span className="text-xs text-gray-400 ml-1">
+              {fmtDate(data.date_from)} – {fmtDate(data.date_to)}
+            </span>
+          )}
+        </div>
+        <div className="flex gap-1">
+          {PERIOD_OPTIONS.map(opt => (
+            <button
+              key={opt.key}
+              onClick={() => setPeriod(opt.key)}
+              className={
+                "px-3 py-1.5 text-xs font-medium rounded-lg transition-colors " +
+                (period === opt.key
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "bg-gray-50 text-gray-600 hover:bg-gray-100 border border-gray-200")
+              }
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="px-5 py-5">
+        {loading ? (
+          <div className="text-center py-4 text-gray-400 animate-pulse">Loading...</div>
+        ) : !data ? (
+          <div className="text-center py-4 text-gray-400">No data available</div>
+        ) : data.branches ? (
+          <div className="space-y-4">
+            {data.branches.map(row => {
+              const rPct = row.achievement_pct;
+              const rPctDisplay = rPct != null ? (rPct * 100).toFixed(1) + "%" : "\u2014";
+              const rPctColor =
+                rPct == null ? "text-gray-400" :
+                rPct >= 1.0  ? "text-green-600" :
+                rPct >= 0.8  ? "text-yellow-600" :
+                rPct >= 0.6  ? "text-orange-600" :
+                               "text-red-600";
+              const rBarColor =
+                rPct == null ? "bg-gray-300" :
+                rPct >= 1.0  ? "bg-green-500" :
+                rPct >= 0.8  ? "bg-yellow-400" :
+                rPct >= 0.6  ? "bg-orange-400" :
+                               "bg-red-500";
+              const rBarW = rPct != null ? Math.min(rPct * 100, 100).toFixed(1) + "%" : "0%";
+              const dailyDiff = row.daily_goal > 0
+                ? ((row.daily_actual - row.daily_goal) / row.daily_goal * 100).toFixed(1)
+                : null;
+
+              return (
+                <div key={row.branch_id}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm font-medium text-gray-700">{row.branch_name}</span>
+                    <span className={"text-lg font-bold " + rPctColor}>{rPctDisplay}</span>
+                  </div>
+                  <div className="flex items-baseline gap-2 mb-2">
+                    <span className="text-xl font-bold text-gray-800">
+                      {fmtBranch(row.actual_revenue, row.currency)}
+                    </span>
+                    <span className="text-sm text-gray-400">
+                      / {fmtBranch(row.target_revenue, row.currency)}
+                    </span>
+                  </div>
+                  <div className="h-2 bg-gray-100 rounded-full overflow-hidden mb-1.5">
+                    <div className={"h-full rounded-full transition-all duration-500 " + rBarColor} style={{ width: rBarW }} />
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    Daily Goal {fmtBranch(row.daily_goal, row.currency)}
+                    {" \u00b7 "}
+                    Daily Actual {fmtBranch(row.daily_actual, row.currency)}
+                    {dailyDiff != null && (
+                      <span className={Number(dailyDiff) >= 0 ? "text-green-600 ml-1" : "text-red-500 ml-1"}>
+                        ({Number(dailyDiff) >= 0 ? "+" : ""}{dailyDiff}%)
+                      </span>
+                    )}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <span className="text-2xl font-bold text-gray-800">
+                  {fmtVal(data.actual_revenue)}
+                </span>
+                <span className="text-sm text-gray-400 ml-2">
+                  / {fmtVal(data.target_revenue)}
+                </span>
+              </div>
+              <span className={"text-2xl font-bold " + pctColor}>{pctDisplay}</span>
+            </div>
+            <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden mb-3">
+              <div className={"h-full rounded-full transition-all duration-500 " + barColor} style={{ width: barWidth }} />
+            </div>
+            <p className="text-xs text-gray-400">
+              Daily Goal {fmtVal(data.daily_goal)}
+              {" \u00b7 "}
+              Daily Actual {fmtVal(data.daily_actual)}
+              {data.daily_goal > 0 && (() => {
+                const diff = ((data.daily_actual - data.daily_goal) / data.daily_goal * 100).toFixed(1);
+                return (
+                  <span className={Number(diff) >= 0 ? "text-green-600 ml-1" : "text-red-500 ml-1"}>
+                    ({Number(diff) >= 0 ? "+" : ""}{diff}%)
+                  </span>
+                );
+              })()}
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const CARDS = [
   { to: "/performance/daily", title: "Daily Brief", desc: "OCC%, Revenue, ADR, RevPAR per branch", color: "bg-indigo-50 border-indigo-200", icon: "\uD83D\uDCC5" },
   { to: "/performance/weekly", title: "Weekly Brief", desc: "Revenue trend, cancellation %, OTA mix", color: "bg-emerald-50 border-emerald-200", icon: "\uD83D\uDCCA" },
@@ -36,7 +277,7 @@ function hitBg(pct) {
 }
 
 export default function Performance() {
-  const { isAll, selected } = useBranch();
+  const { isAll, selected, currentBranch } = useBranch();
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(currentYear);
   const [grid, setGrid] = useState(null);
@@ -83,6 +324,9 @@ export default function Performance() {
           </Link>
         ))}
       </div>
+
+      {/* Goal Achievement — period-based KPI tracker */}
+      <KPIAchievement branchId={isAll ? null : selected} />
 
       {/* KPI Target vs Actual Grid */}
       <div className="space-y-3">
