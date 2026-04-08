@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import { useBranch } from "../context/BranchContext";
+import { getUpcomingWindows } from "../api/holidayIntel";
 
 const fmt = (n) =>
   n == null ? "—" : new Intl.NumberFormat("en").format(Math.round(n));
@@ -760,6 +762,12 @@ export default function CountryIntel() {
       .finally(() => setLoading(false));
   }, [selected, isAll]);
 
+  // Upcoming holiday alerts
+  const [holidayAlerts, setHolidayAlerts] = useState([]);
+  useEffect(() => {
+    getUpcomingWindows().then(d => setHolidayAlerts((d || []).slice(0, 5))).catch(() => {});
+  }, []);
+
   const allItems = data.flatMap((b) => [
     ...(b.top_volume || []),
     ...(b.top_growth || []),
@@ -777,6 +785,28 @@ export default function CountryIntel() {
           Top guest countries × KOL coverage × Paid Ads coverage
         </p>
       </div>
+
+      {/* Upcoming Holiday Alerts */}
+      {holidayAlerts.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold text-amber-800">Upcoming Holidays</h3>
+            <Link to="/holiday-intel" className="text-xs text-indigo-600 hover:underline">Full calendar</Link>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {holidayAlerts.map((a, i) => (
+              <span key={i} className="inline-flex items-center gap-1 bg-white border border-amber-200 rounded px-2 py-1 text-xs">
+                <span className="font-medium text-gray-700">{a.country_name}</span>
+                <span className="text-gray-400">—</span>
+                <span className="text-gray-600">{a.holiday_name}</span>
+                <span className={`font-bold ml-1 ${a.days_until <= 14 ? "text-red-600" : a.days_until <= 30 ? "text-orange-600" : "text-gray-500"}`}>
+                  {a.days_until}d
+                </span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {!loading && data.length > 0 && (
         <div className="grid grid-cols-4 gap-3">

@@ -298,6 +298,25 @@ def setup_scheduler(app):
             replace_existing=True,
         )
 
+        # Nightly Holiday Intelligence index refresh at 1:00am (before Cloudbeds sync)
+        def _holiday_index_refresh_job():
+            from app.services.holiday_intel import recompute_season_index
+            db = SessionLocal()
+            try:
+                count = recompute_season_index(db)
+                logger.info("Holiday index refresh complete — %d cells", count)
+            except Exception:
+                logger.exception("Holiday index refresh failed")
+            finally:
+                db.close()
+
+        scheduler.add_job(
+            _holiday_index_refresh_job,
+            trigger=CronTrigger(hour=1, minute=0),
+            id="nightly_holiday_index_refresh",
+            replace_existing=True,
+        )
+
         scheduler.start()
         logger.info(
             "Scheduler started — "
@@ -307,7 +326,8 @@ def setup_scheduler(app):
             "Insights refresh (14-day lookback) at 09:00 & 14:00 ICT, "
             "verdict sync at 03:30 ICT, "
             "email stats at 04:00 ICT, "
-            "GHL email sync at 05:00 ICT"
+            "GHL email sync at 05:00 ICT, "
+            "holiday index refresh at 01:00 ICT"
         )
 
     @app.on_event("shutdown")

@@ -25,6 +25,7 @@ const NAV = [
       { to: "/kpi",           label: "KPI Dashboard", icon: "◎" },
       { to: "/kpi-targets",   label: "Set Targets",   icon: "◌" },
       { to: "/country-intel", label: "Country Intel", icon: "◍" },
+      { to: "/holiday-intel", label: "Holiday Intel", icon: "◑" },
     ],
   },
   {

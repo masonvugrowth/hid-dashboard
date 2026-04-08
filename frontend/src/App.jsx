@@ -35,6 +35,9 @@ import MarketingActivity from "./pages/MarketingActivity";
 // Government Visitor Data
 import GovVisitorData from "./pages/GovVisitorData";
 
+// Phase 5 — Holiday Intelligence
+import HolidayIntel from "./pages/HolidayIntel";
+
 export default function App() {
   return (
     <AuthProvider>
@@ -94,6 +97,9 @@ function AppRoutes() {
 
             {/* Marketing Activity (consolidated) */}
             <Route path="/marketing-activity" element={<MarketingActivity />} />
+
+            {/* Phase 5 — Holiday Intelligence */}
+            <Route path="/holiday-intel" element={<HolidayIntel />} />
 
             {/* Settings & Admin */}
             <Route path="/settings" element={<Settings />} />

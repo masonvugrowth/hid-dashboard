@@ -17,6 +17,7 @@ from app.routers import crm
 from app.routers import email_marketing
 from app.routers import marketing_activity
 from app.routers import gov_visitor
+from app.routers import holiday_intel
 from app.scheduler import setup_scheduler
 from app.database import SessionLocal
 from app.models.branch import Branch
@@ -24,7 +25,7 @@ from app.models.branch import Branch
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="HiD — Hotel Intelligence Dashboard", version="4.1.0")
+app = FastAPI(title="HiD — Hotel Intelligence Dashboard", version="5.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -74,6 +75,9 @@ app.include_router(marketing_activity.router, prefix="/api/marketing-activity", 
 
 # Government Visitor Data
 app.include_router(gov_visitor.router, prefix="/api/gov-visitor", tags=["Government Visitor Data"])
+
+# Phase 5 — Holiday Intelligence
+app.include_router(holiday_intel.router)
 
 setup_scheduler(app)
 
