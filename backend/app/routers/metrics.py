@@ -412,16 +412,13 @@ def get_country_yoy_insights(
     # Aggregate across branches
     current_totals: dict[str, dict] = {}   # country -> {nights, revenue, guests}
     prev_totals: dict[str, dict] = {}
-    _debug_branches = []
 
     for branch in branches:
         pid = branch.cloudbeds_property_id
         if not pid:
-            _debug_branches.append({"name": branch.name, "status": "skipped_no_pid"})
             continue
         api_key = settings.get_api_key_for_property(str(pid))
         if not api_key:
-            _debug_branches.append({"name": branch.name, "pid": str(pid), "status": "skipped_no_api_key"})
             continue
 
         # Fetch current year month
@@ -429,7 +426,6 @@ def get_country_yoy_insights(
             curr = fetch_country_insights(str(pid), api_key, year, month)
         except Exception as exc:
             logger.warning("Country insights current failed %s: %s", branch.name, exc)
-            _debug_branches.append({"name": branch.name, "pid": str(pid), "status": f"error_current: {exc}"})
             curr = {}
 
         # Fetch same month last year
@@ -438,11 +434,6 @@ def get_country_yoy_insights(
         except Exception as exc:
             logger.warning("Country insights prev failed %s: %s", branch.name, exc)
             prev = {}
-
-        _debug_branches.append({
-            "name": branch.name, "pid": str(pid), "status": "ok",
-            "current_countries": len(curr), "prev_countries": len(prev),
-        })
 
         # Merge into totals
         for country, data in curr.items():
@@ -491,88 +482,8 @@ def get_country_yoy_insights(
         "year": year,
         "month": month,
         "countries": rows,
-        "_debug": _debug_branches,
     })
 
-
-# ── DEBUG: Raw Cloudbeds Insights test for a single property ──────────────────
-
-@router.get("/country-yoy-debug")
-def debug_country_insights(
-    property_id: str = Query(...),
-    year: int = Query(None),
-    month: int = Query(None, ge=1, le=12),
-):
-    """Temporary debug endpoint — test Cloudbeds Insights API raw response."""
-    import httpx, calendar
-    from app.config import settings
-
-    today = date.today()
-    if year is None:
-        year = today.year
-    if month is None:
-        month = today.month
-
-    api_key = settings.get_api_key_for_property(property_id)
-    if not api_key:
-        return _envelope({"error": f"No API key found for property {property_id}",
-                          "map_keys": list(settings.property_api_key_map.keys())})
-
-    first_day = f"{year}-{month:02d}-01"
-    last_day_num = calendar.monthrange(year, month)[1]
-    last_day = f"{year}-{month:02d}-{last_day_num:02d}"
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "X-PROPERTY-ID": property_id,
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "title": f"debug-country-{year}{month:02d}",
-        "dataset_id": 3,
-        "property_id": property_id,
-        "property_ids": [property_id],
-        "columns": [
-            {"cdf": {"type": "default", "column": "room_nights_count"}, "metrics": ["sum"]},
-            {"cdf": {"type": "default", "column": "room_revenue_total_amount"}, "metrics": ["sum"]},
-            {"cdf": {"type": "default", "column": "guest_count"}, "metrics": ["sum"]},
-        ],
-        "group_rows": [
-            {"cdf": {"type": "default", "column": "primary_guest_residence_country"}},
-        ],
-        "filters": {
-            "and": [
-                {"cdf": {"type": "default", "column": "checkin_date"}, "operator": "greater_than_or_equal", "value": first_day},
-                {"cdf": {"type": "default", "column": "checkin_date"}, "operator": "less_than_or_equal", "value": last_day},
-            ]
-        },
-    }
-
-    with httpx.Client(timeout=60) as client:
-        r1 = client.post("https://api.cloudbeds.com/datainsights/v1.1/reports", headers=headers, json=payload)
-        if r1.status_code not in (200, 201):
-            return _envelope({
-                "step": "create_report", "status": r1.status_code,
-                "body": r1.text[:1000], "payload_sent": payload,
-            })
-
-        report_id = r1.json().get("id")
-        try:
-            r2 = client.get(
-                f"https://api.cloudbeds.com/datainsights/v1.1/reports/{report_id}/data",
-                headers=headers, params={"property_ids": property_id},
-            )
-        finally:
-            client.delete(f"https://api.cloudbeds.com/datainsights/v1.1/reports/{report_id}", headers=headers)
-
-        return _envelope({
-            "step": "fetch_data",
-            "create_status": r1.status_code,
-            "data_status": r2.status_code,
-            "raw_response": r2.json() if r2.status_code == 200 else r2.text[:1000],
-            "report_id": report_id,
-        })
 
 
 # ── Country Reservations Trend (7 weeks / 7 months, top 15) ──────────────────
