@@ -1,7 +1,7 @@
 /**
  * Country Reservations Trend — Top 15 countries over 7 weeks / 7 months.
  * + Compare to Last Year (via Cloudbeds Insights API).
- * Stacked area chart + summary table.
+ * + Branch Compare: side-by-side country data across multiple branches.
  */
 import { useEffect, useState, useMemo } from "react";
 import axios from "axios";
@@ -17,6 +17,14 @@ const COLORS = [
   "#8b5cf6", "#14b8a6", "#e11d48", "#0ea5e9", "#d946ef",
 ];
 
+const BRANCH_COLORS = [
+  { text: "text-gray-900", header: "text-gray-600", headerSub: "text-gray-400", cell: "text-gray-900", bg: "" },
+  { text: "text-indigo-700", header: "text-indigo-600", headerSub: "text-indigo-400", cell: "text-indigo-700", bg: "bg-indigo-50/30 border-indigo-200" },
+  { text: "text-emerald-700", header: "text-emerald-600", headerSub: "text-emerald-400", cell: "text-emerald-700", bg: "bg-emerald-50/30 border-emerald-200" },
+  { text: "text-amber-700", header: "text-amber-600", headerSub: "text-amber-400", cell: "text-amber-700", bg: "bg-amber-50/30 border-amber-200" },
+  { text: "text-rose-700", header: "text-rose-600", headerSub: "text-rose-400", cell: "text-rose-700", bg: "bg-rose-50/30 border-rose-200" },
+];
+
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 function fmtNum(val) {
@@ -28,27 +36,29 @@ export default function PerformanceCountry() {
   const { isAll, selected, branches } = useBranch();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState("monthly"); // weekly | monthly | compare
+  const [view, setView] = useState("monthly"); // weekly | monthly | compare | branch
   const [filterCountry, setFilterCountry] = useState("");
 
-  // Compare view state
+  // Compare (YoY) view state
   const now = new Date();
   const [cmpYear, setCmpYear] = useState(now.getFullYear());
   const [cmpMonth, setCmpMonth] = useState(now.getMonth() + 1);
   const [cmpData, setCmpData] = useState(null);
   const [cmpLoading, setCmpLoading] = useState(false);
 
-  // Branch compare state
-  const [compareBranch, setCompareBranch] = useState("");
-  const [compareBranchData, setCompareBranchData] = useState(null);
+  // Branch compare state — multi-select
+  const [selectedBranches, setSelectedBranches] = useState([]);
+  const [branchYear, setBranchYear] = useState(now.getFullYear());
+  const [branchMonth, setBranchMonth] = useState(now.getMonth() + 1);
+  const [branchDataMap, setBranchDataMap] = useState({}); // { branchId: apiData }
+  const [branchLoading, setBranchLoading] = useState(false);
 
-  // Reset compareBranch when switching away from compare view or to "all"
+  // When entering branch view, auto-select current branch if on a specific one
   useEffect(() => {
-    if (view !== "compare" || isAll) {
-      setCompareBranch("");
-      setCompareBranchData(null);
+    if (view === "branch" && !isAll && selected && selectedBranches.length === 0) {
+      setSelectedBranches([selected]);
     }
-  }, [view, isAll]);
+  }, [view, isAll, selected]);
 
   // Load trend data (weekly/monthly)
   const loadTrend = () => {
@@ -62,74 +72,69 @@ export default function PerformanceCountry() {
       .finally(() => setLoading(false));
   };
 
-  // Load compare data (Cloudbeds Insights API)
+  // Load YoY compare data
   const loadCompare = () => {
     setCmpLoading(true);
     const params = { year: cmpYear, month: cmpMonth };
     if (!isAll && selected) params.branch_id = selected;
 
-    const requests = [axios.get("/api/metrics/country-yoy-insights", { params })];
+    axios.get("/api/metrics/country-yoy-insights", { params })
+      .then((r) => setCmpData(r.data.data))
+      .catch(() => setCmpData(null))
+      .finally(() => setCmpLoading(false));
+  };
 
-    // If comparing with another branch, fetch that too
-    if (compareBranch) {
-      requests.push(
-        axios.get("/api/metrics/country-yoy-insights", {
-          params: { year: cmpYear, month: cmpMonth, branch_id: compareBranch },
-        })
-      );
+  // Load branch compare data — fetch each selected branch in parallel
+  const loadBranchCompare = () => {
+    if (selectedBranches.length === 0) {
+      setBranchDataMap({});
+      return;
     }
+    setBranchLoading(true);
+    const requests = selectedBranches.map((bid) =>
+      axios.get("/api/metrics/country-yoy-insights", {
+        params: { year: branchYear, month: branchMonth, branch_id: bid },
+      }).then((r) => ({ bid, data: r.data.data }))
+        .catch(() => ({ bid, data: null }))
+    );
 
     Promise.all(requests)
-      .then(([mainRes, cmpBranchRes]) => {
-        setCmpData(mainRes.data.data);
-        setCompareBranchData(cmpBranchRes ? cmpBranchRes.data.data : null);
+      .then((results) => {
+        const map = {};
+        for (const r of results) map[r.bid] = r.data;
+        setBranchDataMap(map);
       })
-      .catch(() => {
-        setCmpData(null);
-        setCompareBranchData(null);
-      })
-      .finally(() => setCmpLoading(false));
+      .finally(() => setBranchLoading(false));
   };
 
   useEffect(() => {
     if (view === "compare") {
       loadCompare();
+    } else if (view === "branch") {
+      loadBranchCompare();
     } else {
       loadTrend();
     }
-  }, [selected, isAll, view, cmpYear, cmpMonth, compareBranch]);
+  }, [selected, isAll, view, cmpYear, cmpMonth, branchYear, branchMonth, selectedBranches]);
 
   const periods = data?.periods || [];
   const allCountries = data?.countries || [];
   const trend = data?.trend || {};
 
-  // Other branches for compare dropdown (exclude current)
-  const otherBranches = useMemo(() => {
-    if (isAll || !selected) return [];
-    return branches.filter((b) => b.id !== selected);
-  }, [branches, selected, isAll]);
-
-  const compareBranchName = useMemo(() => {
-    if (!compareBranch) return "";
-    const b = branches.find((br) => br.id === compareBranch);
-    return b?.name || "";
-  }, [branches, compareBranch]);
-
   const currentBranchName = useMemo(() => {
-    if (isAll || !selected) return "Current";
+    if (isAll || !selected) return "All Branches";
     const b = branches.find((br) => br.id === selected);
     return b?.name || "Current";
   }, [branches, selected, isAll]);
 
-  // Union of countries for filter dropdown when branch compare is active
-  const compareCountryList = useMemo(() => {
-    if (!compareBranchData || !cmpData) return [];
-    const names = new Set([
-      ...(cmpData.countries || []).map((c) => c.country),
-      ...(compareBranchData.countries || []).map((c) => c.country),
-    ]);
+  // Branch compare: union of countries across all selected branches
+  const branchCountryList = useMemo(() => {
+    const names = new Set();
+    for (const d of Object.values(branchDataMap)) {
+      if (d?.countries) d.countries.forEach((c) => names.add(c.country));
+    }
     return [...names].sort();
-  }, [cmpData, compareBranchData]);
+  }, [branchDataMap]);
 
   // Filter countries
   const countries = useMemo(() => {
@@ -139,7 +144,7 @@ export default function PerformanceCountry() {
 
   const countryNames = countries.map((c) => c.country);
 
-  // Build chart data: [{period, Country1: N, Country2: N, ...}, ...]
+  // Build chart data
   const chartData = useMemo(() => {
     return periods.map((p) => {
       const row = { period: p };
@@ -151,7 +156,6 @@ export default function PerformanceCountry() {
     });
   }, [periods, trend, countryNames]);
 
-  // Total for the most recent period (last element)
   const latestPeriod = periods[periods.length - 1];
   const prevPeriod = periods[periods.length - 2];
   const latestData = trend[latestPeriod] || {};
@@ -159,34 +163,42 @@ export default function PerformanceCountry() {
   const latestTotal = Object.values(latestData).reduce((a, b) => a + b, 0);
   const prevTotal = Object.values(prevData).reduce((a, b) => a + b, 0);
 
+  // Toggle a branch in the multi-select
+  const toggleBranch = (bid) => {
+    setSelectedBranches((prev) =>
+      prev.includes(bid) ? prev.filter((b) => b !== bid) : [...prev, bid]
+    );
+  };
+
+  // Subtitle
+  const subtitle = view === "compare"
+    ? `${MONTHS[cmpMonth - 1]} ${cmpYear} vs ${MONTHS[cmpMonth - 1]} ${cmpYear - 1}`
+    : view === "branch"
+    ? `${MONTHS[branchMonth - 1]} ${branchYear} — Branch Comparison`
+    : `Top 15 countries \u2014 last 7 ${view === "monthly" ? "months" : "weeks"}`;
+
+  // Country filter options differ per view
+  const countryFilterOptions = useMemo(() => {
+    if (view === "branch") return branchCountryList;
+    if (view === "compare") return (cmpData?.countries || []).map((c) => c.country);
+    return allCountries.map((c) => c.country);
+  }, [view, branchCountryList, cmpData, allCountries]);
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-lg font-bold text-gray-900">Country Reservations</h1>
-          <p className="text-sm text-gray-500">
-            {view === "compare"
-              ? `${MONTHS[cmpMonth - 1]} ${cmpYear} vs ${MONTHS[cmpMonth - 1]} ${cmpYear - 1}`
-              : `Top 15 countries \u2014 last 7 ${view === "monthly" ? "months" : "weeks"}`}
-          </p>
+          <p className="text-sm text-gray-500">{subtitle}</p>
         </div>
         <div className="flex items-center gap-3">
           <select value={filterCountry} onChange={(e) => setFilterCountry(e.target.value)}
             className="border rounded px-2 py-1.5 text-sm">
             <option value="">All Countries</option>
-            {view === "compare" && compareBranch
-              ? compareCountryList.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))
-              : view === "compare"
-              ? (cmpData?.countries || []).map((c) => (
-                  <option key={c.country} value={c.country}>{c.country}</option>
-                ))
-              : allCountries.map((c) => (
-                  <option key={c.country_code} value={c.country}>{c.country}</option>
-                ))
-            }
+            {countryFilterOptions.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
           </select>
           {view === "compare" && (
             <div className="flex items-center gap-2">
@@ -204,42 +216,79 @@ export default function PerformanceCountry() {
               </select>
             </div>
           )}
-          {view === "compare" && !isAll && selected && (
-            <select value={compareBranch} onChange={(e) => setCompareBranch(e.target.value)}
-              className="border rounded px-2 py-1.5 text-sm bg-indigo-50 border-indigo-300 text-indigo-700">
-              <option value="">Compare Branch...</option>
-              {otherBranches.map((b) => (
-                <option key={b.id} value={b.id}>{b.name}</option>
-              ))}
-            </select>
+          {view === "branch" && (
+            <div className="flex items-center gap-2">
+              <select value={branchMonth} onChange={(e) => setBranchMonth(Number(e.target.value))}
+                className="border rounded px-2 py-1.5 text-sm">
+                {MONTHS.map((m, i) => (
+                  <option key={i + 1} value={i + 1}>{m}</option>
+                ))}
+              </select>
+              <select value={branchYear} onChange={(e) => setBranchYear(Number(e.target.value))}
+                className="border rounded px-2 py-1.5 text-sm">
+                {[now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1].map((y) => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
+            </div>
           )}
           <div className="flex rounded-lg border overflow-hidden">
-            {["weekly", "monthly", "compare"].map((v) => (
+            {["weekly", "monthly", "compare", "branch"].map((v) => (
               <button key={v} onClick={() => setView(v)}
-                className={`px-4 py-1.5 text-sm font-medium ${
+                className={`px-3 py-1.5 text-sm font-medium ${
                   view === v ? "bg-indigo-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
                 }`}>
-                {v === "weekly" ? "Weekly" : v === "monthly" ? "Monthly" : "Compare"}
+                {v === "weekly" ? "Weekly" : v === "monthly" ? "Monthly" : v === "compare" ? "Compare" : "Branches"}
               </button>
             ))}
           </div>
         </div>
       </div>
 
-      {/* ── Compare View ── */}
-      {view === "compare" ? (
+      {/* ── Branch Compare View ── */}
+      {view === "branch" ? (
+        <>
+          {/* Branch selector chips */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-gray-500 uppercase tracking-wider mr-1">Select branches:</span>
+            {branches.map((b, i) => {
+              const isChecked = selectedBranches.includes(b.id);
+              const colorIdx = isChecked ? selectedBranches.indexOf(b.id) : -1;
+              const color = colorIdx >= 0 ? BRANCH_COLORS[colorIdx % BRANCH_COLORS.length] : null;
+              return (
+                <button key={b.id} onClick={() => toggleBranch(b.id)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
+                    isChecked
+                      ? `${color.bg || "bg-gray-100"} ${color.text} border-current`
+                      : "bg-white text-gray-500 border-gray-300 hover:border-gray-400"
+                  }`}>
+                  {isChecked && <span className="mr-1">&#10003;</span>}
+                  {b.name}
+                </button>
+              );
+            })}
+          </div>
+          {branchLoading ? (
+            <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
+          ) : selectedBranches.length === 0 ? (
+            <div className="text-center text-gray-400 py-16 text-sm">Select at least one branch to compare.</div>
+          ) : (
+            <BranchCompareView
+              branches={branches}
+              selectedBranches={selectedBranches}
+              branchDataMap={branchDataMap}
+              filterCountry={filterCountry}
+              year={branchYear}
+              month={branchMonth}
+            />
+          )}
+        </>
+      ) : view === "compare" ? (
+        /* ── YoY Compare View ── */
         cmpLoading ? (
           <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
         ) : !cmpData || cmpData.countries?.length === 0 ? (
           <div className="text-center text-gray-400 py-16 text-sm">No data available.</div>
-        ) : compareBranch && compareBranchData ? (
-          <BranchCompareView
-            dataA={cmpData}
-            dataB={compareBranchData}
-            nameA={currentBranchName}
-            nameB={compareBranchName}
-            filterCountry={filterCountry}
-          />
         ) : (
           <CompareView data={cmpData} filterCountry={filterCountry} />
         )
@@ -314,7 +363,6 @@ export default function PerformanceCountry() {
                     <th className="text-right px-4 py-3 font-semibold text-gray-600">Total Reservations</th>
                     <th className="text-right px-4 py-3 font-semibold text-gray-600">Room Nights</th>
                     <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue (VND)</th>
-                    {/* Per-period columns */}
                     {periods.map((p) => (
                       <th key={p} className="text-right px-3 py-3 font-semibold text-gray-500 text-xs">{p}</th>
                     ))}
@@ -358,7 +406,7 @@ export default function PerformanceCountry() {
 }
 
 
-/* ── Compare View Component ─────────────────────────────────────────────────── */
+/* ── YoY Compare View Component ───────────────────────────────────────────── */
 
 function CompareView({ data, filterCountry }) {
   const { year, month } = data;
@@ -367,7 +415,6 @@ function CompareView({ data, filterCountry }) {
     : data.countries;
   const monthName = MONTHS[month - 1];
 
-  // Summary KPIs
   const totalCurrentNights = countries.reduce((a, c) => a + c.current_nights, 0);
   const totalPrevNights = countries.reduce((a, c) => a + c.prev_nights, 0);
   const totalCurrentRevenue = countries.reduce((a, c) => a + c.current_revenue, 0);
@@ -377,7 +424,6 @@ function CompareView({ data, filterCountry }) {
 
   return (
     <>
-      {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="bg-white rounded-lg border p-4">
           <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
@@ -411,33 +457,20 @@ function CompareView({ data, filterCountry }) {
         </div>
       </div>
 
-      {/* Comparison Table */}
       <div className="bg-white rounded-lg border overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
               <th className="text-center px-3 py-3 font-semibold text-gray-600 w-10">#</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Country</th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">
-                Nights {year}
-              </th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">
-                Nights {year - 1}
-              </th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Nights {year}</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Nights {year - 1}</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Change</th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">
-                Revenue {year}
-              </th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">
-                Revenue {year - 1}
-              </th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue {year}</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue {year - 1}</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Change</th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">
-                Guests {year}
-              </th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">
-                Guests {year - 1}
-              </th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Guests {year}</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Guests {year - 1}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -469,110 +502,102 @@ function CompareView({ data, filterCountry }) {
 
 /* ── Branch Compare View Component ─────────────────────────────────────────── */
 
-function BranchCompareView({ dataA, dataB, nameA, nameB, filterCountry }) {
-  const { year, month } = dataA;
+function BranchCompareView({ branches, selectedBranches, branchDataMap, filterCountry, year, month }) {
   const monthName = MONTHS[month - 1];
 
-  // Build lookup maps
-  const mapA = {};
-  for (const c of dataA.countries) mapA[c.country] = c;
-  const mapB = {};
-  for (const c of dataB.countries) mapB[c.country] = c;
+  // Build per-branch lookup: branchId -> { countryName -> row }
+  const branchLookups = selectedBranches.map((bid) => {
+    const d = branchDataMap[bid];
+    const map = {};
+    if (d?.countries) {
+      for (const c of d.countries) map[c.country] = c;
+    }
+    return { bid, map };
+  });
 
-  // Union of countries, filtered
-  let allCountryNames = [...new Set([
-    ...dataA.countries.map((c) => c.country),
-    ...dataB.countries.map((c) => c.country),
-  ])];
+  // Branch names in selection order
+  const branchNames = selectedBranches.map((bid) => {
+    const b = branches.find((br) => br.id === bid);
+    return b?.name || bid;
+  });
+
+  // Union of all countries
+  let allCountryNames = [...new Set(
+    branchLookups.flatMap((bl) => Object.keys(bl.map))
+  )];
   if (filterCountry) {
     allCountryNames = allCountryNames.filter((c) => c === filterCountry);
   }
 
-  // Build merged rows sorted by branch A nights desc
+  // Build rows — sort by first branch nights desc
   const rows = allCountryNames.map((country) => {
-    const a = mapA[country] || { current_nights: 0, current_revenue: 0, current_guests: 0 };
-    const b = mapB[country] || { current_nights: 0, current_revenue: 0, current_guests: 0 };
-    return { country, a, b };
-  }).sort((x, y) => y.a.current_nights - x.a.current_nights);
+    const perBranch = branchLookups.map((bl) =>
+      bl.map[country] || { current_nights: 0, current_revenue: 0, current_guests: 0 }
+    );
+    return { country, perBranch };
+  }).sort((a, b) => {
+    const aNights = a.perBranch.reduce((s, p) => s + p.current_nights, 0);
+    const bNights = b.perBranch.reduce((s, p) => s + p.current_nights, 0);
+    return bNights - aNights;
+  });
 
-  // Totals
-  const totA = { nights: 0, revenue: 0, guests: 0 };
-  const totB = { nights: 0, revenue: 0, guests: 0 };
-  for (const r of rows) {
-    totA.nights += r.a.current_nights;
-    totA.revenue += r.a.current_revenue;
-    totA.guests += r.a.current_guests;
-    totB.nights += r.b.current_nights;
-    totB.revenue += r.b.current_revenue;
-    totB.guests += r.b.current_guests;
-  }
-
-  function diffPct(valA, valB) {
-    if (valB === 0) return valA === 0 ? null : 100.0;
-    return ((valA - valB) / valB) * 100;
-  }
+  // Per-branch totals
+  const totals = branchLookups.map((_, idx) => {
+    const tot = { nights: 0, revenue: 0, guests: 0 };
+    for (const r of rows) {
+      tot.nights += r.perBranch[idx].current_nights;
+      tot.revenue += r.perBranch[idx].current_revenue;
+      tot.guests += r.perBranch[idx].current_guests;
+    }
+    return tot;
+  });
 
   return (
     <>
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-white rounded-lg border p-4">
-          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
-            {nameA} Nights
-          </p>
-          <p className="text-2xl font-bold text-gray-900">{fmtNum(totA.nights)}</p>
-          <p className="text-xs text-gray-400 mt-1">{monthName} {year}</p>
-        </div>
-        <div className="bg-white rounded-lg border p-4 border-indigo-200 bg-indigo-50/30">
-          <p className="text-xs text-indigo-500 uppercase tracking-wider mb-1">
-            {nameB} Nights
-          </p>
-          <p className="text-2xl font-bold text-indigo-700">{fmtNum(totB.nights)}</p>
-          <p className="text-xs text-gray-400 mt-1">{monthName} {year}</p>
-        </div>
-        <div className="bg-white rounded-lg border p-4">
-          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
-            {nameA} Revenue
-          </p>
-          <p className="text-2xl font-bold text-gray-900">{fmtNum(totA.revenue)}</p>
-          <p className="text-xs text-gray-400 mt-1">{monthName} {year}</p>
-        </div>
-        <div className="bg-white rounded-lg border p-4 border-indigo-200 bg-indigo-50/30">
-          <p className="text-xs text-indigo-500 uppercase tracking-wider mb-1">
-            {nameB} Revenue
-          </p>
-          <p className="text-2xl font-bold text-indigo-700">{fmtNum(totB.revenue)}</p>
-          <p className="text-xs text-gray-400 mt-1">{monthName} {year}</p>
-        </div>
+      {/* KPI Cards — one pair (nights + revenue) per branch */}
+      <div className={`grid gap-4`} style={{ gridTemplateColumns: `repeat(${Math.min(selectedBranches.length * 2, 6)}, minmax(0, 1fr))` }}>
+        {branchNames.map((name, idx) => {
+          const color = BRANCH_COLORS[idx % BRANCH_COLORS.length];
+          return [
+            <div key={`n-${idx}`} className={`bg-white rounded-lg border p-4 ${color.bg}`}>
+              <p className={`text-xs uppercase tracking-wider mb-1 ${color.header}`}>
+                {name} Nights
+              </p>
+              <p className={`text-2xl font-bold ${color.text}`}>{fmtNum(totals[idx].nights)}</p>
+              <p className="text-xs text-gray-400 mt-1">{monthName} {year}</p>
+            </div>,
+            <div key={`r-${idx}`} className={`bg-white rounded-lg border p-4 ${color.bg}`}>
+              <p className={`text-xs uppercase tracking-wider mb-1 ${color.header}`}>
+                {name} Revenue
+              </p>
+              <p className={`text-2xl font-bold ${color.text}`}>{fmtNum(totals[idx].revenue)}</p>
+              <p className="text-xs text-gray-400 mt-1">{monthName} {year}</p>
+            </div>,
+          ];
+        })}
       </div>
 
-      {/* Branch Comparison Table */}
+      {/* Comparison Table */}
       <div className="bg-white rounded-lg border overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
               <th className="text-center px-3 py-3 font-semibold text-gray-600 w-10">#</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Country</th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">
-                {nameA}<br /><span className="text-xs font-normal text-gray-400">Nights</span>
-              </th>
-              <th className="text-right px-4 py-3 font-semibold text-indigo-600">
-                {nameB}<br /><span className="text-xs font-normal text-indigo-400">Nights</span>
-              </th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">Diff</th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">
-                {nameA}<br /><span className="text-xs font-normal text-gray-400">Revenue</span>
-              </th>
-              <th className="text-right px-4 py-3 font-semibold text-indigo-600">
-                {nameB}<br /><span className="text-xs font-normal text-indigo-400">Revenue</span>
-              </th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">Diff</th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">
-                {nameA}<br /><span className="text-xs font-normal text-gray-400">Guests</span>
-              </th>
-              <th className="text-right px-4 py-3 font-semibold text-indigo-600">
-                {nameB}<br /><span className="text-xs font-normal text-indigo-400">Guests</span>
-              </th>
+              {branchNames.map((name, idx) => {
+                const color = BRANCH_COLORS[idx % BRANCH_COLORS.length];
+                return [
+                  <th key={`n-${idx}`} className={`text-right px-4 py-3 font-semibold ${color.header}`}>
+                    {name}<br /><span className={`text-xs font-normal ${color.headerSub}`}>Nights</span>
+                  </th>,
+                  <th key={`r-${idx}`} className={`text-right px-4 py-3 font-semibold ${color.header}`}>
+                    {name}<br /><span className={`text-xs font-normal ${color.headerSub}`}>Revenue</span>
+                  </th>,
+                  <th key={`g-${idx}`} className={`text-right px-4 py-3 font-semibold ${color.header}`}>
+                    {name}<br /><span className={`text-xs font-normal ${color.headerSub}`}>Guests</span>
+                  </th>,
+                ];
+              })}
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -580,18 +605,14 @@ function BranchCompareView({ dataA, dataB, nameA, nameB, filterCountry }) {
               <tr key={r.country} className="hover:bg-gray-50">
                 <td className="px-3 py-2.5 text-center text-gray-400 font-mono text-xs">{i + 1}</td>
                 <td className="px-4 py-2.5 font-medium text-gray-900">{r.country}</td>
-                <td className="px-4 py-2.5 text-right font-semibold">{fmtNum(r.a.current_nights)}</td>
-                <td className="px-4 py-2.5 text-right font-semibold text-indigo-700">{fmtNum(r.b.current_nights)}</td>
-                <td className="px-4 py-2.5 text-right">
-                  <ChangeBadge value={diffPct(r.a.current_nights, r.b.current_nights)} />
-                </td>
-                <td className="px-4 py-2.5 text-right font-semibold">{fmtNum(r.a.current_revenue)}</td>
-                <td className="px-4 py-2.5 text-right font-semibold text-indigo-700">{fmtNum(r.b.current_revenue)}</td>
-                <td className="px-4 py-2.5 text-right">
-                  <ChangeBadge value={diffPct(r.a.current_revenue, r.b.current_revenue)} />
-                </td>
-                <td className="px-4 py-2.5 text-right font-semibold">{fmtNum(r.a.current_guests)}</td>
-                <td className="px-4 py-2.5 text-right font-semibold text-indigo-700">{fmtNum(r.b.current_guests)}</td>
+                {r.perBranch.map((pb, idx) => {
+                  const color = BRANCH_COLORS[idx % BRANCH_COLORS.length];
+                  return [
+                    <td key={`n-${idx}`} className={`px-4 py-2.5 text-right font-semibold ${color.cell}`}>{fmtNum(pb.current_nights)}</td>,
+                    <td key={`r-${idx}`} className={`px-4 py-2.5 text-right font-semibold ${color.cell}`}>{fmtNum(pb.current_revenue)}</td>,
+                    <td key={`g-${idx}`} className={`px-4 py-2.5 text-right font-semibold ${color.cell}`}>{fmtNum(pb.current_guests)}</td>,
+                  ];
+                })}
               </tr>
             ))}
           </tbody>
