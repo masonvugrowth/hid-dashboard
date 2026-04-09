@@ -18,6 +18,7 @@ from app.routers import email_marketing
 from app.routers import marketing_activity
 from app.routers import gov_visitor
 from app.routers import holiday_intel
+from app.routers import api_keys, public_api
 from app.scheduler import setup_scheduler
 from app.database import SessionLocal
 from app.models.branch import Branch
@@ -78,6 +79,10 @@ app.include_router(gov_visitor.router, prefix="/api/gov-visitor", tags=["Governm
 
 # Phase 5 — Holiday Intelligence
 app.include_router(holiday_intel.router)
+
+# API Keys & Public API
+app.include_router(api_keys.router, prefix="/api/api-keys", tags=["API Keys"])
+app.include_router(public_api.router, prefix="/api/public", tags=["Public API"])
 
 setup_scheduler(app)
 
