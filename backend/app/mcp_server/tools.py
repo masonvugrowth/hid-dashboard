@@ -381,3 +381,47 @@ def register_tools(mcp: FastMCP) -> None:
         return _run("get_cancellation_leadtime", {
             "branch_id": branch_id, "date_from": date_from, "date_to": date_to,
         })
+
+    @mcp.tool()
+    def get_booking_pace(
+        branch_id: Optional[str] = None,
+        stay_month_from: Optional[str] = None,
+        stay_month_to: Optional[str] = None,
+        days: int = 60,
+        booked_from: Optional[str] = None,
+        booked_to: Optional[str] = None,
+        compare_last_year: bool = True,
+    ) -> dict:
+        """BOOKING PACE / PICKUP for FUTURE stay months: how much of each
+        upcoming month is already sold, how much of it was booked inside a
+        recent booking window, and the same two figures one year earlier.
+
+        This is the cross-tab get_performance cannot do — it counts bookings
+        RECEIVED in a window (reservation_date) against the month they are
+        coming to STAY in (check_in..check_out, clipped to the month). Use for
+        "how full is Oct/Nov/Dec already", "what did we pick up in the last 60
+        days for Q4", "booking pace vs last year", "are we pacing ahead or
+        behind", "on the books", "pickup rate".
+
+        Returns one row per branch × stay month plus a group_total roll-up per
+        month: otb_room_nights / otb_occ_pct (everything on the books as of the
+        window end), pickup_room_nights / pickup_occ_pct (only what was booked
+        inside the window, as % of that month's whole inventory),
+        pickup_share_of_otb_pct, last_year.* (the same snapshot a year back,
+        plus final_occ_pct — where that month actually ended up) and
+        vs_last_year.* deltas, with occupancy gaps in percentage POINTS.
+
+        stay_month_from / stay_month_to are 'YYYY-MM' (max 12 months); default
+        is the next 3 whole months, booked in the last `days` (60) days.
+
+        CAVEAT to pass on: last year's snapshot is rebuilt from today's rows,
+        so bookings that were live back then but cancelled later are missing
+        from it — last year reads slightly low. For occupancy that ALREADY
+        happened use get_performance; for target vs forecast on the current
+        month use get_kpi_status."""
+        return _run("get_booking_pace", {
+            "branch_id": branch_id,
+            "stay_month_from": stay_month_from, "stay_month_to": stay_month_to,
+            "days": days, "booked_from": booked_from, "booked_to": booked_to,
+            "compare_last_year": compare_last_year,
+        })

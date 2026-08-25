@@ -21,12 +21,25 @@ from sqlalchemy.orm import Session
 from app.models.branch import Branch
 from app.services.persona_engine import build_all_personas
 from app.services.metrics_engine import (
+    EXCLUDED_SOURCES_OCC,
+    EXCLUDED_SOURCES_REVENUE,
+    EXCLUDED_STATUSES,
     get_channel_rates,
     get_daily_metrics,
     get_ota_mix,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sql_list(values) -> str:
+    """Render a set of known-safe constants as a SQL IN-list literal."""
+    return ", ".join(f"'{v}'" for v in sorted(values))
+
+
+_EXCL_STATUS_SQL = _sql_list(EXCLUDED_STATUSES)
+_EXCL_SRC_OCC_SQL = _sql_list(EXCLUDED_SOURCES_OCC)
+_EXCL_SRC_REV_SQL = _sql_list(EXCLUDED_SOURCES_REVENUE)
 
 
 # ── Tool schemas (Anthropic tool-use format) ────────────────────────────────
@@ -384,6 +397,46 @@ TOOL_DEFS: list[dict] = [
             "properties": {
                 "branch_id": {"type": "string", "description": "UUID of branch, or 'all'. Defaults to current."},
                 "months": {"type": "integer", "description": "Look-back window in months, default 12."},
+            },
+        },
+    },
+    {
+        "name": "get_booking_pace",
+        "description": (
+            "BOOKING PACE / PICKUP for FUTURE stay months: how much of each "
+            "upcoming month is already sold, how much of it was booked inside a "
+            "recent booking window, and the same two figures one year earlier. "
+            "This is the cross-tab get_performance cannot do — it counts bookings "
+            "RECEIVED in a window (reservation_date) against the month they are "
+            "coming to STAY in (check_in..check_out, clipped to the month). Use "
+            "for 'how full is Oct/Nov/Dec already', 'what did we pick up in the "
+            "last 60 days for Q4', 'booking pace vs last year', 'are we pacing "
+            "ahead/behind', 'on the books', 'pickup rate'. Per branch AND per stay "
+            "month, plus a group_total roll-up per month. Fields: "
+            "otb_room_nights / otb_occ_pct = everything on the books as of the "
+            "window end; pickup_room_nights / pickup_occ_pct = only what was "
+            "booked inside the window (the pickup, as % of that month's whole "
+            "inventory); pickup_share_of_otb_pct = how much of the current "
+            "on-the-books came from this window; last_year.* = the same snapshot "
+            "one year back, plus final_occ_pct (where that month actually ended "
+            "up); vs_last_year.* = deltas, with occ gaps in percentage POINTS. "
+            "Defaults: the next 3 whole months, booked in the last 60 days, "
+            "compared to last year. CAVEAT to pass on: last year's snapshot is "
+            "rebuilt from today's rows, so bookings that were live back then but "
+            "cancelled later are missing from it — last year reads slightly low. "
+            "For occupancy that ALREADY happened use get_performance; for "
+            "target/forecast on the current month use get_kpi_status."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch_id": {"type": "string", "description": "UUID of branch, or 'all'. Defaults to current."},
+                "stay_month_from": {"type": "string", "description": "First stay month, 'YYYY-MM'. Default: next month."},
+                "stay_month_to": {"type": "string", "description": "Last stay month, 'YYYY-MM' (max 12 months). Default: 3 months out."},
+                "days": {"type": "integer", "description": "Booking-window length in days ending today, default 60."},
+                "booked_from": {"type": "string", "description": "ISO date YYYY-MM-DD — start of the booking window. Overrides `days`."},
+                "booked_to": {"type": "string", "description": "ISO date YYYY-MM-DD — end of the booking window, default today."},
+                "compare_last_year": {"type": "boolean", "description": "Include the year-ago snapshot, default true."},
             },
         },
     },
@@ -1656,6 +1709,350 @@ def tool_get_guest_persona(db: Session, inp: dict, default_branch: Optional[str]
     return build_all_personas(db, branch_id=branch_id, months=months)
 
 
+def _shift_one_year(d: date) -> date:
+    """Same calendar day one year earlier (29 Feb falls back to 28 Feb)."""
+    try:
+        return d.replace(year=d.year - 1)
+    except ValueError:
+        return d.replace(year=d.year - 1, month=2, day=28)
+
+
+def _parse_month(s: Optional[str], default: tuple[int, int]) -> tuple[int, int]:
+    """Parse 'YYYY-MM' (or 'YYYY-MM-DD') into (year, month)."""
+    if not s:
+        return default
+    try:
+        parts = str(s).split("-")
+        y, m = int(parts[0]), int(parts[1])
+    except (IndexError, TypeError, ValueError):
+        return default
+    return (y, m) if 1 <= m <= 12 else default
+
+
+def _month_list(start: tuple[int, int], end: tuple[int, int], cap: int = 12) -> list[tuple[int, int]]:
+    """Inclusive list of (year, month) from start to end, capped."""
+    if end < start:
+        start, end = end, start
+    out: list[tuple[int, int]] = []
+    y, m = start
+    while (y, m) <= end and len(out) < cap:
+        out.append((y, m))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+def _pace_pct(part: float, whole: float) -> Optional[float]:
+    return round(part / whole * 100, 2) if whole else None
+
+
+def _pace_pts(part_a: float, whole_a: float, part_b: float, whole_b: float) -> Optional[float]:
+    """Gap between two occupancy rates, in percentage POINTS."""
+    if not whole_a or not whole_b:
+        return None
+    return round((part_a / whole_a - part_b / whole_b) * 100, 2)
+
+
+def _fetch_pace(
+    db: Session,
+    branch_id: Optional[str],
+    span_start: date,
+    span_end: date,
+    booked_from: date,
+    booked_to: date,
+    as_of: date,
+) -> dict[tuple[str, str], dict]:
+    """Room-nights on the books per (branch, stay month) for one snapshot.
+
+    Reservations are expanded night by night and clipped to the stay month, so
+    a stay straddling two months lands its nights in the right one. Three
+    measures come back per month:
+      otb_*    - everything booked on or before `as_of` (the snapshot)
+      pickup_* - the slice booked inside [booked_from, booked_to]
+      final_*  - everything ever booked for that month, no booking-date cut
+                 (only meaningful for a month already in the past)
+    One reservation row = one unit-night, the same basis reservation_daily
+    uses. Cancelled / no-show and maintenance rows are out; revenue also drops
+    the non-paying sources (blogger / KOL / house use / special case) but their
+    nights still occupy inventory, exactly as the OCC rules require.
+    """
+    bf, params = _b_filter_clause(branch_id, "r")
+    params.update({
+        "span_start": span_start, "span_end": span_end,
+        "bk_from": booked_from, "bk_to": booked_to, "as_of": as_of,
+    })
+    rows = db.execute(text(f"""
+        WITH stay AS (
+            SELECT r.branch_id,
+                   r.id AS res_id,
+                   r.reservation_date,
+                   gs.d::date AS stay_date,
+                   (r.check_out_date - r.check_in_date) AS span,
+                   r.grand_total_native,
+                   lower(coalesce(r.source, '')) AS src
+            FROM reservations r
+            CROSS JOIN LATERAL generate_series(
+                r.check_in_date, r.check_out_date - 1, interval '1 day'
+            ) AS gs(d)
+            WHERE r.check_in_date IS NOT NULL
+              AND r.check_out_date > r.check_in_date
+              AND r.check_in_date <= :span_end
+              AND r.check_out_date > :span_start
+              AND lower(coalesce(r.status, '')) NOT IN ({_EXCL_STATUS_SQL})
+              AND lower(coalesce(r.source, '')) NOT IN ({_EXCL_SRC_OCC_SQL})
+              {bf}
+        )
+        SELECT branch_id,
+               to_char(date_trunc('month', stay_date), 'YYYY-MM') AS stay_month,
+               COUNT(*) AS final_nights,
+               COUNT(*) FILTER (
+                   WHERE reservation_date IS NULL OR reservation_date <= :as_of
+               ) AS otb_nights,
+               COUNT(DISTINCT res_id) FILTER (
+                   WHERE reservation_date IS NULL OR reservation_date <= :as_of
+               ) AS otb_bookings,
+               COUNT(*) FILTER (WHERE reservation_date IS NULL) AS undated_nights,
+               SUM(
+                   CASE WHEN (reservation_date IS NULL OR reservation_date <= :as_of)
+                             AND src NOT IN ({_EXCL_SRC_REV_SQL})
+                        THEN grand_total_native / NULLIF(span, 0) ELSE 0 END
+               ) AS otb_revenue_native,
+               COUNT(*) FILTER (
+                   WHERE reservation_date BETWEEN :bk_from AND :bk_to
+               ) AS pickup_nights,
+               COUNT(DISTINCT res_id) FILTER (
+                   WHERE reservation_date BETWEEN :bk_from AND :bk_to
+               ) AS pickup_bookings,
+               SUM(
+                   CASE WHEN reservation_date BETWEEN :bk_from AND :bk_to
+                             AND src NOT IN ({_EXCL_SRC_REV_SQL})
+                        THEN grand_total_native / NULLIF(span, 0) ELSE 0 END
+               ) AS pickup_revenue_native
+        FROM stay
+        WHERE stay_date >= :span_start AND stay_date <= :span_end
+        GROUP BY 1, 2
+    """), params).fetchall()
+
+    return {
+        (str(r[0]), r[1]): {
+            "final_nights": int(r[2] or 0),
+            "otb_nights": int(r[3] or 0),
+            "otb_bookings": int(r[4] or 0),
+            "undated_nights": int(r[5] or 0),
+            "otb_revenue_native": float(r[6] or 0),
+            "pickup_nights": int(r[7] or 0),
+            "pickup_bookings": int(r[8] or 0),
+            "pickup_revenue_native": float(r[9] or 0),
+        }
+        for r in rows
+    }
+
+
+def tool_get_booking_pace(db: Session, inp: dict, default_branch: Optional[str]) -> dict:
+    """Pickup / booking pace: how full future stay months already are, how much
+    of that filled inside a recent booking window, and the same one year back.
+
+    get_performance reads daily_metrics, which only knows occupancy that has
+    already happened, on the check-in date basis. Nothing crossed "booked in
+    window X" with "staying in month Y", so the pace question - the one that
+    decides whether Q4 needs a price move now - had no tool at all.
+    """
+    import calendar as _cal
+
+    branch_id = _resolve_branch_id(inp.get("branch_id"), default_branch)
+    today = date.today()
+
+    # Booking window: explicit dates win, else the last `days` ending today.
+    booked_to = _parse_date(inp.get("booked_to"), today)
+    days = max(int(inp.get("days") or 60), 1)
+    booked_from = _parse_date(inp.get("booked_from"), booked_to - timedelta(days=days - 1))
+    if booked_from > booked_to:
+        booked_from, booked_to = booked_to, booked_from
+
+    # Stay months: default the 3 whole months after the current one.
+    nxt = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+    default_last = nxt
+    for _ in range(2):
+        default_last = (
+            (default_last[0] + 1, 1) if default_last[1] == 12
+            else (default_last[0], default_last[1] + 1)
+        )
+    months = _month_list(
+        _parse_month(inp.get("stay_month_from"), nxt),
+        _parse_month(inp.get("stay_month_to"), default_last),
+    )
+
+    span_start = date(months[0][0], months[0][1], 1)
+    span_end = date(months[-1][0], months[-1][1], _cal.monthrange(*months[-1])[1])
+
+    compare_ly = inp.get("compare_last_year")
+    compare_ly = True if compare_ly is None else bool(compare_ly)
+
+    # as_of = the end of the booking window, so "on the books" and "picked up"
+    # are read at the same instant. Last year uses the same day one year back.
+    cur = _fetch_pace(db, branch_id, span_start, span_end, booked_from, booked_to, booked_to)
+
+    ly: dict = {}
+    ly_window: Optional[dict] = None
+    if compare_ly:
+        ly_last = (months[-1][0] - 1, months[-1][1])
+        ly_booked_from, ly_booked_to = _shift_one_year(booked_from), _shift_one_year(booked_to)
+        ly = _fetch_pace(
+            db, branch_id,
+            _shift_one_year(span_start),
+            date(ly_last[0], ly_last[1], _cal.monthrange(*ly_last)[1]),
+            ly_booked_from, ly_booked_to, ly_booked_to,
+        )
+        ly_window = {
+            "booked_from": ly_booked_from.isoformat(),
+            "booked_to": ly_booked_to.isoformat(),
+            "days": (ly_booked_to - ly_booked_from).days + 1,
+            "as_of": ly_booked_to.isoformat(),
+        }
+
+    branches = {
+        str(b.id): {"name": b.name, "total_rooms": b.total_rooms or 0, "currency": b.currency}
+        for b in db.query(Branch).filter_by(is_active=True).all()
+    }
+    if branch_id:
+        branches = {k: v for k, v in branches.items() if k == branch_id}
+
+    rows: list[dict] = []
+    for bid, info in branches.items():
+        for (y, m) in months:
+            key = f"{y:04d}-{m:02d}"
+            c = cur.get((bid, key), {})
+            dim = _cal.monthrange(y, m)[1]
+            avail = info["total_rooms"] * dim
+            otb_n = c.get("otb_nights", 0)
+            pickup_n = c.get("pickup_nights", 0)
+
+            row = {
+                "branch_id": bid,
+                "branch_name": info["name"],
+                "currency": info["currency"],
+                "stay_month": key,
+                "total_rooms": info["total_rooms"],
+                "days_in_month": dim,
+                "available_room_nights": avail,
+                "otb_room_nights": otb_n,
+                "otb_occ_pct": _pace_pct(otb_n, avail),
+                "otb_bookings": c.get("otb_bookings", 0),
+                "otb_revenue_native": round(c.get("otb_revenue_native", 0.0), 2),
+                "pickup_room_nights": pickup_n,
+                "pickup_occ_pct": _pace_pct(pickup_n, avail),
+                "pickup_bookings": c.get("pickup_bookings", 0),
+                "pickup_revenue_native": round(c.get("pickup_revenue_native", 0.0), 2),
+                "pickup_share_of_otb_pct": _pace_pct(pickup_n, otb_n),
+                "undated_room_nights": c.get("undated_nights", 0),
+            }
+
+            if compare_ly:
+                ly_key = f"{y - 1:04d}-{m:02d}"
+                l = ly.get((bid, ly_key), {})
+                ly_avail = info["total_rooms"] * _cal.monthrange(y - 1, m)[1]
+                ly_otb = l.get("otb_nights", 0)
+                ly_pickup = l.get("pickup_nights", 0)
+                ly_final = l.get("final_nights", 0)
+                row["last_year"] = {
+                    "stay_month": ly_key,
+                    "available_room_nights": ly_avail,
+                    "otb_room_nights": ly_otb,
+                    "otb_occ_pct": _pace_pct(ly_otb, ly_avail),
+                    "pickup_room_nights": ly_pickup,
+                    "pickup_occ_pct": _pace_pct(ly_pickup, ly_avail),
+                    "pickup_bookings": l.get("pickup_bookings", 0),
+                    "pickup_revenue_native": round(l.get("pickup_revenue_native", 0.0), 2),
+                    "final_room_nights": ly_final,
+                    "final_occ_pct": _pace_pct(ly_final, ly_avail),
+                }
+                row["vs_last_year"] = {
+                    "pickup_room_nights_delta": pickup_n - ly_pickup,
+                    "pickup_growth_pct": (
+                        round((pickup_n - ly_pickup) / ly_pickup * 100, 2) if ly_pickup else None
+                    ),
+                    "pickup_occ_pts": _pace_pts(pickup_n, avail, ly_pickup, ly_avail),
+                    "otb_occ_pts": _pace_pts(otb_n, avail, ly_otb, ly_avail),
+                }
+            rows.append(row)
+
+    rows.sort(key=lambda r: (r["branch_name"], r["stay_month"]))
+
+    # Group roll-up: one line per stay month across every branch in scope.
+    # Summed on room-nights, never averaged on the percentages - a 138-room
+    # branch and a 69-room one do not weigh the same.
+    group: list[dict] = []
+    for (y, m) in months:
+        key = f"{y:04d}-{m:02d}"
+        same = [r for r in rows if r["stay_month"] == key]
+        avail = sum(r["available_room_nights"] for r in same)
+        otb_n = sum(r["otb_room_nights"] for r in same)
+        pickup_n = sum(r["pickup_room_nights"] for r in same)
+        g = {
+            "stay_month": key,
+            "available_room_nights": avail,
+            "otb_room_nights": otb_n,
+            "otb_occ_pct": _pace_pct(otb_n, avail),
+            "pickup_room_nights": pickup_n,
+            "pickup_occ_pct": _pace_pct(pickup_n, avail),
+            "pickup_bookings": sum(r["pickup_bookings"] for r in same),
+            "pickup_share_of_otb_pct": _pace_pct(pickup_n, otb_n),
+        }
+        if compare_ly:
+            ly_avail = sum(r["last_year"]["available_room_nights"] for r in same)
+            ly_otb = sum(r["last_year"]["otb_room_nights"] for r in same)
+            ly_pickup = sum(r["last_year"]["pickup_room_nights"] for r in same)
+            ly_final = sum(r["last_year"]["final_room_nights"] for r in same)
+            g["last_year"] = {
+                "stay_month": f"{y - 1:04d}-{m:02d}",
+                "available_room_nights": ly_avail,
+                "otb_room_nights": ly_otb,
+                "otb_occ_pct": _pace_pct(ly_otb, ly_avail),
+                "pickup_room_nights": ly_pickup,
+                "pickup_occ_pct": _pace_pct(ly_pickup, ly_avail),
+                "final_room_nights": ly_final,
+                "final_occ_pct": _pace_pct(ly_final, ly_avail),
+            }
+            g["vs_last_year"] = {
+                "pickup_room_nights_delta": pickup_n - ly_pickup,
+                "pickup_growth_pct": (
+                    round((pickup_n - ly_pickup) / ly_pickup * 100, 2) if ly_pickup else None
+                ),
+                "pickup_occ_pts": _pace_pts(pickup_n, avail, ly_pickup, ly_avail),
+                "otb_occ_pts": _pace_pts(otb_n, avail, ly_otb, ly_avail),
+            }
+        group.append(g)
+
+    return {
+        "basis": "on_the_books_pickup",
+        "note": (
+            "Room-nights come from reservations expanded night by night and clipped "
+            "to each stay month, one unit-night per reservation row (the "
+            "reservation_daily basis) - NOT the Cloudbeds Insights OCC behind "
+            "get_performance, so it can read a little under it. Denominator = "
+            "branches.total_rooms x days in month, and total_rooms mixes private "
+            "rooms with dorm beds. otb_* = everything on the books as of the "
+            "window end; pickup_* = only what was booked inside the window. "
+            "LAST YEAR CAVEAT: the year-ago snapshot is rebuilt from today's "
+            "reservation rows, so bookings that were live back then but cancelled "
+            "later are already gone from it - last year's otb/pickup therefore "
+            "reads slightly LOW against this year's, which still carries bookings "
+            "that may yet cancel. last_year.final_* is where that month actually "
+            "ended up. Occupancy gaps are in percentage POINTS."
+        ),
+        "branch_id": branch_id or "all",
+        "booking_window": {
+            "booked_from": booked_from.isoformat(),
+            "booked_to": booked_to.isoformat(),
+            "days": (booked_to - booked_from).days + 1,
+            "as_of": booked_to.isoformat(),
+        },
+        "last_year_booking_window": ly_window,
+        "stay_months": [f"{y:04d}-{m:02d}" for (y, m) in months],
+        "group_total": group,
+        "rows": rows,
+    }
+
+
 TOOL_HANDLERS = {
     "get_branches": tool_get_branches,
     "get_performance": tool_get_performance,
@@ -1674,6 +2071,7 @@ TOOL_HANDLERS = {
     "get_cancellation_leadtime": tool_get_cancellation_leadtime,
     "get_channel_rates": tool_get_channel_rates,
     "get_guest_persona": tool_get_guest_persona,
+    "get_booking_pace": tool_get_booking_pace,
 }
 
 
