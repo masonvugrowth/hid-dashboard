@@ -1,13 +1,12 @@
 """Marketing Activity KOL cost source.
 
 The KOL row used to take its cost from Budget Planner's ActualsCache, which
-reaches the KOL Engine's Budget module. That endpoint answers in the hotel's
-budget currency, having divided the stored VND by the Engine's own rates
-(820 TWD / 170 JPY), and `fetch_kol_yearly` multiplied back by our hardcoded
-830 / 165 — so August 2026's clean 1,000,000 VND rendered as 1,006,097.56.
+reaches the KOL Engine's Budget module — a different ledger from the one the
+KOL revenue on the same row comes from, and one that needed a currency round
+trip HiD got wrong (August 2026's clean 1,000,000 VND rendered as 1,006,097.56).
 
-Cost now reads `cost_vnd` off the same /api/public/kol-revenue payload the KOL
-revenue comes from, which the Engine has already converted at its own rates.
+Cost now reads `cost_vnd` off the same /api/public/kol-revenue payload as the
+revenue, already converted by the Engine at the rates it converted with.
 """
 from datetime import date
 from unittest.mock import patch
