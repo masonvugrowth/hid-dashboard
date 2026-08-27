@@ -8,6 +8,7 @@ Pulls stats from GHL API for each configured location (branch):
      workflow.dateAdded.
 """
 import logging
+from collections import Counter
 from datetime import date, datetime, timezone
 from typing import List, Optional, Tuple
 
@@ -26,6 +27,13 @@ logger = logging.getLogger(__name__)
 
 GHL_BASE = "https://services.leadconnectorhq.com"
 
+# Most endpoints still answer on the dated API version. Campaign stats moved to
+# the unified v3 route on 2026-06-30 — the old
+# /emails/stats/location/{loc}/workflow-campaigns/{wf} now 404s. Legacy static
+# Location API Keys are rejected there (401); a Private Integration Token works.
+GHL_VERSION = "2021-07-28"
+GHL_VERSION_STATS = "v3"
+
 # Hardcoded fallback FX rates so attribution still works when neither the
 # in-memory cache nor the EXCHANGE_RATE_API are available. Updated periodically.
 _FX_FALLBACK_VND = {"VND": 1.0, "TWD": 830.0, "JPY": 165.0, "USD": 26000.0}
@@ -40,10 +48,10 @@ _FX_FALLBACK_VND = {"VND": 1.0, "TWD": 830.0, "JPY": 165.0, "USD": 26000.0}
 _WORKFLOW_SENTINEL_DATE = date(2000, 1, 1)
 
 
-def _headers(api_key: str) -> dict:
+def _headers(api_key: str, version: str = GHL_VERSION) -> dict:
     return {
         "Authorization": f"Bearer {api_key}",
-        "Version": "2021-07-28",
+        "Version": version,
         "Accept": "application/json",
     }
 
@@ -60,17 +68,38 @@ def _fetch_workflows(client: httpx.Client, location_id: str, api_key: str) -> Li
     return resp.json().get("workflows", [])
 
 
-def _fetch_workflow_stats(client: httpx.Client, location_id: str, api_key: str, workflow_id: str) -> Optional[dict]:
+def _fetch_workflow_stats(
+    client: httpx.Client, location_id: str, api_key: str, workflow_id: str
+) -> Tuple[Optional[dict], Optional[str]]:
+    """Fetch lifetime stats for one workflow.
+
+    Returns (stats, reason). On failure stats is None and reason is a short
+    string naming the cause — HTTP status, unparseable body, or a 200 whose
+    payload carries no usable "stats". The caller aggregates these; swallowing
+    them silently is what let a total outage look like "nothing to sync".
+    """
     try:
         resp = client.get(
-            f"{GHL_BASE}/emails/stats/location/{location_id}/workflow-campaigns/{workflow_id}",
-            headers=_headers(api_key),
+            f"{GHL_BASE}/emails/locations/{location_id}/campaigns/stats"
+            f"/workflow-campaigns/{workflow_id}",
+            headers=_headers(api_key, GHL_VERSION_STATS),
         )
-        if resp.status_code == 200:
-            return resp.json().get("stats")
-        return None
+    except Exception as e:
+        return None, f"request failed: {type(e).__name__}"
+
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}: {resp.text[:200]}"
+
+    try:
+        payload = resp.json()
     except Exception:
-        return None
+        return None, f"non-JSON body: {resp.text[:200]}"
+
+    stats = payload.get("stats")
+    if not stats:
+        return None, f"HTTP 200 but no usable 'stats' (payload keys={sorted(payload)[:10]})"
+
+    return stats, None
 
 
 def _parse_workflow_created(workflow: dict) -> Optional[date]:
@@ -97,16 +126,26 @@ def _sync_workflows(client: httpx.Client, db: Session, location: dict, today: da
     branch_id = str(branch_row.id) if branch_row else None
     branch_currency = branch_row.currency if branch_row else None
 
+    failures: Counter = Counter()
+    zero_delivered = 0
+
     for wf in workflows:
-        stats = _fetch_workflow_stats(client, loc_id, api_key, wf["id"])
-        if not stats:
+        stats, reason = _fetch_workflow_stats(client, loc_id, api_key, wf["id"])
+        if reason:
+            failures[reason] += 1
             continue
 
         delivered = stats.get("delivered", 0)
         if delivered == 0:
+            zero_delivered += 1
             continue
 
-        total_sent = delivered + stats.get("permanentFail", 0) + stats.get("temporaryFail", 0)
+        # v3 reports a real `sent`. The old endpoint didn't, so this used to be
+        # derived from delivered + failures — which undercounts, because it
+        # misses rejected/failed. Keep the derivation only as a fallback.
+        total_sent = stats.get("sent") or (
+            delivered + stats.get("permanentFail", 0) + stats.get("temporaryFail", 0)
+        )
 
         attribution = _compute_attribution(
             db,
@@ -135,6 +174,21 @@ def _sync_workflows(client: httpx.Client, db: Session, location: dict, today: da
             **attribution,
         })
         count += 1
+
+    if failures:
+        top = "; ".join(f"{r} (x{n})" for r, n in failures.most_common(3))
+        logger.warning(
+            "GHL [%s]: %d/%d workflows returned no stats — %s",
+            branch, sum(failures.values()), len(workflows), top,
+        )
+    if zero_delivered:
+        logger.info("GHL [%s]: %d workflows skipped (delivered=0)", branch, zero_delivered)
+    if workflows and count == 0:
+        logger.error(
+            "GHL [%s]: %d workflows found but 0 rows written — email stats are FROZEN "
+            "at their last good snapshot",
+            branch, len(workflows),
+        )
 
     return count
 
@@ -323,15 +377,18 @@ def _upsert_stats(db: Session, values: dict):
 
 # ── Main sync ─────────────────────────────────────────────────────────────────
 
-def sync_ghl_email_stats(db: Session) -> int:
+def sync_ghl_email_stats(db: Session) -> dict:
     """Pull stats from GHL API for all configured locations.
 
-    Returns total number of items synced across all locations.
+    Returns a per-type, per-location breakdown. A bare total hides the case
+    where bulk syncs fine while every workflow write fails, so callers get the
+    split and any per-location errors rather than one reassuring number.
     """
     locations = settings.ghl_locations
     if not locations:
         logger.warning("No GHL locations configured, skipping email sync")
-        return 0
+        return {"items_synced": 0, "workflows_synced": 0, "bulk_synced": 0,
+                "locations": [], "errors": ["no GHL locations configured"]}
 
     # One-shot cleanup: prior code wrote workflow rows keyed by `(workflow_id,
     # today)` so historical syncs left a trail of dated rows whose totals are
@@ -346,20 +403,57 @@ def sync_ghl_email_stats(db: Session) -> int:
 
     today = date.today()
     now = datetime.now(timezone.utc)
-    total = 0
+    wf_total = 0
+    bulk_total = 0
+    reports: List[dict] = []
+    errors: List[str] = []
 
     with httpx.Client(timeout=30) as client:
         for loc in locations:
+            name = loc["name"]
+            logger.info("GHL email sync starting for %s (location=%s)", name, loc["location_id"])
+            report = {"branch": name, "workflows": 0, "bulk": 0, "errors": []}
+
+            # Kept in separate try blocks on purpose: a dead workflow endpoint
+            # must not take that location's bulk sync down with it.
             try:
-                logger.info("GHL email sync starting for %s (location=%s)", loc["name"], loc["location_id"])
-                wf_count = _sync_workflows(client, db, loc, today, now)
-                bulk_count = _sync_bulk_campaigns(client, db, loc, today, now)
-                loc_total = wf_count + bulk_count
-                total += loc_total
-                logger.info("GHL [%s]: %d workflows + %d bulk = %d", loc["name"], wf_count, bulk_count, loc_total)
-            except Exception:
-                logger.exception("GHL sync failed for %s, continuing with next location", loc["name"])
+                report["workflows"] = _sync_workflows(client, db, loc, today, now)
+            except Exception as e:
+                logger.exception("GHL [%s]: workflow sync failed", name)
+                msg = f"{name}/workflow: {type(e).__name__}: {e}"
+                report["errors"].append(msg)
+                errors.append(msg)
+
+            try:
+                report["bulk"] = _sync_bulk_campaigns(client, db, loc, today, now)
+            except Exception as e:
+                logger.exception("GHL [%s]: bulk sync failed", name)
+                msg = f"{name}/bulk: {type(e).__name__}: {e}"
+                report["errors"].append(msg)
+                errors.append(msg)
+
+            wf_total += report["workflows"]
+            bulk_total += report["bulk"]
+            reports.append(report)
+            logger.info("GHL [%s]: %d workflows + %d bulk", name, report["workflows"], report["bulk"])
 
     db.commit()
-    logger.info("GHL email sync complete: %d total items across %d locations", total, len(locations))
-    return total
+
+    total = wf_total + bulk_total
+    if wf_total == 0:
+        logger.error(
+            "GHL email sync: 0 workflow rows written across all %d locations — "
+            "workflow stats are stale, only bulk (%d rows) updated",
+            len(locations), bulk_total,
+        )
+    logger.info(
+        "GHL email sync complete: %d workflow + %d bulk = %d items across %d locations",
+        wf_total, bulk_total, total, len(locations),
+    )
+    return {
+        "items_synced": total,
+        "workflows_synced": wf_total,
+        "bulk_synced": bulk_total,
+        "locations": reports,
+        "errors": errors,
+    }

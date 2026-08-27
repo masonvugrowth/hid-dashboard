@@ -399,8 +399,10 @@ def sync_from_ghl(
             raise HTTPException(status_code=401, detail="Invalid secret")
 
         from app.services.ghl_email_sync import sync_ghl_email_stats
-        count = sync_ghl_email_stats(db)
-        return _envelope({"items_synced": count})
+        result = sync_ghl_email_stats(db)
+        # Report the workflow/bulk split, not a single total: bulk alone can
+        # keep the number healthy-looking while every workflow write fails.
+        return _envelope(result)
     except HTTPException:
         raise
     except Exception as e:
