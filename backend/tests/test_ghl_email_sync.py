@@ -117,3 +117,91 @@ class TestComputeAttribution:
         db = self._setup_query(None, [])
         result = _compute_attribution(db, "Event May 2026", None, "branch-uuid", "JPY")
         assert result["attributed_rate_plan"] == "CRM_Event May 2026 Events"
+
+
+class TestFetchWorkflowStatsReason:
+    """A failed stats fetch must name its cause — silence here hid a 57-day
+    outage where GHL's workflow-campaigns route started returning 404."""
+
+    def _client(self, *, status=200, payload=None, text="", raises=None):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = text
+        if raises is not None:
+            resp.json.side_effect = raises
+        else:
+            resp.json.return_value = payload if payload is not None else {}
+        client = MagicMock()
+        client.get.return_value = resp
+        return client
+
+    def test_success_returns_stats_and_no_reason(self):
+        client = self._client(payload={"stats": {"delivered": 12}})
+        stats, reason = mod._fetch_workflow_stats(client, "loc", "key", "wf")
+        assert stats == {"delivered": 12}
+        assert reason is None
+
+    def test_404_reports_status_and_body(self):
+        client = self._client(status=404, text='{"statusCode":404,"message":"Not Found"}')
+        stats, reason = mod._fetch_workflow_stats(client, "loc", "key", "wf")
+        assert stats is None
+        assert "HTTP 404" in reason
+        assert "Not Found" in reason
+
+    def test_200_without_stats_key_is_reported(self):
+        client = self._client(payload={"traceId": "abc"})
+        stats, reason = mod._fetch_workflow_stats(client, "loc", "key", "wf")
+        assert stats is None
+        assert "no usable 'stats'" in reason
+
+    def test_transport_error_is_reported_not_swallowed(self):
+        client = MagicMock()
+        client.get.side_effect = RuntimeError("boom")
+        stats, reason = mod._fetch_workflow_stats(client, "loc", "key", "wf")
+        assert stats is None
+        assert "RuntimeError" in reason
+
+    def test_non_json_body_is_reported(self):
+        client = self._client(text="<html>502</html>", raises=ValueError("nope"))
+        stats, reason = mod._fetch_workflow_stats(client, "loc", "key", "wf")
+        assert stats is None
+        assert "non-JSON" in reason
+
+
+class TestStatsEndpointContract:
+    """Locks the v3 route + version header, and the real `sent` field.
+
+    The old /emails/stats/location/... route 404'd silently from 2026-06-30,
+    freezing every workflow row for 57 days.
+    """
+
+    def test_calls_v3_unified_route_with_v3_version_header(self):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"stats": {"delivered": 1}}
+        client = MagicMock()
+        client.get.return_value = resp
+
+        mod._fetch_workflow_stats(client, "LOC", "key", "WF")
+
+        url = client.get.call_args[0][0]
+        assert url.endswith("/emails/locations/LOC/campaigns/stats/workflow-campaigns/WF")
+        assert "/emails/stats/location/" not in url
+        assert client.get.call_args[1]["headers"]["Version"] == "v3"
+
+    def test_non_stats_calls_keep_the_dated_version(self):
+        assert mod._headers("k")["Version"] == "2021-07-28"
+        assert mod._headers("k", mod.GHL_VERSION_STATS)["Version"] == "v3"
+
+    def test_real_sent_field_beats_the_derived_fallback(self):
+        # Live Saigon payload: derived would give 20734+117+0 = 20851, but the
+        # true count is 20923.
+        stats = {"sent": 20923, "delivered": 20734, "permanentFail": 117, "temporaryFail": 0}
+        derived = stats["delivered"] + stats["permanentFail"] + stats["temporaryFail"]
+        assert derived == 20851
+        assert (stats.get("sent") or derived) == 20923
+
+    def test_falls_back_to_derived_when_sent_absent(self):
+        stats = {"delivered": 100, "permanentFail": 5, "temporaryFail": 2}
+        derived = stats["delivered"] + stats["permanentFail"] + stats["temporaryFail"]
+        assert (stats.get("sent") or derived) == 107
