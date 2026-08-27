@@ -32,6 +32,9 @@ from app.models.alert import AlertRule, AlertHistory, AlertNotificationLog
 # Rate Plan Quota tracking
 from app.models.rate_plan_quota import RatePlanQuota, RatePlanQuotaStatus
 
+# Hand-typed rate plan → campaign labels (Marketing Activity → CRM tab)
+from app.models.rate_plan_campaign import RatePlanCampaign
+
 # Weekly Report JSON cache (refreshed Mon 03:00 ICT)
 from app.models.weekly_report_cache import WeeklyReportCache
 from app.models.weekly_report_comment import WeeklyReportComment
@@ -57,6 +60,7 @@ __all__ = [
     "GovVisitorData",
     "AlertRule", "AlertHistory", "AlertNotificationLog",
     "RatePlanQuota", "RatePlanQuotaStatus",
+    "RatePlanCampaign",
     "WeeklyReportCache",
     "WeeklyReportComment", "WeeklyReportArchive",
     "BiweeklyReportCache", "BiweeklyFlagOverride", "BiweeklyReportShare",

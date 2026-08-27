@@ -21,7 +21,8 @@ from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import extract, func
 from sqlalchemy.orm import Session
 
@@ -30,6 +31,7 @@ from app.models.ads import AdsPerformance
 from app.models.ads_booking_match import AdsBookingMatch
 from app.models.branch import Branch
 from app.models.marketing_activity_cache import MarketingActivityCache
+from app.models.rate_plan_campaign import RatePlanCampaign
 from app.models.reservation import Reservation
 from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
 from app.services.ads_platform import branch_slug_for, get_client as _get_ads_client
@@ -544,6 +546,68 @@ def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date
 
     result.sort(key=lambda x: -x["revenue"])
     return result
+
+
+# ── Rate plan → campaign labels (hand-typed) ─────────────────────────────────
+
+def _campaign_map(db: Session) -> dict:
+    """{rate_plan_name: campaign_name} for every label the team has tagged.
+
+    Zeabur does not run Alembic on deploy, so between this code landing and
+    `POST /api/sync/run-migrations` the table does not exist. An unlabelled
+    table is a far smaller problem than a 500 on the whole CRM tab, so a
+    failure here degrades to "nothing tagged yet".
+    """
+    try:
+        rows = db.query(RatePlanCampaign).all()
+    except Exception:
+        db.rollback()
+        log.warning("rate_plan_campaigns unavailable — serving empty campaign map",
+                    exc_info=True)
+        return {}
+    return {r.rate_plan_name: r.campaign_name for r in rows}
+
+
+class RatePlanCampaignIn(BaseModel):
+    rate_plan_name: str = Field(..., min_length=1, max_length=300)
+    # Empty string is the "clear it" signal — the row is deleted rather than
+    # kept as a blank label.
+    campaign_name: str = Field("", max_length=200)
+
+
+@router.get("/rate-plan-campaigns")
+def get_rate_plan_campaigns(db: Session = Depends(get_db)):
+    """All rate plan → campaign labels, as a flat map."""
+    return _envelope(_campaign_map(db))
+
+
+@router.put("/rate-plan-campaigns")
+def upsert_rate_plan_campaign(payload: RatePlanCampaignIn, db: Session = Depends(get_db)):
+    """Set (or clear) the campaign label for one rate plan name."""
+    rate_plan_name = payload.rate_plan_name.strip()
+    campaign_name = payload.campaign_name.strip()
+    if not rate_plan_name:
+        raise HTTPException(status_code=400, detail="rate_plan_name is required")
+
+    row = (
+        db.query(RatePlanCampaign)
+        .filter(RatePlanCampaign.rate_plan_name == rate_plan_name)
+        .first()
+    )
+
+    if not campaign_name:
+        if row:
+            db.delete(row)
+            db.commit()
+        return _envelope({"rate_plan_name": rate_plan_name, "campaign_name": None})
+
+    if row:
+        row.campaign_name = campaign_name
+    else:
+        db.add(RatePlanCampaign(rate_plan_name=rate_plan_name,
+                                campaign_name=campaign_name))
+    db.commit()
+    return _envelope({"rate_plan_name": rate_plan_name, "campaign_name": campaign_name})
 
 
 # ── Activity cache helpers ────────────────────────────────────────────────────
