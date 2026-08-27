@@ -409,14 +409,14 @@ def _fetch_kol_totals(db, branch_id, d_from, d_to, use_native):
 #
 # Deliberately NOT Budget Planner's ActualsCache, which routes through the KOL
 # Engine's Budget module (GET /api/sync/budgets → monthly_breakdown[].actual).
-# That endpoint reports the figure in the hotel's budget currency after the
-# Engine has divided the stored VND by its own rates (820 TWD / 170 JPY);
-# fetch_kol_yearly then multiplies back by our hardcoded 830 / 165, so a clean
-# 500,000 VND arrives as 506,097.56 (+1.22% on TWD branches, -2.94% on JPY).
+# The two agree exactly for Feb–Aug 2026 but not for January, where the Budget
+# module reports 72.22M org-wide against this endpoint's 47.4M — and revenue on
+# this row already comes from here, so taking cost from the other source would
+# let the numerator and denominator of one ROAS sit on two different ledgers.
 #
-# /api/public/kol-revenue already carries cost_vnd converted at the Engine's own
-# rates, and it is the same payload — same call, same 10-min cache — that KOL
-# revenue is read from, so cost and revenue can no longer drift apart.
+# cost_vnd also needs no currency handling: the Engine converts it back at the
+# same rates it converted with. Budget Planner has to invert that by hand in
+# upstream_actuals._KOL_ENGINE_NATIVE_TO_VND, which is a standing hazard.
 
 
 def _fetch_kol_cost_one_month(hotel_id: Optional[str], year: int, month: int) -> Optional[float]:

@@ -128,9 +128,17 @@ def fetch_winning_ads_monthly(
 
 # ── KOL (KOL Media Engine) ───────────────────────────────────────────────────
 
-# Hardcoded fallback FX so we don't multiply by 1.0 when the live FX API
-# can't be reached. Same values used elsewhere in the codebase.
-_FX_FALLBACK_NATIVE_TO_VND = {"VND": 1.0, "TWD": 830.0, "JPY": 165.0}
+# The rates the KOL Engine itself converts with — NOT HiD's display rates
+# (830 / 165). KOL costs are typed into the Engine in VND and divided by these
+# on the way out; multiplying by anything else here does not convert a foreign
+# amount, it corrupts a VND one. Every observed `actual` is an exact round VND
+# figure at these rates: Taipei Jan 975.609756 TWD = 800,000 / 820, Osaka Jan
+# 211,235.294 JPY = 35,910,000 / 170.
+#
+# Do not "fix" these to match _get_rate_to_vnd. Raise them with the Engine team
+# instead — the endpoint ignores every spelling of a currency= override
+# (VND, vnd, target_currency, convert), so inverting by hand is the only way.
+_KOL_ENGINE_NATIVE_TO_VND = {"VND": 1.0, "TWD": 820.0, "JPY": 170.0}
 
 
 def fetch_kol_yearly(hotel_id: str, year: int) -> dict[int, float]:
@@ -138,8 +146,8 @@ def fetch_kol_yearly(hotel_id: str, year: int) -> dict[int, float]:
 
     KOL Engine's ``currency`` override doesn't actually convert — observed
     response always carries ``currency`` = the hotel's budget currency
-    (TWD for Taipei, JPY for Osaka, VND for Saigon). Convert ourselves so
-    the value lines up with our cost_vnd column.
+    (TWD for Taipei, JPY for Osaka, VND for Saigon). Undo that conversion at
+    the Engine's own rates so the value lines up with our cost_vnd column.
     """
     if not settings.KOL_SYNC_API_KEY:
         log.warning("KOL_SYNC_API_KEY not configured; kol actuals=0")
@@ -158,7 +166,7 @@ def fetch_kol_yearly(hotel_id: str, year: int) -> dict[int, float]:
         return {}
     data = body.get("data", body) if isinstance(body, dict) else {}
     response_currency = (data.get("currency") or "VND").upper()
-    fx = _FX_FALLBACK_NATIVE_TO_VND.get(response_currency)
+    fx = _KOL_ENGINE_NATIVE_TO_VND.get(response_currency)
     if fx is None:
         log.warning("Unknown KOL response currency %s; treating as VND",
                     response_currency)
