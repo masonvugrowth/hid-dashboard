@@ -10,9 +10,13 @@ import pytest
 
 from app.routers.marketing_activity import (
     RatePlanCampaignIn,
-    _campaign_map,
     get_rate_plan_campaigns,
     upsert_rate_plan_campaign,
+)
+from app.services.rate_plan_campaigns import (
+    apply_campaign_labels,
+    campaign_map as _campaign_map,
+    label_rows,
 )
 
 
@@ -155,3 +159,63 @@ class TestWriting:
                 db=_FakeSession([]),
             )
         assert exc.value.status_code == 400
+
+
+class TestReportLabels:
+    """Reports show the campaign the team typed; anything unlabelled keeps
+    its rate plan name so a half-filled table still reads."""
+
+    CMAP = {"WELCOME BACK": "Returning Guest 2026"}
+
+    def test_a_labelled_row_renders_as_the_campaign(self):
+        rows = [{"rate_plan_name": "WELCOME BACK", "label": "WELCOME BACK"}]
+        label_rows(rows, self.CMAP)
+        assert rows[0]["label"] == "Returning Guest 2026"
+        assert rows[0]["campaign_name"] == "Returning Guest 2026"
+
+    def test_an_unlabelled_row_keeps_its_rate_plan_name(self):
+        rows = [{"rate_plan_name": "WELCOME", "label": "WELCOME"}]
+        label_rows(rows, self.CMAP)
+        assert rows[0]["label"] == "WELCOME"
+        assert rows[0]["campaign_name"] is None
+
+    def test_the_rate_plan_name_is_never_rewritten(self):
+        """It is the join key for prior/year-ago rows and the anchor for
+        comment and flag-override keys — relabelling must not move it."""
+        rows = [{"rate_plan_name": "WELCOME BACK", "label": "WELCOME BACK"}]
+        label_rows(rows, self.CMAP)
+        assert rows[0]["rate_plan_name"] == "WELCOME BACK"
+
+    def test_a_row_with_no_label_yet_gets_one(self):
+        rows = [{"rate_plan_name": "WELCOME"}]
+        label_rows(rows, self.CMAP)
+        assert rows[0]["label"] == "WELCOME"
+
+    def test_biweekly_payload_shape(self):
+        payload = [{"crm": {"by_rate_plan": [
+            {"rate_plan_name": "WELCOME BACK", "label": "WELCOME BACK"},
+        ]}}]
+        apply_campaign_labels(_FakeSession([_Row("WELCOME BACK", "Returning Guest 2026")]),
+                              payload)
+        assert payload[0]["crm"]["by_rate_plan"][0]["label"] == "Returning Guest 2026"
+
+    def test_weekly_payload_shape(self):
+        payload = [{"analytics": {"crm": {"by_rate_plan": [
+            {"rate_plan_name": "WELCOME BACK", "label": "WELCOME BACK"},
+        ]}}}]
+        apply_campaign_labels(_FakeSession([_Row("WELCOME BACK", "Returning Guest 2026")]),
+                              payload)
+        assert (payload[0]["analytics"]["crm"]["by_rate_plan"][0]["label"]
+                == "Returning Guest 2026")
+
+    def test_a_payload_with_no_crm_section_is_left_alone(self):
+        payload = [{"branch_name": "MEANDER Saigon"}]
+        apply_campaign_labels(_FakeSession([_Row("WELCOME BACK", "X")]), payload)
+        assert payload == [{"branch_name": "MEANDER Saigon"}]
+
+    def test_a_missing_table_leaves_the_report_untouched(self):
+        payload = [{"crm": {"by_rate_plan": [
+            {"rate_plan_name": "WELCOME BACK", "label": "WELCOME BACK"},
+        ]}}]
+        apply_campaign_labels(_FakeSession(raises=True), payload)
+        assert payload[0]["crm"]["by_rate_plan"][0]["label"] == "WELCOME BACK"

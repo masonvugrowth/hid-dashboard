@@ -51,6 +51,7 @@ from app.services.biweekly_period import (
 )
 from app.services.biweekly_render import _build_html
 from app.services.biweekly_report_builder import build_biweekly_report
+from app.services.rate_plan_campaigns import apply_campaign_labels
 from app.services.biweekly_share import (
     build_share_page_html,
     build_summary_email_html,
@@ -197,9 +198,15 @@ def _get_report(db: Session, p: Period, force_fresh: bool = False):
     if not force_fresh:
         cached = _load_cached(db, p.key)
         if cached is not None:
-            return cached
+            payload, computed_at = cached
+            apply_campaign_labels(db, payload)
+            return payload, computed_at
     payload = build_biweekly_report(db, p)
-    return payload, _save_cached(db, p, payload)
+    computed_at = _save_cached(db, p, payload)
+    # After the save, never before: the snapshot stays campaign-free so
+    # renaming a campaign shows up on the next read, not the next rebuild.
+    apply_campaign_labels(db, payload)
+    return payload, computed_at
 
 
 def _resolve_period(period: Optional[str]) -> Period:
