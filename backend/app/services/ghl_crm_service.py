@@ -43,6 +43,22 @@ FIELD_KEY_MAP: dict[str, str] = {
     "contact.gender":             "gender",
 }
 
+# GHL renders `contact.gender` as a RADIO, but the write API does not validate
+# against the picklist: sending "male" is accepted with a 200 and stored
+# verbatim (verified on the Oani location 2026-08-27). It just matches no
+# option, so it never renders as a selection and no filter or workflow keyed on
+# an option value can find the contact. Writing the option string exactly is
+# the difference between a usable segment and a dead string.
+#
+# These are the option values read from GET /locations/{id}/customFields on the
+# Oani location. A branch whose picklist reads differently stores the value
+# unmatched — no worse than the "m" it would otherwise get, and visible in GHL
+# rather than silently absent.
+GENDER_OPTIONS: dict[str, str] = {
+    "M": "Male | 男性 | 남성 | 男性",
+    "F": "Female | 女性 | 여성 | 女性",
+}
+
 # Default country dialing code per branch for E.164 phone normalization.
 BRANCH_COUNTRY_CODE: dict[str, str] = {
     "saigon": "+84",
@@ -151,10 +167,45 @@ def _normalize_name(raw: Optional[str]) -> str:
 
 
 def _normalize_gender(raw: Optional[str]) -> str:
-    """Lowercase gender value for GHL v2 API."""
+    """Map a Cloudbeds guestGender to its GHL radio option, or "" to skip.
+
+    Cloudbeds sends 'M' / 'F' / 'N/A' (see cloudbeds.py). This used to just
+    lowercase, so what reached GHL was the single letter "m" — stored, matching
+    no option, invisible to every filter.
+
+    Anything unrecognised returns "" and the field is left alone. 'N/A' means
+    the property never collected a gender, which is not the same as the guest
+    choosing "Prefer not to say", so it is not written as one.
+    """
     if not raw:
         return ""
-    return raw.strip().lower()
+    value = raw.strip().upper()
+    if value in GENDER_OPTIONS:
+        return GENDER_OPTIONS[value]
+    if value.startswith("FEMALE"):
+        return GENDER_OPTIONS["F"]
+    if value.startswith("MALE"):
+        return GENDER_OPTIONS["M"]
+    return ""
+
+
+def _main_guest_gender(reservation: dict) -> str:
+    """Gender of the main guest, as a GHL radio option.
+
+    Takes isMainGuest first rather than whichever guest happens to come first
+    in the dict — a two-person booking would otherwise report the companion's
+    gender. cloudbeds.py sorts the same way for the same reason.
+    """
+    guest_list = reservation.get("guestList") or {}
+    if not isinstance(guest_list, dict):
+        return ""
+    guests = [g for g in guest_list.values() if isinstance(g, dict)]
+    guests.sort(key=lambda g: 0 if g.get("isMainGuest") in (True, 1, "1", "true") else 1)
+    for guest in guests:
+        option = _normalize_gender(guest.get("guestGender"))
+        if option:
+            return option
+    return ""
 
 
 def _get_room_type_short(reservation: dict) -> Optional[str]:
@@ -179,7 +230,7 @@ def _get_room_type_short(reservation: dict) -> Optional[str]:
     return None
 
 
-def _build_custom_fields(reservation: dict, guest: dict) -> list:
+def _build_custom_fields(reservation: dict) -> list:
     """Build the GHL v2 customFields array, addressed by key.
 
     A key the location doesn't define is ignored by GHL rather than rejected,
@@ -194,7 +245,7 @@ def _build_custom_fields(reservation: dict, guest: dict) -> list:
         "status":        reservation.get("status") or "",
         "source":        reservation.get("source") or "",
         "roomTypeShort": room_type_short or "",
-        "gender":        _normalize_gender(guest.get("guestGender")),
+        "gender":        _main_guest_gender(reservation),
     }
 
     custom_fields = []
@@ -289,7 +340,7 @@ def _build_contact_payload(
         if guest.get("guestZip"):
             payload["postalCode"] = guest["guestZip"]
 
-    custom_fields = _build_custom_fields(reservation, guest)
+    custom_fields = _build_custom_fields(reservation)
     if custom_fields:
         payload["customFields"] = custom_fields
 
