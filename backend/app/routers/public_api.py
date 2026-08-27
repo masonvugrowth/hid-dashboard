@@ -17,6 +17,7 @@ from app.database import get_db
 from app.models.api_key import ApiKey
 from app.models.reservation import Reservation
 from app.models.branch import Branch
+from app.services.crm_filters import rate_plan_pattern_filter
 
 router = APIRouter()
 
@@ -86,6 +87,7 @@ def _reservation_out(r: Reservation, branch_name: str | None) -> dict:
         "check_out_date": r.check_out_date.isoformat() if r.check_out_date else None,
         "nights": r.nights,
         "room_type": r.room_type,
+        "rate_plan_name": r.rate_plan_name,
         "grand_total": float(r.grand_total_native) if r.grand_total_native else None,
         "deposit": _extract_raw(raw, "depositAmount"),
         "products": _extract_raw(raw, "productsTotal"),
@@ -99,6 +101,8 @@ def _reservation_out(r: Reservation, branch_name: str | None) -> dict:
         "guest_status": _extract_raw(raw, "guestStatus"),
         "cancellation_date": r.cancellation_date.isoformat() if r.cancellation_date else None,
         "branch": branch_name,
+        "branch_id": str(r.branch_id),
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }
 
 
@@ -108,8 +112,11 @@ def _reservation_out(r: Reservation, branch_name: str | None) -> dict:
 def get_reservations(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    date_field: str = Query("check_in", regex="^(check_in|booked)$"),
     branch_id: Optional[UUID] = None,
     status: Optional[str] = None,
+    rate_plan: Optional[list[str]] = Query(None),
+    modified_since: Optional[datetime] = None,
     limit: int = 200,
     offset: int = 0,
     _key: ApiKey = Depends(verify_api_key),
@@ -120,9 +127,19 @@ def get_reservations(
     Authenticate with X-API-Key header.
 
     Query params:
-    - date_from / date_to: filter by check_in_date range (YYYY-MM-DD)
+    - date_from / date_to: date range (YYYY-MM-DD)
+    - date_field: which date the range applies to — check_in (default) or
+      booked (reservation_date)
     - branch_id: filter by branch UUID
     - status: filter by reservation status
+    - rate_plan: repeatable. Keeps rows whose rate_plan_name OR room_type
+      contains the value (case-insensitive). Multiple values are OR'd, so
+      ?rate_plan=EARLY26 2 NIGHTS&rate_plan=EARLY26 3+ NIGHTS returns both.
+      Same match rule as the Rate Plan Quota engine — Cloudbeds sometimes
+      packs the campaign tag into room_type instead of rate_plan_name.
+    - modified_since: ISO timestamp. Only rows whose updated_at is at or
+      after it — for incremental pulls. Forces updated_at ASC ordering so
+      paging through a changing table stays stable.
     - limit: max results (default 200, max 1000)
     - offset: pagination offset
     """
@@ -132,18 +149,32 @@ def get_reservations(
         # so undefer explicitly for these rows only.
         q = db.query(Reservation).options(undefer(Reservation.raw_data))
 
+        date_col = (
+            Reservation.reservation_date if date_field == "booked"
+            else Reservation.check_in_date
+        )
         if date_from:
-            q = q.filter(Reservation.check_in_date >= date_from)
+            q = q.filter(date_col >= date_from)
         if date_to:
-            q = q.filter(Reservation.check_in_date <= date_to)
+            q = q.filter(date_col <= date_to)
         if branch_id:
             q = q.filter(Reservation.branch_id == branch_id)
         if status:
             q = q.filter(Reservation.status == status)
+        if modified_since:
+            q = q.filter(Reservation.updated_at >= modified_since)
+
+        rate_plan_clause = rate_plan_pattern_filter(rate_plan)
+        if rate_plan_clause is not None:
+            q = q.filter(rate_plan_clause)
 
         total = q.count()
+        order_by = (
+            Reservation.updated_at.asc() if modified_since
+            else date_col.desc()
+        )
         reservations = (
-            q.order_by(Reservation.check_in_date.desc())
+            q.order_by(order_by, Reservation.cloudbeds_reservation_id.asc())
             .offset(offset)
             .limit(limit)
             .all()
