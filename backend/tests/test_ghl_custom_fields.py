@@ -51,7 +51,7 @@ class TestCustomFieldKey:
 
 class TestBuildCustomFields:
     def test_reservation_number_is_always_sent(self):
-        fields = _build_custom_fields(RESERVATION, {})
+        fields = _build_custom_fields(RESERVATION)
         by_key = {f["key"]: f for f in fields}
         assert by_key["reservation_number"]["fieldValue"] == "6008449404616"
 
@@ -59,28 +59,28 @@ class TestBuildCustomFields:
         # Addressing by ID required a per-reservation
         # GET /locations/{id}/customFields, and that lookup failing was what
         # emptied the array in the first place.
-        for field in _build_custom_fields(RESERVATION, {}):
+        for field in _build_custom_fields(RESERVATION):
             assert "key" in field
             assert "id" not in field
 
     def test_both_value_spellings_are_sent(self):
         # fieldValue is current, field_value is the older documented name.
         # Sending one only is how a rename turns into another silent no-op.
-        for field in _build_custom_fields(RESERVATION, {}):
+        for field in _build_custom_fields(RESERVATION):
             assert field["fieldValue"] == field["field_value"]
 
     def test_room_type_reaches_the_payload(self):
-        by_key = {f["key"]: f for f in _build_custom_fields(RESERVATION, {})}
+        by_key = {f["key"]: f for f in _build_custom_fields(RESERVATION)}
         assert by_key["roomtypename"]["fieldValue"] == "4 Beds Mixed Dormitory"
 
     def test_empty_values_are_dropped_not_sent_blank(self):
         # Blanking a field GHL already holds is worse than leaving it alone.
         sparse = {"reservationID": "999", "source": "", "status": ""}
-        keys = {f["key"] for f in _build_custom_fields(sparse, {})}
+        keys = {f["key"] for f in _build_custom_fields(sparse)}
         assert keys == {"reservation_number"}
 
     def test_a_reservation_with_no_data_sends_nothing(self):
-        assert _build_custom_fields({}, {}) == []
+        assert _build_custom_fields({}) == []
 
 
 class TestRoomTypeExtraction:
