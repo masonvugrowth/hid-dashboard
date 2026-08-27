@@ -3,8 +3,8 @@
  *
  * Pulls every reservation whose rate plan is "EARLY26 2 NIGHTS" or
  * "EARLY26 3+ NIGHTS" from the HiD public API and writes it to a sheet
- * named after the branch. Runs on a 30-minute trigger, matching how often
- * HiD itself refreshes counts from Cloudbeds.
+ * named after the branch. Runs on a daily trigger by default; a 30-minute
+ * option is one menu click away (see "How fresh is the data?" below).
  *
  * Each run is a full re-pull, upserted by reservation number:
  *   - new booking   -> appended at the bottom of its branch tab
@@ -20,7 +20,16 @@
  *      HID_API_URL = https://meander-hid-dashboard.zeabur.app
  *      HID_API_KEY = hid_xxxxxxxx   (HiD -> Settings -> API Keys -> create)
  * 3. Reload the sheet, then menu "EARLY26" -> "Sync now" (approve the
- *    permission prompt once), then "EARLY26" -> "Install 30-min trigger".
+ *    permission prompt once), then "EARLY26" -> "Install daily trigger".
+ *
+ * -- How fresh is the data? --------------------------------------------------
+ * HiD pulls reservations from Cloudbeds on two schedules: a daily
+ * modified-7d sync at 02:00 ICT (cron-cloudbeds-modified.yml) and, every
+ * 30 min, an incremental sync of the branches covered by an active rate
+ * plan quota (cron-rate-plan-quota.yml) — which is exactly the EARLY26
+ * branches. So these rows are never more than ~30 min stale upstream;
+ * a daily pull is a choice about how often the sheet moves, not a limit.
+ * Switch with the menu: daily (default) or every 30 min.
  */
 
 // -- Config ------------------------------------------------------------------
@@ -66,6 +75,11 @@ var COLUMNS = [
   { header: 'Last Synced',   key: '_synced_at' },
 ];
 
+/** Hour of day (0-23, spreadsheet timezone) for the daily trigger. Apps
+ *  Script fires somewhere inside that hour, not exactly on the dot. 8 = after
+ *  the 02:00 ICT Cloudbeds sync, in time for the morning. */
+var DAILY_SYNC_HOUR = 8;
+
 var KEY_HEADER = 'Reservation #';
 var PAGE_SIZE = 500;      // API caps at 1000
 var MAX_PAGES = 40;       // hard stop; 40 * 500 = 20k rows
@@ -76,12 +90,29 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('EARLY26')
     .addItem('Sync now', 'syncEarly26Bookings')
-    .addItem('Install 30-min trigger', 'installTrigger')
+    .addItem('Install daily trigger', 'installDailyTrigger')
+    .addItem('Install 30-min trigger', 'installHalfHourlyTrigger')
     .addItem('Remove trigger', 'removeTrigger')
     .addToUi();
 }
 
-function installTrigger() {
+/** Once a day, around DAILY_SYNC_HOUR. Both installers clear the existing
+ *  trigger first, so switching cadence never leaves two running. */
+function installDailyTrigger() {
+  removeTrigger();
+  ScriptApp.newTrigger('syncEarly26Bookings')
+    .timeBased()
+    .everyDays(1)
+    .atHour(DAILY_SYNC_HOUR)
+    .create();
+  SpreadsheetApp.getActive().toast(
+    'Trigger installed — syncing daily around ' + DAILY_SYNC_HOUR + ':00.'
+  );
+}
+
+/** Matches the upstream rate-plan-quota cron, for when someone is watching
+ *  the cap fill up in near-real time. */
+function installHalfHourlyTrigger() {
   removeTrigger();
   ScriptApp.newTrigger('syncEarly26Bookings')
     .timeBased()

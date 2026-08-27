@@ -20,7 +20,24 @@ rate plans from the HiD public API and writes one tab per branch
    | `HID_API_URL` | `https://meander-hid-dashboard.zeabur.app` |
    | `HID_API_KEY` | an API key from HiD → Settings → API Keys (shown once) |
 3. Reload the spreadsheet → menu **EARLY26 → Sync now** (approve the OAuth
-   prompt), then **EARLY26 → Install 30-min trigger**.
+   prompt), then **EARLY26 → Install daily trigger**.
+
+### How often to sync
+
+Upstream, HiD refreshes reservations from Cloudbeds on two schedules: a daily
+modified-7d sync at 02:00 ICT (`cron-cloudbeds-modified.yml`) and, every 30
+min, an incremental sync of the branches covered by an active rate plan quota
+(`cron-rate-plan-quota.yml`) — which is exactly the EARLY26 branches. So these
+rows are at most ~30 min stale in HiD, and how often the *sheet* moves is a
+free choice:
+
+- **Install daily trigger** (default) — fires around `DAILY_SYNC_HOUR` (08:00
+  in the spreadsheet's timezone), after the nightly sync has landed.
+- **Install 30-min trigger** — matches the upstream quota cron, for when
+  someone is watching a cap fill up.
+
+Both installers remove the existing trigger first, so switching cadence never
+leaves two triggers running.
 
 ### Behaviour
 
