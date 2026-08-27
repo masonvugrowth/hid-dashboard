@@ -37,6 +37,26 @@ def crm_reservation_filter():
     return or_(*clauses)
 
 
+def rate_plan_pattern_filter(patterns):
+    """Return an or_() clause matching any of `patterns` on a reservation.
+
+    Same rule the Rate Plan Quota engine counts by: a booking belongs to a
+    rate plan when EITHER rate_plan_name OR room_type contains the pattern
+    (case-insensitive) — Cloudbeds packs the campaign tag into room_type
+    when the rate plan field is blank. Returns None when nothing usable is
+    passed so callers can skip the filter entirely.
+    """
+    clauses = []
+    for pattern in patterns or []:
+        pattern = (pattern or "").strip()
+        if not pattern:
+            continue
+        like = f"%{pattern}%"
+        clauses.append(Reservation.rate_plan_name.ilike(like))
+        clauses.append(Reservation.room_type.ilike(like))
+    return or_(*clauses) if clauses else None
+
+
 def crm_rate_plan_label_expr():
     """SQL expression that labels/groups a CRM reservation by its rate plan.
 
