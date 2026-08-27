@@ -70,8 +70,21 @@ class Settings(BaseSettings):
     GHL_API_KEY_OSAKA: str = ""
     GHL_WEBHOOK_SECRET: str = ""
 
-    # Cloudbeds inbound webhook secret (set in Cloudbeds → Webhooks → Secret)
+    # Cloudbeds inbound webhook secret (set in Cloudbeds → Webhooks → Secret).
+    # Required: without it the push endpoint rejects everything, rather than
+    # accepting unsigned bodies from anyone who finds the URL.
     CLOUDBEDS_WEBHOOK_SECRET: str = ""
+    # Branches moved off the 10-minute poller onto Cloudbeds push webhooks.
+    # Comma-separated slugs, e.g. "oani". Empty means every branch stays on
+    # polling — exactly the behaviour from before realtime existed, so this
+    # ships dark and is turned on one branch at a time.
+    WEBHOOK_REALTIME_BRANCHES: str = ""
+    # A push event fires the moment Cloudbeds creates the reservation, which for
+    # OTA bookings can be before the channel manager has filled in guest email
+    # and phone. Fanning out that instant would hand Meta/Google/TikTok a
+    # reservation with nothing to hash and burn the conversion. Wait this long
+    # first — the poller's 10-minute lag was doing this by accident.
+    WEBHOOK_SETTLE_SECONDS: int = 180
 
     # Meta Conversions API — per-branch pixel + system user access token
     META_PIXEL_ID_1948: str = ""
@@ -267,6 +280,15 @@ class Settings(BaseSettings):
             str(self.CB_PROPERTY_ID_TAIPEI): "taipei",
             str(self.CB_PROPERTY_ID_OANI): "oani",
             str(self.CB_PROPERTY_ID_OSAKA): "osaka",
+        }
+
+    @property
+    def webhook_realtime_branches(self) -> set:
+        """Branch slugs served by push webhooks instead of the 10-minute poll."""
+        return {
+            b.strip().lower()
+            for b in self.WEBHOOK_REALTIME_BRANCHES.split(",")
+            if b.strip()
         }
 
     def get_webhook_config_for_branch(self, branch: str) -> dict:

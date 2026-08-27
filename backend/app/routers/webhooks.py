@@ -7,11 +7,16 @@ Fan-out targets (per reservation):
   3. Google Ads — offline conversion upload (non-Website sources)
   4. TikTok Events API — branches in config.TIKTOK_BRANCHES (Saigon, Osaka)
 
-Trigger modes:
+Trigger modes (per branch, chosen by settings.WEBHOOK_REALTIME_BRANCHES):
   A. Polling — APScheduler job runs every 10 min, calls getReservations for
-     each branch, deduplicates via in-memory seen-set, fans out new ones.
-  B. Webhook (optional) — POST /api/webhooks/cloudbeds if Cloudbeds ever
-     supports push webhooks for this property.
+     each branch still on this path and fans out whatever it has not seen.
+  B. Realtime — Cloudbeds POSTs to /api/webhooks/cloudbeds, which queues the
+     fan-out WEBHOOK_SETTLE_SECONDS later. Those branches also get a slow,
+     wide safety-net poll, because push delivery is best-effort: a redeploy
+     drops queued jobs and Cloudbeds stops retrying eventually.
+
+Either way a reservation is marked seen only after its fan-out has run, so a
+Cloudbeds fetch that fails is retried by the next pass rather than lost.
 """
 import hashlib
 import hmac
@@ -51,17 +56,6 @@ def _poll_branches() -> list[tuple[str, str, str]]:
         ("oani", settings.CB_PROPERTY_ID_OANI, settings.CB_API_KEY_OANI),
         ("osaka", settings.CB_PROPERTY_ID_OSAKA, settings.CB_API_KEY_OSAKA),
     ]
-
-def _mark_seen(reservation_id: str) -> bool:
-    """Return True if already seen (duplicate). Otherwise mark and return False.
-
-    Backed by webhook_events rather than a process-local set, so a redeploy no
-    longer makes the next poll re-fan-out everything inside its window.
-    """
-    if webhook_log.has_seen(reservation_id):
-        return True
-    webhook_log.mark_seen(reservation_id)
-    return False
 
 
 # ── Core fan-out (shared by polling + webhook paths) ─────────────────────────
@@ -252,10 +246,27 @@ def _fetch_full_reservation(property_id: str, reservation_id: str) -> dict | Non
 
 
 def _process_reservation(property_id: str, reservation_id: str) -> None:
-    """Fetch a single reservation from Cloudbeds then fan out."""
+    """Fetch a single reservation from Cloudbeds then fan out.
+
+    The seen-check is repeated here because a poll can beat a queued push event
+    to the same reservation during the settle delay. Marking happens on the way
+    out: marking on the way in, as this used to, meant a failed Cloudbeds fetch
+    took the reservation out of the running for the rest of the process's life
+    — the poller skipped it ever after and the conversion never went up.
+    """
+    if webhook_log.has_seen(reservation_id):
+        logger.info("Fan-out skipped reservation=%s — already processed", reservation_id)
+        return
     reservation = _fetch_full_reservation(property_id, reservation_id)
-    if reservation:
-        _fan_out(property_id, reservation_id, reservation)
+    if not reservation:
+        logger.warning(
+            "Could not fetch reservation=%s property=%s — left for the next poll",
+            reservation_id,
+            property_id,
+        )
+        return
+    _fan_out(property_id, reservation_id, reservation)
+    webhook_log.mark_seen(reservation_id)
 
 
 def _get_reservation_list(
@@ -320,27 +331,37 @@ def _iter_reservation_pages(property_id: str, api_key: str, date_from: str, date
         page_number += 1
 
 
-# ── Polling job (called by APScheduler every 10 min) ─────────────────────────
+# ── Polling jobs (called by APScheduler) ────────────────────────────────────
 
-def poll_new_reservations() -> None:
+POLL_WINDOW_MINUTES = 15
+SAFETY_NET_WINDOW_MINUTES = 90
+
+
+def _branches_by_mode(realtime: bool) -> list[tuple[str, str, str]]:
+    """Split the branch list by how its reservations arrive.
+
+    A branch named in WEBHOOK_REALTIME_BRANCHES is driven by push events. The
+    poller still visits it, but only on the slow, wide safety-net pass.
     """
-    Poll all branches for reservations created in the last 15 minutes.
-    Skips any reservation already in the dedup set.
+    live = settings.webhook_realtime_branches
+    return [row for row in _poll_branches() if (row[0] in live) == realtime]
+
+
+def poll_new_reservations(
+    minutes: int = POLL_WINDOW_MINUTES,
+    realtime_branches: bool = False,
+) -> None:
+    """Fan out reservations created in the last `minutes` that aren't seen yet.
+
+    The default arguments are the every-10-minutes job over the polled
+    branches; `realtime_branches=True` runs it over the push-driven ones.
     """
     now_utc = datetime.now(timezone.utc)
-    from_dt = now_utc - timedelta(minutes=15)
+    from_dt = now_utc - timedelta(minutes=minutes)
     date_from = from_dt.strftime("%Y-%m-%d %H:%M:%S")
     date_to = now_utc.strftime("%Y-%m-%d %H:%M:%S")
 
-    branches = [
-        (settings.CB_PROPERTY_ID_SAIGON, settings.CB_API_KEY_SAIGON),
-        (settings.CB_PROPERTY_ID_TAIPEI, settings.CB_API_KEY_TAIPEI),
-        (settings.CB_PROPERTY_ID_1948, settings.CB_API_KEY_1948),
-        (settings.CB_PROPERTY_ID_OANI, settings.CB_API_KEY_OANI),
-        (settings.CB_PROPERTY_ID_OSAKA, settings.CB_API_KEY_OSAKA),
-    ]
-
-    for property_id, api_key in branches:
+    for branch, property_id, api_key in _branches_by_mode(realtime_branches):
         if not property_id or not api_key:
             continue
         try:
@@ -356,32 +377,94 @@ def poll_new_reservations() -> None:
             new_count = 0
             for res in reservations:
                 rid = str(res.get("reservationID", ""))
-                if not rid or _mark_seen(rid):
+                if not rid or webhook_log.has_seen(rid):
                     continue
                 full = _fetch_full_reservation(property_id, rid)
                 if not full:
+                    # Deliberately left unmarked — the next pass tries again.
+                    logger.warning("Poll: could not fetch reservation=%s branch=%s", rid, branch)
                     continue
                 new_count += 1
-                logger.info("Poll: new reservation=%s property=%s", rid, property_id)
+                logger.info("Poll: new reservation=%s branch=%s", rid, branch)
                 _fan_out(property_id, rid, full)
+                webhook_log.mark_seen(rid)
 
             if new_count:
-                logger.info("Poll property=%s: processed %d new reservations", property_id, new_count)
+                logger.info("Poll branch=%s: processed %d new reservations", branch, new_count)
 
         except Exception as e:
-            logger.error("Poll error property=%s: %s", property_id, e)
+            logger.error("Poll error branch=%s: %s", branch, e)
+
+
+def poll_realtime_safety_net() -> None:
+    """Hourly wide sweep over the push-driven branches.
+
+    Push delivery is best-effort: a redeploy drops whatever settle-delay jobs
+    were still pending, and Cloudbeds gives up retrying eventually. Re-walking
+    a 90-minute window makes a missed event cost a delay, not a conversion.
+    """
+    poll_new_reservations(minutes=SAFETY_NET_WINDOW_MINUTES, realtime_branches=True)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 def _verify_signature(raw_body: bytes, signature: str | None) -> bool:
+    """Fail closed.
+
+    An unset secret used to mean "accept anything", which left an endpoint that
+    fans out to four ad platforms open to whoever found the URL. A missing
+    secret now rejects every push, so enabling realtime without configuring the
+    secret fails loudly instead of quietly running unauthenticated.
+    """
     secret = settings.CLOUDBEDS_WEBHOOK_SECRET
-    if not secret:
-        return True
-    if not signature:
+    if not secret or not signature:
         return False
     expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(f"sha256={expected}", signature)
+    # Cloudbeds' header format isn't pinned down, so accept the prefixed digest
+    # and the bare hex rather than failing on a cosmetic difference.
+    return any(
+        hmac.compare_digest(candidate, signature)
+        for candidate in (f"sha256={expected}", expected)
+    )
+
+
+def _payload_id(payload: dict, *keys: str) -> str:
+    """Read an id from the payload root or from a nested `data` object."""
+    nested = payload.get("data")
+    for source in (payload, nested if isinstance(nested, dict) else {}):
+        for key in keys:
+            value = source.get(key)
+            if value:
+                return str(value)
+    return ""
+
+
+def _queue_fan_out(property_id: str, reservation_id: str):
+    """Schedule the fan-out once the reservation has had time to settle.
+
+    Returns the scheduled time, or None when there is no running scheduler to
+    hand the job to (tests, or a startup where the scheduler failed to come up)
+    — the caller then falls back to processing it immediately.
+    """
+    from apscheduler.triggers.date import DateTrigger
+
+    from app.scheduler import scheduler
+
+    if not scheduler.running:
+        return None
+    run_at = datetime.now(timezone.utc) + timedelta(
+        seconds=max(0, settings.WEBHOOK_SETTLE_SECONDS)
+    )
+    scheduler.add_job(
+        _process_reservation,
+        trigger=DateTrigger(run_date=run_at),
+        args=[str(property_id), str(reservation_id)],
+        id=f"webhook_fanout_{reservation_id}",
+        replace_existing=True,
+        executor="default",
+        misfire_grace_time=600,
+    )
+    return run_at
 
 
 @router.post("/webhooks/cloudbeds")
@@ -390,7 +473,12 @@ async def cloudbeds_webhook(
     background_tasks: BackgroundTasks,
     x_cloudbeds_signature: str | None = Header(default=None),
 ) -> dict:
-    """Optional push webhook endpoint — used if Cloudbeds supports it."""
+    """Cloudbeds push endpoint — the realtime alternative to the 10-min poll.
+
+    Cloudbeds gets its answer immediately; the fan-out itself waits out
+    WEBHOOK_SETTLE_SECONDS so an OTA booking has its guest details attached
+    before Meta, Google and TikTok are asked to match on them.
+    """
     raw_body = await request.body()
     if not _verify_signature(raw_body, x_cloudbeds_signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
@@ -398,16 +486,21 @@ async def cloudbeds_webhook(
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Expected a JSON object")
 
-    property_id = str(payload.get("propertyID") or payload.get("property_id") or "")
-    reservation_id = str(payload.get("reservationID") or payload.get("reservation_id") or "")
+    property_id = _payload_id(payload, "propertyID", "property_id", "propertyId")
+    reservation_id = _payload_id(payload, "reservationID", "reservation_id", "reservationId")
     if not property_id or not reservation_id:
         return {"success": True, "message": "skipped — missing IDs"}
-    if _mark_seen(reservation_id):
+    if webhook_log.has_seen(reservation_id):
         return {"success": True, "message": "already processed"}
 
-    background_tasks.add_task(_process_reservation, property_id, reservation_id)
-    return {"success": True, "message": "queued"}
+    run_at = _queue_fan_out(property_id, reservation_id)
+    if run_at is None:
+        background_tasks.add_task(_process_reservation, property_id, reservation_id)
+        return {"success": True, "message": "queued"}
+    return {"success": True, "message": f"queued for {run_at.isoformat()}"}
 
 
 @router.get("/admin/webhook-events")
@@ -464,16 +557,32 @@ async def poll_diagnostic(
     # Is APScheduler even alive? If the job is missing or has no next run, the
     # poll has not been firing at all and no per-branch result below matters.
     job = scheduler.get_job("cloudbeds_reservation_poll")
+    safety_job = scheduler.get_job("cloudbeds_realtime_safety_net")
+    realtime = sorted(settings.webhook_realtime_branches)
     scheduler_state = {
         "running": scheduler.running,
         "poll_job_registered": job is not None,
         "poll_job_next_run": job.next_run_time.isoformat() if job and job.next_run_time else None,
+        "safety_net_next_run": (
+            safety_job.next_run_time.isoformat()
+            if safety_job and safety_job.next_run_time
+            else None
+        ),
+        # Realtime canary state. Without these three the monitor cannot tell a
+        # branch that is quiet from one whose pushes are being rejected.
+        "realtime_branches": realtime,
+        "realtime_secret_set": bool(settings.CLOUDBEDS_WEBHOOK_SECRET),
+        "settle_seconds": settings.WEBHOOK_SETTLE_SECONDS,
+        "pending_fan_outs": sum(
+            1 for j in scheduler.get_jobs() if str(j.id).startswith("webhook_fanout_")
+        ),
     }
 
     branches = []
     for branch, property_id, api_key in _poll_branches():
         entry = {
             "branch": branch,
+            "mode": "realtime" if branch in realtime else "poll",
             "property_id": property_id or None,
             # Never echo the key itself — presence and length are enough to tell
             # "missing" apart from "present but rejected".

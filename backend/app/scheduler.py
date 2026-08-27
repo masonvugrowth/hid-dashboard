@@ -28,7 +28,7 @@ def start_scheduler() -> None:
     if scheduler.running:
         return
 
-    from app.routers.webhooks import poll_new_reservations
+    from app.routers.webhooks import poll_new_reservations, poll_realtime_safety_net
 
     def heartbeat() -> None:
         logger.info("Scheduler heartbeat - server alive")
@@ -51,6 +51,18 @@ def start_scheduler() -> None:
         replace_existing=True,
         executor="default",
     )
+    # Branches on push webhooks are skipped by the job above and covered here
+    # instead: hourly over a 90-minute window, wide enough that a push lost to a
+    # redeploy costs a delay rather than the conversion. Registered
+    # unconditionally so switching a branch to realtime is an env var, not a
+    # deploy — with no realtime branches configured this walks an empty list.
+    scheduler.add_job(
+        poll_realtime_safety_net,
+        trigger=IntervalTrigger(minutes=60),
+        id="cloudbeds_realtime_safety_net",
+        replace_existing=True,
+        executor="default",
+    )
     scheduler.add_job(
         purge_webhook_events,
         trigger=CronTrigger(hour=4, minute=0),
@@ -59,7 +71,13 @@ def start_scheduler() -> None:
         executor="default",
     )
     scheduler.start()
-    logger.info("Scheduler started - polling Cloudbeds every 10 min")
+    from app.config import settings
+
+    realtime = sorted(settings.webhook_realtime_branches)
+    logger.info(
+        "Scheduler started - Cloudbeds poll every 10 min; realtime branches=%s",
+        ",".join(realtime) or "none",
+    )
 
 
 def stop_scheduler() -> None:
