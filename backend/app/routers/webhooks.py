@@ -100,6 +100,11 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
                     "success": action in ("created", "updated"),
                     "action": action,
                     "error": result.get("error"),
+                    # How many custom fields the write actually carried. A
+                    # contact upsert reports success on names and phone alone,
+                    # so without this a run that silently wrote no reservation
+                    # data at all still showed up green.
+                    "custom_fields": result.get("custom_fields"),
                 }
         except Exception as e:
             logger.error("GHL upsert error branch=%s reservation=%s: %s", branch, reservation_id, e)

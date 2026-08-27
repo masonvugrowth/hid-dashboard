@@ -18,7 +18,19 @@ logger = logging.getLogger(__name__)
 GHL_BASE = "https://services.leadconnectorhq.com"
 
 # Maps GHL custom field keys → Cloudbeds reservation data keys.
-# Field IDs are fetched dynamically per location (see _get_location_field_map).
+#
+# These are written by `key`, not by field ID. The ID route needed a
+# GET /locations/{id}/customFields lookup per reservation, and that call was
+# failing with the branch API keys — silently, because a failure returned an
+# empty map, `customFields` was then left off the payload entirely, and GHL
+# answered 200. Every contact came out with names and phone filled in and not
+# one custom field, while the Webhook Monitor showed a green "updated".
+#
+# One trap when writing by key: GHL reports the field key as
+# "contact.roomtypename" but only accepts it as "roomtypename" — the prefixed
+# form is accepted with a 200 and silently ignored, the same dead end as
+# before. _custom_field_key strips it; keep the prefix here so these still read
+# as the fieldKey values GHL's own API returns.
 FIELD_KEY_MAP: dict[str, str] = {
     "contact.reservation_number": "reservationID",
     "contact.reservation_date":   "dateCreated",
@@ -39,9 +51,6 @@ BRANCH_COUNTRY_CODE: dict[str, str] = {
     "oani":   "+886",
     "osaka":  "+81",
 }
-
-# In-memory cache: location_id → {fieldKey: fieldId}
-_field_cache: dict[str, dict[str, str]] = {}
 
 
 def _headers(api_key: str) -> dict:
@@ -73,28 +82,13 @@ def _normalize_phone(raw: Optional[str], branch: str) -> Optional[str]:
     return f"{code}{digits}"
 
 
-def _get_location_field_map(
-    client: httpx.Client, location_id: str, api_key: str
-) -> dict[str, str]:
-    """Return {fieldKey: fieldId} for a GHL location. Cached in-process."""
-    if location_id in _field_cache:
-        return _field_cache[location_id]
-    try:
-        resp = client.get(
-            f"{GHL_BASE}/locations/{location_id}/customFields",
-            params={"model": "contact"},
-            headers=_headers(api_key),
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            fields = resp.json().get("customFields") or []
-            field_map = {f["fieldKey"]: f["id"] for f in fields if "fieldKey" in f and "id" in f}
-            _field_cache[location_id] = field_map
-            return field_map
-        logger.warning("GHL get custom fields failed status=%d location=%s", resp.status_code, location_id)
-    except Exception as e:
-        logger.error("GHL get custom fields error location=%s: %s", location_id, e)
-    return {}
+def _custom_field_key(field_key: str) -> str:
+    """Turn a GHL fieldKey into the form the write API accepts.
+
+    GHL hands out "contact.roomtypename" and takes "roomtypename". Passing the
+    prefixed form back is not an error — it returns 200 and writes nothing.
+    """
+    return field_key.split(".", 1)[1] if field_key.startswith("contact.") else field_key
 
 
 # ISO 3166-1 alpha-2. A two-letter shape is not enough: GHL validates the value
@@ -164,29 +158,33 @@ def _normalize_gender(raw: Optional[str]) -> str:
 
 
 def _get_room_type_short(reservation: dict) -> Optional[str]:
-    """Extract roomTypeNameShort (or roomTypeName) from assigned rooms."""
-    assigned = reservation.get("assigned") or {}
-    rooms = assigned.values() if isinstance(assigned, dict) else (assigned if isinstance(assigned, list) else [])
-    for room in rooms:
-        if isinstance(room, dict):
-            val = room.get("roomTypeNameShort") or room.get("roomTypeName")
-            if val:
-                return val
+    """Extract roomTypeNameShort (or roomTypeName) from the reservation's rooms.
+
+    Reads `unassigned` as well as `assigned` — the room type is chosen at
+    booking, but the room itself is often assigned much later or on arrival, so
+    looking only at `assigned` left the field blank for most future bookings.
+    The ingestion path in cloudbeds.py already walks both lists.
+    """
+    for room_list_key in ("assigned", "unassigned"):
+        rooms = reservation.get(room_list_key) or {}
+        if isinstance(rooms, dict):
+            rooms = list(rooms.values())
+        elif not isinstance(rooms, list):
+            continue
+        for room in rooms:
+            if isinstance(room, dict):
+                val = room.get("roomTypeNameShort") or room.get("roomTypeName")
+                if val:
+                    return val
     return None
 
 
-def _build_custom_fields(
-    reservation: dict,
-    guest: dict,
-    location_id: str,
-    api_key: str,
-    client: httpx.Client,
-) -> list:
-    """Build the GHL v2 customFields array using dynamic field ID lookup."""
-    field_map = _get_location_field_map(client, location_id, api_key)
-    if not field_map:
-        return []
+def _build_custom_fields(reservation: dict, guest: dict) -> list:
+    """Build the GHL v2 customFields array, addressed by key.
 
+    A key the location doesn't define is ignored by GHL rather than rejected,
+    so branches that are missing some of these fields still get the rest.
+    """
     room_type_short = _get_room_type_short(reservation)
     data = {
         "reservationID": str(reservation.get("reservationID") or ""),
@@ -201,12 +199,19 @@ def _build_custom_fields(
 
     custom_fields = []
     for field_key, data_key in FIELD_KEY_MAP.items():
-        field_id = field_map.get(field_key)
-        if not field_id:
-            continue
         value = data.get(data_key, "")
         if value:
-            custom_fields.append({"id": field_id, "field_value": str(value)})
+            custom_fields.append(
+                {
+                    "key": _custom_field_key(field_key),
+                    # fieldValue is the current name, field_value the older one
+                    # GHL still documents. Sending both costs nothing and means
+                    # this doesn't quietly stop writing when either is dropped —
+                    # the exact failure mode being fixed here.
+                    "fieldValue": str(value),
+                    "field_value": str(value),
+                }
+            )
 
     return custom_fields
 
@@ -214,9 +219,6 @@ def _build_custom_fields(
 def _build_contact_payload(
     reservation: dict,
     branch: str,
-    location_id: str,
-    api_key: str,
-    client: httpx.Client,
     is_update: bool = False,
 ) -> dict:
     """Build the GHL contact payload for a specific branch."""
@@ -287,7 +289,7 @@ def _build_contact_payload(
         if guest.get("guestZip"):
             payload["postalCode"] = guest["guestZip"]
 
-    custom_fields = _build_custom_fields(reservation, guest, location_id, api_key, client)
+    custom_fields = _build_custom_fields(reservation, guest)
     if custom_fields:
         payload["customFields"] = custom_fields
 
@@ -410,12 +412,16 @@ def upsert_contact_from_reservation(
     """
     Main entry point: upsert a GHL contact from Cloudbeds reservation data.
     Returns {"action": "created"|"updated"|"create_failed"|"update_failed"|"skipped",
-             "contact_id": str|None, "error": str|None}.
+             "contact_id": str|None, "error": str|None, "custom_fields": int}.
 
     A failed create reports "create_failed", not "created" with a null id — the
     webhook monitor treats anything outside created/updated as a failure, and a
     green "created" row for a contact that was never created is worse than no
     row at all.
+
+    `custom_fields` counts what was actually sent. For a year the monitor showed
+    a green "updated" for writes carrying zero custom fields; a count in the row
+    means that can never again pass for a healthy sync.
     """
     email = (reservation.get("guestEmail") or "").strip()
     if not email or email.upper() in ("N/A", "NA"):
@@ -425,17 +431,27 @@ def upsert_contact_from_reservation(
     b = branch.lower()
 
     with httpx.Client(timeout=20) as client:
-        create_payload = _build_contact_payload(reservation, b, location_id, api_key, client, is_update=False)
-        update_payload = _build_contact_payload(reservation, b, location_id, api_key, client, is_update=True)
+        create_payload = _build_contact_payload(reservation, b, is_update=False)
+        update_payload = _build_contact_payload(reservation, b, is_update=True)
 
         existing = search_contact(client, location_id, api_key, email)
+        sent_fields = len(update_payload.get("customFields") or [])
 
         if existing is None:
             contact_id, err = create_contact(client, location_id, api_key, create_payload)
             if not contact_id:
                 return {"action": "create_failed", "contact_id": None, "error": err}
-            return {"action": "created", "contact_id": contact_id}
+            return {
+                "action": "created",
+                "contact_id": contact_id,
+                "custom_fields": len(create_payload.get("customFields") or []),
+            }
         else:
             contact_id = existing.get("id")
             success, err = update_contact(client, contact_id, api_key, location_id, update_payload)
-            return {"action": "updated" if success else "update_failed", "contact_id": contact_id, "error": err}
+            return {
+                "action": "updated" if success else "update_failed",
+                "contact_id": contact_id,
+                "error": err,
+                "custom_fields": sent_fields,
+            }
