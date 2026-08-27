@@ -2,10 +2,15 @@
  * Marketing Activity — Consolidated view of Paid Ads, KOL, and CRM performance.
  * Month-based filter with MoM comparison.
  */
-import { useState, useMemo } from "react";
-import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { useState, useMemo, useRef } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
-import { getMarketingActivitySummary, getCRMBranchComparison } from "../api/marketingActivity";
+import {
+  getMarketingActivitySummary,
+  getCRMBranchComparison,
+  getRatePlanCampaigns,
+  saveRatePlanCampaign,
+} from "../api/marketingActivity";
 import { getEmailSummary, getEmailByCampaign } from "../api/emailMarketing";
 
 // Map HiD branch name to GHL location name (5 branches × different naming)
@@ -282,9 +287,86 @@ function OverviewTab({ overview, prevOverview, prevLabel, cur, isYtd, ytdYear })
   );
 }
 
+/* ── Campaign label — hand-typed, one per rate plan name ─────────────────── */
+// Cloudbeds rate plan names don't say which campaign they belong to, so the
+// team types it here once per rate plan and everyone reading the table sees it.
+function CampaignCell({ value, onSave, saving }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef(null);
+
+  const start = () => {
+    setDraft(value || "");
+    setEditing(true);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const commit = () => {
+    setEditing(false);
+    const next = draft.trim();
+    if (next !== (value || "")) onSave(next);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        maxLength={200}
+        placeholder="e.g. Summer 2026 Retention"
+        className="w-full text-sm border border-blue-400 rounded px-2 py-1 bg-white outline-none"
+      />
+    );
+  }
+
+  return (
+    <button
+      onClick={start}
+      title="Click to edit — blank clears it"
+      className={`w-full text-left text-sm rounded px-2 py-1 transition-colors hover:bg-yellow-100 ${
+        value ? "text-gray-800" : "text-gray-300 italic"
+      }`}
+    >
+      {saving ? <span className="text-gray-400">Saving…</span> : value || "+ add campaign"}
+    </button>
+  );
+}
+
 /* ── CRM Reservations Tab — grouped by Rate Plan Name ────────────────────── */
 function CRMRatePlansTab({ rows, cur, month }) {
   const [view, setView] = useState("rate-plan");
+  const queryClient = useQueryClient();
+
+  // Campaign labels are global (a rate plan tag means the same campaign on
+  // every branch), so this query carries no branch/month key.
+  const { data: campaigns } = useQuery({
+    queryKey: ["rate-plan-campaigns"],
+    queryFn: getRatePlanCampaigns,
+  });
+  const [savingPlan, setSavingPlan] = useState(null);
+  const [saveError, setSaveError] = useState(null);
+
+  const saveCampaign = async (ratePlan, campaign) => {
+    setSavingPlan(ratePlan);
+    setSaveError(null);
+    try {
+      await saveRatePlanCampaign(ratePlan, campaign);
+      await queryClient.invalidateQueries({ queryKey: ["rate-plan-campaigns"] });
+    } catch (e) {
+      // Leave the old label on screen — the cell must never show a value the
+      // server didn't accept.
+      const detail = e?.response?.data?.detail || e?.message || "unknown error";
+      setSaveError(`Could not save the campaign for "${ratePlan}": ${detail}`);
+    } finally {
+      setSavingPlan(null);
+    }
+  };
 
   const subToggle = (
     <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
@@ -343,6 +425,11 @@ function CRMRatePlansTab({ rows, cur, month }) {
         CRM reservations (CRM / MEANDER&apos;S FRIEND / Travel Guide / Grand Open / Extension Promotion / WELCOME) broken down by Rate Plan Name,
         filtered by Date Booked (not Stay Date).
         Excludes cancelled bookings and non-paying sources (Blogger / House Use / Special Case).
+        <br />
+        <span className="text-gray-400">
+          Campaign is filled in by hand — click a cell to name the campaign a rate plan belongs to.
+          It applies to that rate plan on every branch.
+        </span>
       </p>
       {hasZeroRevenueRow && (
         <p className="text-xs text-gray-500 italic">
@@ -352,11 +439,17 @@ function CRMRatePlansTab({ rows, cur, month }) {
           or comp event guests where the room rate was waived).
         </p>
       )}
+      {saveError && (
+        <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
+          {saveError}
+        </p>
+      )}
       <div className="bg-white rounded-lg border overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Rate Plan Name</th>
+              <th className="text-left px-4 py-3 font-semibold text-gray-600">Campaign</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Bookings</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Nights</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue ({cur})</th>
@@ -369,6 +462,13 @@ function CRMRatePlansTab({ rows, cur, month }) {
               return (
                 <tr key={i} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-900">{r.rate_plan_name}</td>
+                  <td className="px-2 py-2">
+                    <CampaignCell
+                      value={campaigns?.[r.rate_plan_name] || ""}
+                      saving={savingPlan === r.rate_plan_name}
+                      onSave={(val) => saveCampaign(r.rate_plan_name, val)}
+                    />
+                  </td>
                   <td className="px-4 py-3 text-right">{fmtNum(r.bookings)}</td>
                   <td className="px-4 py-3 text-right">{fmtNum(r.nights)}</td>
                   <td className="px-4 py-3 text-right">
@@ -386,6 +486,7 @@ function CRMRatePlansTab({ rows, cur, month }) {
             })}
             <tr className="bg-gray-50 font-semibold">
               <td className="px-4 py-3">Total</td>
+              <td className="px-4 py-3"></td>
               <td className="px-4 py-3 text-right">{fmtNum(totals.bookings)}</td>
               <td className="px-4 py-3 text-right">{fmtNum(totals.nights)}</td>
               <td className="px-4 py-3 text-right">{fmtNum(totals.revenue)}</td>
