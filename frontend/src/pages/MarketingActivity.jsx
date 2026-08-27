@@ -561,7 +561,12 @@ function ComparisonMatrix({ title, subtitle, branches, rows, rowLabel, metric })
             const rowMax = Math.max(0, ...branches.map((b) => cellVal(r.cells[b.branch_id])));
             return (
               <tr key={i}>
-                <td className="px-4 py-2.5 font-medium text-gray-900 whitespace-nowrap">{r[rowLabel === "Month" ? "month" : "rate_plan_name"]}</td>
+                <td className="px-4 py-2.5 font-medium text-gray-900 whitespace-nowrap"
+                    title={rowLabel === "Month" ? undefined : r.rate_plan_name}>
+                  {rowLabel === "Month"
+                    ? r.month
+                    : r.campaign_name || r.rate_plan_name}
+                </td>
                 {branches.map((b) => {
                   const v = cellVal(r.cells[b.branch_id]);
                   const { style, cls } = heatStyle(v, rowMax);

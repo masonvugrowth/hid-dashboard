@@ -37,6 +37,7 @@ from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to
 from app.services.ads_platform import branch_slug_for, get_client as _get_ads_client
 from app.services.crm_filters import crm_rate_plan_label_expr, crm_reservation_filter
 from app.services.kol_engine import fetch_kol_revenue, resolve_hotel_id_from_branch_name
+from app.services.rate_plan_campaigns import campaign_map, label_rows
 from app.config import settings
 
 router = APIRouter()
@@ -550,24 +551,6 @@ def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date
 
 # ── Rate plan → campaign labels (hand-typed) ─────────────────────────────────
 
-def _campaign_map(db: Session) -> dict:
-    """{rate_plan_name: campaign_name} for every label the team has tagged.
-
-    Zeabur does not run Alembic on deploy, so between this code landing and
-    `POST /api/sync/run-migrations` the table does not exist. An unlabelled
-    table is a far smaller problem than a 500 on the whole CRM tab, so a
-    failure here degrades to "nothing tagged yet".
-    """
-    try:
-        rows = db.query(RatePlanCampaign).all()
-    except Exception:
-        db.rollback()
-        log.warning("rate_plan_campaigns unavailable — serving empty campaign map",
-                    exc_info=True)
-        return {}
-    return {r.rate_plan_name: r.campaign_name for r in rows}
-
-
 class RatePlanCampaignIn(BaseModel):
     rate_plan_name: str = Field(..., min_length=1, max_length=300)
     # Empty string is the "clear it" signal — the row is deleted rather than
@@ -578,7 +561,7 @@ class RatePlanCampaignIn(BaseModel):
 @router.get("/rate-plan-campaigns")
 def get_rate_plan_campaigns(db: Session = Depends(get_db)):
     """All rate plan → campaign labels, as a flat map."""
-    return _envelope(_campaign_map(db))
+    return _envelope(campaign_map(db))
 
 
 @router.put("/rate-plan-campaigns")
@@ -912,6 +895,9 @@ def _crm_comparison_by_campaign(db: Session, d_from: date, d_to: date):
         entry["total"]["revenue"] += cell["revenue"]
 
     result = list(by_plan.values())
+    # Show the campaign the team typed for each rate plan; rows nobody has
+    # labelled keep their rate plan name.
+    label_rows(result, campaign_map(db))
     result.sort(key=lambda x: -x["total"]["revenue"])
     return result
 

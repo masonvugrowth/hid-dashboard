@@ -41,6 +41,7 @@ from app.services.kpi_engine import (
     _EXCLUDED_STATUSES,
     _EXCLUDED_SOURCES,
 )
+from app.services.rate_plan_campaigns import apply_campaign_labels
 from app.services.weekly_report_builder import build_branch_analytics, last_week_range
 from app.services.report_common import (
     MONTHS_EN,
@@ -115,9 +116,14 @@ def _get_report_with_cache(db: Session, force_fresh: bool = False) -> tuple[list
     if not force_fresh:
         cached = _load_cached_report(db)
         if cached is not None:
-            return cached
+            payload, computed_at = cached
+            apply_campaign_labels(db, payload)
+            return payload, computed_at
     payload = _build_report(db)
     computed_at = _save_cached_report(db, payload)
+    # After the save, never before: the cached payload stays campaign-free so
+    # renaming a campaign shows up on the next read instead of the next rebuild.
+    apply_campaign_labels(db, payload)
     return payload, computed_at
 
 
@@ -1818,7 +1824,7 @@ def _render_crm(b: dict) -> str:
     if by_rate_plan:
         rp_rows = "".join(
             f"<tr>"
-            f"<td style='{_TABLE_TD}'>{_attr_escape(rp.get('rate_plan_name') or '—')}</td>"
+            f"<td style='{_TABLE_TD}'>{_attr_escape(rp.get('campaign_name') or rp.get('rate_plan_name') or '—')}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{rp['bookings']}</td>"
             f"<td style='{_TABLE_TD};text-align:right;color:#6b7280;'>{rp['nights']}</td>"
             f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{_fmt(rp['revenue'], cur)}</td>"
