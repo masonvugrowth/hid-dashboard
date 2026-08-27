@@ -290,6 +290,17 @@ def get_marketing_activity_summary(
 # ── KOL totals: KOL Engine API → Cloudbeds fallback ──────────────────────────
 
 
+def _months_in_range(d_from: date, d_to: date) -> list[tuple[int, int]]:
+    """Every (year, month) touched by [d_from, d_to], in order."""
+    months = []
+    cur = date(d_from.year, d_from.month, 1)
+    end = date(d_to.year, d_to.month, 1)
+    while cur <= end:
+        months.append((cur.year, cur.month))
+        cur = date(cur.year + 1, 1, 1) if cur.month == 12 else date(cur.year, cur.month + 1, 1)
+    return months
+
+
 def _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native):
     """Fallback: Cloudbeds KOL revenue by room_type when KOL Engine API fails."""
     rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
@@ -365,16 +376,7 @@ def _fetch_kol_totals(db, branch_id, d_from, d_to, use_native):
         if branch_obj:
             hotel_id = resolve_hotel_id_from_branch_name(branch_obj.name)
 
-    # Enumerate months in the range
-    months = []
-    cur = date(d_from.year, d_from.month, 1)
-    end = date(d_to.year, d_to.month, 1)
-    while cur <= end:
-        months.append((cur.year, cur.month))
-        if cur.month == 12:
-            cur = date(cur.year + 1, 1, 1)
-        else:
-            cur = date(cur.year, cur.month + 1, 1)
+    months = _months_in_range(d_from, d_to)
 
     if len(months) == 1:
         return _fetch_kol_totals_one_month(
@@ -401,6 +403,91 @@ def _fetch_kol_totals(db, branch_id, d_from, d_to, use_native):
                 yr, mo = futures[future]
                 log.warning("KOL month %s-%s failed: %s", yr, mo, exc)
     return total_bookings, total_revenue
+
+
+# ── KOL cost: KOL Engine public revenue API ──────────────────────────────────
+#
+# Deliberately NOT Budget Planner's ActualsCache, which routes through the KOL
+# Engine's Budget module (GET /api/sync/budgets → monthly_breakdown[].actual).
+# That endpoint reports the figure in the hotel's budget currency after the
+# Engine has divided the stored VND by its own rates (820 TWD / 170 JPY);
+# fetch_kol_yearly then multiplies back by our hardcoded 830 / 165, so a clean
+# 500,000 VND arrives as 506,097.56 (+1.22% on TWD branches, -2.94% on JPY).
+#
+# /api/public/kol-revenue already carries cost_vnd converted at the Engine's own
+# rates, and it is the same payload — same call, same 10-min cache — that KOL
+# revenue is read from, so cost and revenue can no longer drift apart.
+
+
+def _fetch_kol_cost_one_month(hotel_id: Optional[str], year: int, month: int) -> Optional[float]:
+    """KOL cost in VND for one month. None when the Engine is unreachable."""
+    data = fetch_kol_revenue(
+        base_url=settings.KOL_ENGINE_URL,
+        org_slug=settings.KOL_TARGETS_ORG_SLUG,
+        api_key=settings.KOL_REVENUE_API_SECRET,
+        year=year,
+        month=month,
+        hotel_id=hotel_id,
+    )
+    if data is None:
+        return None
+    if hotel_id:
+        for b in (data.get("branches") or []):
+            if b.get("hotel_id") == hotel_id:
+                return float(b.get("cost_vnd") or 0)
+        return 0.0
+    # totals.cost is org-wide and always VND (totals.currency == "VND").
+    return float((data.get("totals") or {}).get("cost") or 0)
+
+
+def _fetch_kol_cost_vnd(db, branch_id, d_from: date, d_to: date) -> Optional[float]:
+    """KOL cost in VND over [d_from, d_to], or None if the Engine can't answer.
+
+    None (not 0) on failure so the caller keeps Budget Planner's actuals as a
+    fallback — a 0 here would silently turn the KOL ROAS into a dash.
+    """
+    hotel_id = None
+    if branch_id:
+        branch_obj = db.query(Branch).filter(Branch.id == branch_id).first()
+        hotel_id = resolve_hotel_id_from_branch_name(branch_obj.name) if branch_obj else None
+        if not hotel_id:
+            return None
+
+    months = _months_in_range(d_from, d_to)
+    if len(months) == 1:
+        return _fetch_kol_cost_one_month(hotel_id, months[0][0], months[0][1])
+
+    total = 0.0
+    with ThreadPoolExecutor(max_workers=min(len(months), 6)) as ex:
+        futures = {
+            ex.submit(_fetch_kol_cost_one_month, hotel_id, yr, mo): (yr, mo)
+            for yr, mo in months
+        }
+        for future in as_completed(futures):
+            yr, mo = futures[future]
+            try:
+                value = future.result()
+            except Exception as exc:
+                log.warning("KOL cost %s-%s failed: %s", yr, mo, exc)
+                return None
+            if value is None:
+                return None
+            total += value
+    return total
+
+
+def _kol_cost_for_view(db, branch_id, d_from: date, d_to: date, use_native: bool,
+                       fallback: float) -> float:
+    """KOL cost in the view's currency, falling back to Budget Planner actuals."""
+    cost_vnd = _fetch_kol_cost_vnd(db, branch_id, d_from, d_to)
+    if cost_vnd is None:
+        log.warning("KOL cost unavailable from KOL Engine — using Budget Planner actuals")
+        return fallback
+    if not (use_native and branch_id):
+        return cost_vnd
+    branch_obj = db.query(Branch).filter(Branch.id == branch_id).first()
+    cur = (branch_obj.currency or "VND").upper() if branch_obj else "VND"
+    return _vnd_to_native(cost_vnd, cur, _get_rate_to_vnd(cur))
 
 
 # ── Overview KPIs ────────────────────────────────────────────────────────────
@@ -439,14 +526,16 @@ def _build_overview(db, branch_id, d_from, d_to, use_native):
     crm_bookings = int(crm_row.bookings)
     crm_revenue = float(crm_row.revenue)
 
-    # Costs — pulled from the same source Budget Planner uses (ActualsCache).
+    # Costs — Budget Planner's ActualsCache for paid_ads and crm.
     # paid_ads → Ads Platform yearly-plan API (or cached_actual_vnd)
-    # kol      → KOL Engine /api/sync/budgets (or cached_actual_vnd)
     # crm      → manual_actual_vnd entered via Budget Planner UI
-    ads_cost, kol_cost, crm_cost = _budget_actuals_costs(
+    ads_cost, kol_cost_budget, crm_cost = _budget_actuals_costs(
         db, branch_id, d_from.year, d_from.month, use_native,
         month_to=d_to.month if d_to.year == d_from.year else 12,
     )
+    # kol → KOL Engine /api/public/kol-revenue cost_vnd, the same payload the
+    # KOL revenue above comes from. Budget Planner's actuals stay as fallback.
+    kol_cost = _kol_cost_for_view(db, branch_id, d_from, d_to, use_native, kol_cost_budget)
 
     ads_roas = round(ads_revenue / ads_cost, 2) if ads_cost > 0 else 0
     kol_roas = round(kol_revenue / kol_cost, 2) if kol_cost > 0 else 0
@@ -731,10 +820,11 @@ def _build_overview_from_cache(
     crm_bookings = int(crm_row.bookings)
     crm_revenue = float(crm_row.revenue)
 
-    ads_cost, kol_cost, crm_cost = _budget_actuals_costs(
+    ads_cost, kol_cost_budget, crm_cost = _budget_actuals_costs(
         db, branch_id, d_from.year, d_from.month, use_native,
         month_to=d_to.month if d_to.year == d_from.year else 12,
     )
+    kol_cost = _kol_cost_for_view(db, branch_id, d_from, d_to, use_native, kol_cost_budget)
 
     ads_roas = round(ads_revenue / ads_cost, 2) if ads_cost > 0 else 0
     kol_roas = round(kol_revenue / kol_cost, 2) if kol_cost > 0 else 0
