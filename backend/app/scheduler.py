@@ -37,6 +37,30 @@ def start_scheduler() -> None:
         from app.services import webhook_log
         webhook_log.purge_old()
 
+    def evaluate_rate_plan_quotas() -> None:
+        """Cloudbeds incremental sync + per-reservation backfill + recount.
+
+        Also triggered by .github/workflows/cron-rate-plan-quota.yml, but that
+        schedule is not dependable: GitHub only runs cron workflows on a
+        best-effort basis, and the observed gaps on this repo ranged from 29
+        minutes to over five hours. Every hour a tick is skipped, freshly
+        booked rows sit in the DB with no room_type or rate_plan_name, which
+        makes them unmatchable by any rate plan filter — the quota counter
+        reads low and rate-plan pulls come back empty. This job runs inside
+        the backend, which is up continuously, so the cadence is real.
+
+        The GitHub cron stays as a redundant trigger. Double-firing is safe:
+        the sync upserts by cloudbeds_reservation_id and alert emails are
+        deduped by threshold bucket.
+        """
+        from app.database import SessionLocal
+        from app.services.rate_plan_quota_engine import evaluate_quotas
+
+        try:
+            evaluate_quotas(SessionLocal, refresh=True)
+        except Exception:
+            logger.exception("Rate plan quota evaluation failed")
+
     scheduler.add_job(
         heartbeat,
         trigger=IntervalTrigger(minutes=10),
@@ -70,12 +94,23 @@ def start_scheduler() -> None:
         replace_existing=True,
         executor="default",
     )
+    # max_instances=1 from job_defaults means a tick that is still running
+    # never overlaps the next one; coalesce=True collapses ticks missed
+    # during a redeploy into a single catch-up run.
+    scheduler.add_job(
+        evaluate_rate_plan_quotas,
+        trigger=IntervalTrigger(minutes=30),
+        id="rate_plan_quota_eval",
+        replace_existing=True,
+        executor="default",
+    )
     scheduler.start()
     from app.config import settings
 
     realtime = sorted(settings.webhook_realtime_branches)
     logger.info(
-        "Scheduler started - Cloudbeds poll every 10 min; realtime branches=%s",
+        "Scheduler started - Cloudbeds poll every 10 min, rate plan quota "
+        "eval every 30 min; realtime branches=%s",
         ",".join(realtime) or "none",
     )
 

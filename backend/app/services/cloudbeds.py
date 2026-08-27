@@ -676,6 +676,46 @@ def backfill_accommodation_total(
     return {"branch_id": branch_id, "fetched": total_fetched, "filled": filled}
 
 
+# Statuses whose grand_total is legitimately 0 — re-fetching them forever
+# would burn the per-tick budget on rows that can never be filled.
+_UNBILLABLE_STATUSES = [
+    "cancelled", "canceled", "no_show", "noshow",
+    "Cancelled", "Canceled", "No-Show", "No_Show",
+]
+
+
+def missing_room_type_filter():
+    """Rows with no room_type — invisible to every rate plan filter.
+
+    Rate plan matching is `rate_plan_name OR room_type ILIKE %pattern%`, and
+    bulk /getReservations returns neither, so a freshly ingested booking sits
+    unmatchable until the per-reservation backfill fills it. These rows are
+    the whole reason this job exists, hence first claim on the budget.
+    """
+    return Reservation.room_type == None  # noqa: E711
+
+
+def missing_revenue_filter(today: date):
+    """Rows that should have accommodation revenue by now but don't.
+
+    `check_in_date <= today` is load-bearing: a future booking has no
+    Accommodation transaction yet, so NULL revenue is the correct state, not a
+    gap to chase. Without the guard those rows re-qualify on every tick and
+    never stop.
+    """
+    from sqlalchemy import and_, or_
+
+    return and_(
+        Reservation.room_type != None,  # noqa: E711
+        Reservation.check_in_date <= today,
+        or_(
+            Reservation.grand_total_native == None,  # noqa: E711
+            Reservation.grand_total_native == 0,
+        ),
+        Reservation.status.notin_(_UNBILLABLE_STATUSES),
+    )
+
+
 def backfill_room_type_and_rate_plan(
     branch_id: str,
     property_id: str,
@@ -697,61 +737,84 @@ def backfill_room_type_and_rate_plan(
     'Female Dorm* (CRM_April 2026)'. grand_total_native = balanceDetailed
     subTotal − additionalItems (accommodation only, per CLAUDE.md rules).
 
-    Filter: room_type IS NULL  OR  (revenue NULL/0 AND status not cancelled).
-    The cancelled-status guard on the revenue branch is required — without
-    it cancelled bookings (legitimately grand_total=0) would be re-fetched
-    on every cron tick forever.
+    Two passes, in priority order:
 
-    Two-pass strategy: rows updated within the last 2 hours run uncapped
-    (so newly-synced bookings always get filled in the same cron tick),
-    older backlog rows are capped by `limit` and processed newest-first.
+      A. room_type IS NULL — the rows that break rate plan matching outright.
+         A booking with both room_type and rate_plan_name NULL matches no
+         pattern at all, so it is invisible to the Rate Plan Quota counter and
+         to every rate-plan-filtered pull until this fills it. Capped at
+         4 x `limit`; anything beyond that is logged, not silently dropped.
+
+      B. room type known, accommodation revenue still missing, stay already
+         started. Gets whatever is left of `limit` after pass A.
+
+    Pass B's `check_in_date <= today` guard is what keeps this job finite. A
+    future-dated booking has no Accommodation transaction yet, so its revenue
+    is legitimately NULL and stays NULL — those rows used to re-qualify on
+    every single tick, and because each fetch rewrote room_type (bumping
+    updated_at) they kept promoting themselves into the uncapped priority
+    pass, crowding out the pass A rows this job exists for.
     """
     import time
-    from sqlalchemy import or_, and_
 
     today = date.today()
     df = checkin_from or (today - timedelta(days=30))
     dt = checkin_to or today
 
-    # Filter: missing room_type OR (missing revenue AND not cancelled).
-    # The cancelled guard prevents infinite re-fetch of bookings whose
-    # grand_total is correctly 0 because they were refunded.
-    target_filter = or_(
-        Reservation.room_type == None,  # noqa: E711
-        and_(
-            or_(
-                Reservation.grand_total_native == None,  # noqa: E711
-                Reservation.grand_total_native == 0,
-            ),
-            Reservation.status.notin_(
-                ["cancelled", "canceled", "no_show", "noshow", "Cancelled", "Canceled", "No-Show", "No_Show"]
-            ),
-        ),
-    )
-
-    # Two-pass query: row vừa được bulk-synced trong 2h qua được fill TRƯỚC và
-    # không bị `limit` cắt, đảm bảo booking mới (rate_plan_name/room_type NULL
-    # do bulk /getReservations không trả về) luôn lọt trong cùng cron tick.
-    # Pass 2 mới xử lý backlog cũ và áp dụng `limit` để bảo vệ timeout cron.
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
     db = SessionLocal()
     base = db.query(Reservation).filter(
         Reservation.branch_id == branch_id,
         Reservation.check_in_date >= df,
         Reservation.check_in_date <= dt,
-        target_filter,
         Reservation.cloudbeds_reservation_id != None,  # noqa: E711
     )
-    recent = base.filter(Reservation.updated_at >= cutoff).all()
-    backlog_q = (
-        base.filter(Reservation.updated_at < cutoff)
+
+    # Pass A — newest first, so a booking made minutes ago is filled this tick.
+    pass_a_cap = (limit * 4) if limit else None
+    pass_a_q = (
+        base.filter(missing_room_type_filter())
             .order_by(Reservation.updated_at.desc())
     )
-    if limit:
-        backlog_q = backlog_q.limit(limit)
-    backlog = backlog_q.all()
-    null_res = recent + backlog
+    outstanding = pass_a_q.count()
+    if pass_a_cap:
+        pass_a_q = pass_a_q.limit(pass_a_cap)
+    missing_room = pass_a_q.all()
+    if outstanding > len(missing_room):
+        logger.warning(
+            "Backfill branch %s: %d rows still have no room_type beyond this "
+            "tick's cap of %d — rate plan matching stays blind for them",
+            branch_id, outstanding - len(missing_room), pass_a_cap,
+        )
+
+    # Pass B — whatever budget pass A did not use.
+    remaining = max(limit - len(missing_room), 0) if limit else None
+    missing_revenue = []
+    if remaining is None or remaining > 0:
+        pass_b_q = (
+            base.filter(missing_revenue_filter(today))
+                .order_by(Reservation.updated_at.desc())
+        )
+        if remaining:
+            pass_b_q = pass_b_q.limit(remaining)
+        missing_revenue = pass_b_q.all()
+
+    null_res = missing_room + missing_revenue
+    # Snapshot current values before the session closes: the write below only
+    # touches columns whose value actually changed, so an unchanged row costs
+    # no UPDATE and its updated_at stays put.
+    prior = {
+        r.cloudbeds_reservation_id: (
+            r.room_type,
+            r.rate_plan_name,
+            float(r.grand_total_native) if r.grand_total_native is not None else None,
+        )
+        for r in null_res
+    }
     db.close()
+    logger.info(
+        "Backfill branch %s targets: %d missing room_type, %d missing revenue",
+        branch_id, len(missing_room), len(missing_revenue),
+    )
 
     total_fetched = room_type_filled = rate_plan_filled = revenue_filled = 0
     now = datetime.now(timezone.utc)
@@ -817,14 +880,21 @@ def backfill_room_type_and_rate_plan(
                 _s = SessionLocal()
                 try:
                     for cb_id, rt, rp, gc, accom in batch_buf:
+                        # Write only what actually changed. Rewriting a column
+                        # with the value it already holds still bumps
+                        # updated_at, which used to re-promote the same rows
+                        # into the priority pass tick after tick.
+                        old_rt, old_rp, old_accom = prior.get(
+                            cb_id, (None, None, None)
+                        )
                         updates = ["updated_at=:t"]
                         params = {"t": now, "cid": cb_id}
-                        if rt:
+                        if rt and rt != old_rt:
                             updates.append("room_type=:rt")
                             updates.append("room_type_category=:rc")
                             params["rt"] = rt
                             params["rc"] = map_room_type_category(rt)
-                        if rp:
+                        if rp and rp != old_rp:
                             updates.append("rate_plan_name=:rp")
                             params["rp"] = rp
                         if gc:
@@ -833,7 +903,9 @@ def backfill_room_type_and_rate_plan(
                             updates.append("guest_country_code=:gcc")
                             params["gc"] = mapped
                             params["gcc"] = mapped
-                        if accom is not None:
+                        if accom is not None and (
+                            old_accom is None or abs(accom - old_accom) >= 0.01
+                        ):
                             native = round(accom, 2)
                             vnd = round(accom * rate, 2) if rate else None
                             updates.append("grand_total_native=:n")
@@ -850,11 +922,11 @@ def backfill_room_type_and_rate_plan(
                                 "WHERE cloudbeds_reservation_id=:cid"
                             ), params)
                             if result.rowcount:
-                                if rt:
+                                if "room_type=:rt" in updates:
                                     room_type_filled += 1
-                                if rp:
+                                if "rate_plan_name=:rp" in updates:
                                     rate_plan_filled += 1
-                                if accom is not None:
+                                if "grand_total_native=:n" in updates:
                                     revenue_filled += 1
                     _s.commit()
                 except Exception as e:
