@@ -111,3 +111,68 @@ def get_cached_rate(from_currency: str, to_currency: str = "VND") -> Optional[fl
     if entry:
         return entry[0]
     return _FALLBACK_RATES.get(key)
+
+
+# ── Introspection helpers (used by GET /api/metrics/fx-rates) ────────────────
+# Nothing in HiD used to expose which rate a sync actually stamped onto
+# grand_total_vnd, so a stale cache or a dead API key was invisible. These let
+# the Settings → Currency panel show the three layers separately: what's in the
+# cache right now, what the provider says right now, and the hardcoded floor.
+
+def get_cache_entry(from_currency: str, to_currency: str = "VND") -> Optional[tuple[float, date]]:
+    """Raw (rate, fetched_on) cache entry, or None when never fetched."""
+    return _rate_cache.get((from_currency.upper(), to_currency.upper()))
+
+
+def get_fallback_rate_value(from_currency: str, to_currency: str = "VND") -> Optional[float]:
+    """The hardcoded rate used when both cache and API are unavailable."""
+    from_currency = from_currency.upper()
+    to_currency = to_currency.upper()
+    if from_currency == to_currency:
+        return 1.0
+    return _FALLBACK_RATES.get((from_currency, to_currency))
+
+
+async def probe_live_rate(from_currency: str, to_currency: str = "VND") -> tuple[Optional[float], Optional[str]]:
+    """Hit the FX provider directly, bypassing the cache. Returns (rate, error).
+
+    Read-only on purpose — it never writes to ``_rate_cache``, so checking the
+    live rate can't change what an in-flight sync is stamping. Use
+    ``refresh_rate`` when the cache should actually be updated.
+    """
+    from_currency = from_currency.upper()
+    to_currency = to_currency.upper()
+
+    if from_currency == to_currency:
+        return 1.0, None
+
+    if not settings.EXCHANGE_RATE_API_KEY or settings.EXCHANGE_RATE_API_KEY == "placeholder_key":
+        return None, "EXCHANGE_RATE_API_KEY is not configured"
+
+    try:
+        url = f"{EXCHANGE_RATE_BASE_URL}/{settings.EXCHANGE_RATE_API_KEY}/latest/{from_currency}"
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+    rate = data.get("conversion_rates", {}).get(to_currency)
+    if rate is None:
+        return None, f"{to_currency} missing from provider response"
+    return float(rate), None
+
+
+async def refresh_rate(from_currency: str, to_currency: str = "VND") -> Optional[float]:
+    """Drop today's cache entry and re-fetch, so later writes use a fresh rate."""
+    key = (from_currency.upper(), to_currency.upper())
+    previous = _rate_cache.pop(key, None)
+    rate = await fetch_rate(key[0], key[1])
+    if key not in _rate_cache and previous is not None:
+        # Re-fetch failed. Put the last good rate back instead of leaving the
+        # cache empty, which would drop every later write onto the hardcoded
+        # floor (830 / 165) until the API recovers.
+        _rate_cache[key] = previous
+        return previous[0]
+    return rate

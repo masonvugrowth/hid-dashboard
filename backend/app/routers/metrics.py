@@ -1215,3 +1215,95 @@ def get_lead_time_cohort_endpoint(
         "room_type_category": room_type_category,
         "branches": results,
     })
+
+
+# ── FX transparency ─────────────────────────────────────────────────────────
+
+@router.get("/fx-rates")
+async def fx_rates(
+    refresh: bool = Query(False, description="Re-fetch and overwrite the cached rate before reporting"),
+    db: Session = Depends(get_db),
+):
+    """Which VND conversion rate HiD is actually using, per branch currency.
+
+    Every monetary column is stored twice — native and VND at write-time — so a
+    stale cache or a dead EXCHANGE_RATE_API_KEY silently bakes a wrong number
+    into the data instead of erroring. This reports the three layers side by
+    side: `cached` (what syncs are stamping right now), `live` (what the
+    provider says this second), and `fallback` (the hardcoded floor).
+    """
+    from app.config import settings as app_settings
+    from app.services.currency import (
+        get_cache_entry,
+        get_fallback_rate_value,
+        probe_live_rate,
+        refresh_rate,
+    )
+
+    key_configured = bool(
+        app_settings.EXCHANGE_RATE_API_KEY
+        and app_settings.EXCHANGE_RATE_API_KEY != "placeholder_key"
+    )
+
+    branch_rows = (
+        db.query(Branch.name, Branch.currency)
+        .filter(Branch.currency.isnot(None))
+        .order_by(Branch.name)
+        .all()
+    )
+    by_currency: dict[str, list[str]] = defaultdict(list)
+    for name, currency in branch_rows:
+        by_currency[(currency or "").upper()].append(name)
+    # Always report the currencies we hold fallbacks for, even if a branch row
+    # is missing or mis-stamped — an empty table would read as "all fine".
+    for currency in ("TWD", "JPY", "VND"):
+        by_currency.setdefault(currency, [])
+
+    rates = []
+    for currency in sorted(by_currency):
+        if refresh and currency != "VND":
+            await refresh_rate(currency, "VND")
+
+        entry = get_cache_entry(currency, "VND")
+        cached_rate = entry[0] if entry else None
+        cached_on = entry[1].isoformat() if entry else None
+        fallback = get_fallback_rate_value(currency, "VND")
+        live_rate, live_error = await probe_live_rate(currency, "VND")
+
+        if currency == "VND":
+            in_use, source = 1.0, "identity"
+        elif cached_rate is not None and cached_on == date.today().isoformat():
+            in_use, source = cached_rate, "cache_today"
+        elif cached_rate is not None:
+            in_use, source = cached_rate, "cache_stale"
+        else:
+            in_use, source = fallback, "fallback"
+
+        drift_pct = None
+        if in_use and live_rate:
+            drift_pct = round((in_use - live_rate) / live_rate * 100, 2)
+
+        rates.append({
+            "currency": currency,
+            "branches": by_currency[currency],
+            # What conversions are actually using at this moment.
+            "rate_vnd_in_use": in_use,
+            "source": source,
+            "cached_rate_vnd": cached_rate,
+            "cached_on": cached_on,
+            "live_rate_vnd": live_rate,
+            "live_error": live_error,
+            "fallback_rate_vnd": fallback,
+            # Positive = HiD is converting at a richer rate than the market.
+            "drift_vs_live_pct": drift_pct,
+        })
+
+    return _envelope({
+        "base": "VND",
+        "provider": "exchangerate-api.com v6",
+        "api_key_configured": key_configured,
+        "cache_scope": "in-memory, per process, one fetch per calendar day",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "refreshed": refresh,
+        "rates": rates,
+    })

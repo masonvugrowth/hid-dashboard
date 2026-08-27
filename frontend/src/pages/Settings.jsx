@@ -436,6 +436,129 @@ function ChangePassword({ showToast }) {
   );
 }
 
+// ── Currency Rates Section ──────────────────────────────────────────────────
+
+const SOURCE_LABEL = {
+  identity: { text: "Base currency", cls: "bg-gray-100 text-gray-600" },
+  cache_today: { text: "Live (fetched today)", cls: "bg-green-50 text-green-700" },
+  cache_stale: { text: "Stale cache", cls: "bg-amber-50 text-amber-700" },
+  fallback: { text: "Hardcoded fallback", cls: "bg-red-50 text-red-600" },
+};
+
+function fmtRate(v) {
+  if (v === null || v === undefined) return "—";
+  return v.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+function CurrencyRates({ showToast }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = (refresh = false) => {
+    const setBusy = refresh ? setRefreshing : setLoading;
+    setBusy(true);
+    return axios.get("/api/metrics/fx-rates", { params: refresh ? { refresh: true } : {} })
+      .then(r => {
+        setData(r.data.data);
+        if (refresh) showToast("Rates re-fetched from the provider");
+      })
+      .catch(() => showToast("Failed to load exchange rates", "error"))
+      .finally(() => setBusy(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const rows = (data?.rates || []).filter(r => r.currency !== "VND");
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="px-5 py-3 border-b border-gray-100 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="font-semibold text-gray-700 text-sm">Exchange Rates → VND</h2>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Every amount is stored in native currency <em>and</em> VND at write-time. This is
+            the rate that gets baked in — source: {data?.provider || "exchangerate-api.com"},
+            cached once per day.
+          </p>
+        </div>
+        <button
+          onClick={() => load(true)}
+          disabled={refreshing || loading}
+          className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
+        >
+          {refreshing ? "Refreshing..." : "Refresh now"}
+        </button>
+      </div>
+
+      {data && !data.api_key_configured && (
+        <div className="mx-5 mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+          <strong>EXCHANGE_RATE_API_KEY is not set.</strong> Every conversion is falling back to
+          the hardcoded rate below, which drifts from the market over time.
+        </div>
+      )}
+
+      {loading ? (
+        <div className="p-8 text-center text-gray-400 animate-pulse">Loading...</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-gray-400 border-b border-gray-100">
+                <th className="px-5 py-2 font-medium">Currency</th>
+                <th className="px-3 py-2 font-medium text-right">Rate in use</th>
+                <th className="px-3 py-2 font-medium">Source</th>
+                <th className="px-3 py-2 font-medium text-right">Live now</th>
+                <th className="px-3 py-2 font-medium text-right">Drift</th>
+                <th className="px-5 py-2 font-medium">Branches</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {rows.map(r => {
+                const badge = SOURCE_LABEL[r.source] || SOURCE_LABEL.fallback;
+                const drift = r.drift_vs_live_pct;
+                const driftBad = drift !== null && drift !== undefined && Math.abs(drift) >= 3;
+                return (
+                  <tr key={r.currency}>
+                    <td className="px-5 py-2.5 font-medium text-gray-800">1 {r.currency}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-gray-800">
+                      {fmtRate(r.rate_vnd_in_use)}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${badge.cls}`}>
+                        {badge.text}
+                      </span>
+                      {r.cached_on && (
+                        <span className="ml-2 text-xs text-gray-400">{r.cached_on}</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-right font-mono text-gray-500">
+                      {r.live_error ? (
+                        <span className="text-red-500 text-xs font-sans" title={r.live_error}>error</span>
+                      ) : fmtRate(r.live_rate_vnd)}
+                    </td>
+                    <td className={`px-3 py-2.5 text-right font-mono ${driftBad ? "text-red-600 font-medium" : "text-gray-400"}`}>
+                      {drift === null || drift === undefined ? "—" : `${drift > 0 ? "+" : ""}${drift}%`}
+                    </td>
+                    <td className="px-5 py-2.5 text-xs text-gray-500">
+                      {r.branches?.length ? r.branches.join(", ") : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="px-5 py-3 text-xs text-gray-400 border-t border-gray-100">
+            Drift compares the rate HiD is stamping against the provider's current rate.
+            Refreshing only affects rows written from now on — amounts already stored keep
+            the rate they were converted at.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Settings Page ──────────────────────────────────────────────────────
 
 export default function Settings() {
@@ -479,6 +602,16 @@ export default function Settings() {
         >
           Branch Capacity
         </button>
+        <button
+          onClick={() => setTab("currency")}
+          className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            tab === "currency"
+              ? "bg-white text-gray-800 shadow-sm"
+              : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Currency
+        </button>
         {isAdmin && (
           <button
             onClick={() => setTab("api-keys")}
@@ -504,6 +637,7 @@ export default function Settings() {
       </div>
 
       {tab === "capacity" && <BranchCapacity showToast={showToast} />}
+      {tab === "currency" && <CurrencyRates showToast={showToast} />}
       {tab === "api-keys" && isAdmin && <ApiKeys showToast={showToast} />}
       {tab === "password" && <ChangePassword showToast={showToast} />}
     </div>

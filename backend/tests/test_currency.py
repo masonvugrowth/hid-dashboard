@@ -86,3 +86,56 @@ class TestFetchRateCaching:
     async def test_same_currency_returns_one(self):
         result = await currency_module.fetch_rate("VND", "VND")
         assert result == 1.0
+
+
+class TestIntrospectionHelpers:
+    def test_cache_entry_none_when_never_fetched(self):
+        assert currency_module.get_cache_entry("TWD", "VND") is None
+
+    def test_cache_entry_returns_rate_and_date(self):
+        today = date.today()
+        _rate_cache[("TWD", "VND")] = (812.5, today)
+        assert currency_module.get_cache_entry("twd", "vnd") == (812.5, today)
+
+    def test_fallback_rate_value(self):
+        assert currency_module.get_fallback_rate_value("TWD") == 830.0
+        assert currency_module.get_fallback_rate_value("VND") == 1.0
+        assert currency_module.get_fallback_rate_value("XYZ") is None
+
+    @pytest.mark.asyncio
+    async def test_probe_reports_missing_api_key(self, monkeypatch):
+        monkeypatch.setattr(currency_module.settings, "EXCHANGE_RATE_API_KEY", "placeholder_key")
+        rate, error = await currency_module.probe_live_rate("TWD", "VND")
+        assert rate is None
+        assert "EXCHANGE_RATE_API_KEY" in error
+
+    @pytest.mark.asyncio
+    async def test_probe_does_not_write_cache(self, monkeypatch):
+        monkeypatch.setattr(currency_module.settings, "EXCHANGE_RATE_API_KEY", "real_key")
+        with patch("app.services.currency.httpx.AsyncClient") as mock_client:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"conversion_rates": {"VND": 819.0}}
+            mock_resp.raise_for_status = MagicMock()
+            mock_ctx = AsyncMock()
+            mock_ctx.get = AsyncMock(return_value=mock_resp)
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_ctx)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            rate, error = await currency_module.probe_live_rate("TWD", "VND")
+
+        assert (rate, error) == (819.0, None)
+        # Checking the live rate must not change what in-flight syncs stamp.
+        assert ("TWD", "VND") not in _rate_cache
+
+    @pytest.mark.asyncio
+    async def test_refresh_keeps_last_good_rate_when_api_fails(self):
+        yesterday = date.today().replace(day=1)
+        _rate_cache[("TWD", "VND")] = (812.5, yesterday)
+
+        with patch("app.services.currency.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__ = AsyncMock(side_effect=Exception("network error"))
+            result = await currency_module.refresh_rate("TWD", "VND")
+
+        # Never drop to the hardcoded 830 floor just because a refresh failed.
+        assert result == 812.5
+        assert _rate_cache[("TWD", "VND")] == (812.5, yesterday)
