@@ -44,6 +44,7 @@ from app.models.weekly_report_archive import WeeklyReportArchive
 from app.models.biweekly_flag_override import BiweeklyFlagOverride
 from app.models.biweekly_report_share import BiweeklyReportShare
 from app.models.biweekly_report_cache import BiweeklyReportCache
+from app.models.biweekly_report_schedule import BiweeklyReportSchedule
 from app.models.webhook_event import WebhookEvent
 
 __all__ = [
@@ -64,5 +65,6 @@ __all__ = [
     "WeeklyReportCache",
     "WeeklyReportComment", "WeeklyReportArchive",
     "BiweeklyReportCache", "BiweeklyFlagOverride", "BiweeklyReportShare",
+    "BiweeklyReportSchedule",
     "WebhookEvent",
 ]

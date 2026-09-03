@@ -127,3 +127,23 @@ export const revokeShare = (period, branchId) =>
   axios
     .delete(`${BASE}/shares`, { params: { period, branch_id: branchId } })
     .then(r => r.data.data);
+
+/**
+ * Automatic sending — the standing version of the dialog above.
+ *
+ * `getSchedule` answers for a branch nobody has scheduled yet too, with
+ * `exists: false` and the server's defaults filled in, so the dialog never has
+ * to keep its own copy of what "the 15th at 08:00" means.
+ */
+export const getSchedule = (branchId) =>
+  axios
+    .get(`${BASE}/schedules`, { params: { branch_id: branchId } })
+    .then(r => r.data.data);
+
+/**
+ * Save it. Rejects rather than silently storing a schedule that reaches
+ * nobody: turning it on with an empty recipient list is a 400, and so is a
+ * send day that would land before its period has finished.
+ */
+export const putSchedule = (payload) =>
+  axios.put(`${BASE}/schedules`, payload).then(r => r.data.data);

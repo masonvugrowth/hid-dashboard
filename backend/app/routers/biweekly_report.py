@@ -10,6 +10,9 @@ Bi-Weekly Branch Manager Report router
 - GET  /biweekly/shares        → the live share link for (period, branch)
 - DEL  /biweekly/shares        → revoke it
 - GET  /biweekly/shared/{token} → the full branch report, NO LOGIN
+- GET  /biweekly/schedules     → a branch's automatic-send settings
+- PUT  /biweekly/schedules     → save them
+- POST /biweekly/schedules/run → run the auto-send sweep (X-Sync-Token)
 
 Every endpoint here requires a session except `/shared/{token}`, which is
 opened from an emailed link by a branch manager who has no HiD account. See
@@ -38,6 +41,7 @@ from app.database import get_db
 from app.models.biweekly_flag_override import BiweeklyFlagOverride
 from app.models.biweekly_report_cache import BiweeklyReportCache
 from app.models.biweekly_report_share import BiweeklyReportShare
+from app.models.biweekly_report_schedule import BiweeklyReportSchedule
 from app.models.user import User
 from app.models.weekly_report_comment import WeeklyReportComment
 from app.routers.auth import get_current_user
@@ -50,6 +54,15 @@ from app.services.biweekly_period import (
     parse_period_key,
 )
 from app.services.biweekly_render import _build_html
+from app.services.biweekly_schedule import (
+    DAY_H1_RANGE,
+    DAY_H2_RANGE,
+    DEFAULT_HOUR,
+    DEFAULT_MINUTE,
+    DEFAULT_SEND_DAY_H1,
+    DEFAULT_SEND_DAY_H2,
+    next_send_at,
+)
 from app.services.biweekly_report_builder import build_biweekly_report
 from app.services.rate_plan_campaigns import apply_campaign_labels
 from app.services.biweekly_share import (
@@ -57,7 +70,7 @@ from app.services.biweekly_share import (
     build_summary_email_html,
 )
 from app.services.email_sender import send_email_html
-from app.services.report_common import envelope, ict_today
+from app.services.report_common import ICT_TZ, envelope, ict_today
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -631,7 +644,7 @@ def _share_url(token: str) -> str:
 
 
 def _get_or_create_share(db: Session, p: Period, branch_id: UUID,
-                         current: User) -> BiweeklyReportShare:
+                         created_by) -> BiweeklyReportShare:
     """The live link for this (period, branch), minted if there isn't one.
 
     Re-sending reuses the existing token, so the link already sitting in
@@ -648,7 +661,7 @@ def _get_or_create_share(db: Session, p: Period, branch_id: UUID,
         return row
     if row:
         row.token = secrets.token_urlsafe(32)
-        row.created_by = current.id
+        row.created_by = created_by
         row.created_at = now
         row.expires_at = now + timedelta(days=SHARE_TTL_DAYS)
         row.revoked_at = None
@@ -657,13 +670,93 @@ def _get_or_create_share(db: Session, p: Period, branch_id: UUID,
             token=secrets.token_urlsafe(32),
             period_key=p.key,
             branch_id=branch_id,
-            created_by=current.id,
+            created_by=created_by,
             expires_at=now + timedelta(days=SHARE_TTL_DAYS),
         )
         db.add(row)
     db.commit()
     db.refresh(row)
     return row
+
+
+class _NoBranchData(Exception):
+    """This period's payload has no row for the branch being sent.
+
+    Raised rather than returned because the two callers owe the reader
+    different things: a person clicking Send gets a 404 they can act on, and
+    the scheduler records it on the schedule and carries on to the next branch.
+    """
+
+
+def _report_for_send(db: Session, p: Period):
+    """The period's payload, rebuilt if the snapshot predates its own close.
+
+    `_get_report` caches whatever it built, and the report is readable while
+    the period is still running — so a preview opened on the 10th leaves a
+    cached payload covering four days of a fourteen-day period. Serving that
+    to the dashboard is fine; the reader can hit Refresh, and the page prints
+    when it was computed. Emailing it is not: it lands in an inbox with no
+    refresh button, and nothing in the message says the numbers are partial.
+
+    So a send checks the snapshot's age against the period's own last day and
+    rebuilds when it is older. A period that closed before its first read —
+    the normal case — is already correct and is not rebuilt.
+    """
+    payload, computed_at = _get_report(db, p)
+    if computed_at is not None and computed_at.tzinfo is None:
+        # The column is timezone-aware, but a payload built and returned in the
+        # same call has whatever the builder produced. Reading a naive stamp as
+        # the server's local time would make an ICT comparison wrong by hours.
+        computed_at = computed_at.replace(tzinfo=timezone.utc)
+    if computed_at is None or computed_at.astimezone(ICT_TZ).date() <= p.end:
+        payload, computed_at = _get_report(db, p, force_fresh=True)
+    return _apply_flag_overrides(db, p, payload), computed_at
+
+
+def _dispatch_branch_report(db: Session, p: Period, branch_id: UUID,
+                            recipients: list, created_by=None) -> dict:
+    """Render and email one branch's digest. The only place a report goes out.
+
+    Shared by the manual send and the scheduled one, so the email a manager
+    finds at 08:00 on the 15th is the same document a person would have sent
+    by hand — same summary, same link, same expiry.
+
+    `recipients` is a list of `(name, address)`. The return is a description of
+    what happened, never a verdict: `sent_to` and `failed` are both reported
+    and an empty `sent_to` is left for the caller to turn into a 502 or a
+    logged failure, because "it went out" is the one thing neither caller can
+    verify for itself.
+    """
+    payload, computed_at = _report_for_send(db, p)
+    branch = next(
+        (b for b in payload if str(b.get("branch_id")) == str(branch_id)), None
+    )
+    if branch is None:
+        raise _NoBranchData(str(branch_id))
+
+    share = _get_or_create_share(db, p, branch_id, created_by)
+    url = _share_url(share.token)
+    expires_on = share.expires_at.date() if share.expires_at else None
+
+    subject = (
+        f"{branch.get('branch_name') or 'Branch'} — Bi-Weekly Report · "
+        f"{p.date_label}"
+    )
+    sent, failed = [], []
+    for name, addr in recipients:
+        html = build_summary_email_html(
+            branch, p, url, recipient_name=name, expires_on=expires_on,
+        )
+        (sent if send_email_html(subject, html, [addr]) else failed).append(addr)
+
+    return {
+        "subject": subject,
+        "sent_to": sent,
+        "failed": failed,
+        "share_url": url,
+        "expires_at": share.expires_at.isoformat() if share.expires_at else None,
+        "computed_at": computed_at.isoformat() if computed_at else None,
+    }
 
 
 def _branch_comments(db: Session, p: Period, branch_id) -> list:
@@ -773,46 +866,19 @@ def send_branch_report(
     if not recipients:
         raise HTTPException(400, "No recipients — pick at least one")
 
-    payload, computed_at = _get_report(db, p)
-    payload = _apply_flag_overrides(db, p, payload)
-    branch = next(
-        (b for b in payload if str(b.get("branch_id")) == str(body.branch_id)),
-        None,
-    )
-    if branch is None:
+    try:
+        out = _dispatch_branch_report(db, p, body.branch_id, recipients,
+                                      created_by=current.id)
+    except _NoBranchData:
         raise HTTPException(404, "That branch has no data in this period's report")
 
-    share = _get_or_create_share(db, p, body.branch_id, current)
-    url = _share_url(share.token)
-    expires_on = share.expires_at.date() if share.expires_at else None
-
-    subject = (
-        f"{branch.get('branch_name') or 'Branch'} — Bi-Weekly Report · "
-        f"{p.date_label}"
-    )
-    sent, failed = [], []
-    for name, addr in recipients:
-        html = build_summary_email_html(
-            branch, p, url, recipient_name=name, expires_on=expires_on,
-        )
-        (sent if send_email_html(subject, html, [addr]) else failed).append(addr)
-
-    if not sent:
+    if not out["sent_to"]:
         raise HTTPException(
             502,
             "Email send failed for every recipient — check the Zeabur logs "
             "and GET /api/report/email-config",
         )
-    return envelope({
-        "period": p.key,
-        "branch_id": str(body.branch_id),
-        "subject": subject,
-        "sent_to": sent,
-        "failed": failed,
-        "share_url": url,
-        "expires_at": share.expires_at.isoformat() if share.expires_at else None,
-        "computed_at": computed_at.isoformat() if computed_at else None,
-    })
+    return envelope({"period": p.key, "branch_id": str(body.branch_id), **out})
 
 
 @router.get("/shares")
@@ -862,6 +928,307 @@ def revoke_share(
         row.revoked_at = datetime.now(timezone.utc)
         db.commit()
     return envelope({"period": p.key, "branch_id": str(branch_id), "revoked": True})
+
+
+# ── Sending it automatically ─────────────────────────────────────────────────
+#
+# A schedule is a standing version of the dialog above: this branch, these
+# people, every period, on the day it closes. It runs through the same
+# `_dispatch_branch_report`, so nothing about the email changes — only who
+# pressed the button.
+#
+# The send days are two bounded day-numbers rather than a cron expression;
+# app/models/biweekly_report_schedule.py explains why, and
+# app/services/biweekly_schedule.py owns the "is today the day" arithmetic.
+
+
+def _schedule_missing(exc: Exception):
+    """The 503 for a schedule table that has not been migrated yet.
+
+    Zeabur does not run Alembic on deploy (POST /api/sync/run-migrations does),
+    so between this code landing and the migration being applied every query
+    here hits a table that does not exist. Saying so is far more use to the
+    person staring at the dialog than a 500.
+    """
+    logger.warning("biweekly schedules table unavailable", exc_info=exc)
+    return HTTPException(
+        503,
+        "Automatic sending is not available yet — migration 062 has not been "
+        "applied. Run POST /api/sync/run-migrations, then reload.",
+    )
+
+
+def _schedule_defaults(branch_id) -> dict:
+    """What the dialog shows for a branch nobody has scheduled yet."""
+    return {
+        "branch_id": str(branch_id),
+        "exists": False,
+        "enabled": False,
+        "user_ids": [],
+        "to": [],
+        "send_day_h1": DEFAULT_SEND_DAY_H1,
+        "send_day_h2": DEFAULT_SEND_DAY_H2,
+        "hour": DEFAULT_HOUR,
+        "minute": DEFAULT_MINUTE,
+        "next_run": None,
+        "last_sent_period_key": None,
+        "last_sent_at": None,
+        "last_sent_to": None,
+        "last_failed": None,
+        "last_error": None,
+    }
+
+
+def _schedule_out(sched: BiweeklyReportSchedule) -> dict:
+    """A stored schedule as the dialog reads it.
+
+    `next_run` is computed rather than stored: it is a function of the two send
+    days and the clock, and a stored copy would go stale the moment either
+    changed. It is null while the schedule is off, because a next run for
+    something that is not running is a promise nobody made.
+    """
+    now = datetime.now(ICT_TZ)
+    nxt = (
+        next_send_at(now, sched.send_day_h1, sched.send_day_h2,
+                     sched.hour, sched.minute)
+        if sched.is_enabled else None
+    )
+    return {
+        "branch_id": str(sched.branch_id),
+        "exists": True,
+        "enabled": bool(sched.is_enabled),
+        "user_ids": [str(u) for u in (sched.recipient_user_ids or [])],
+        "to": list(sched.extra_emails or []),
+        "send_day_h1": sched.send_day_h1,
+        "send_day_h2": sched.send_day_h2,
+        "hour": sched.hour,
+        "minute": sched.minute,
+        "next_run": nxt.isoformat() if nxt else None,
+        "last_sent_period_key": sched.last_sent_period_key,
+        "last_sent_at": (
+            sched.last_sent_at.isoformat() if sched.last_sent_at else None
+        ),
+        "last_sent_to": sched.last_sent_to,
+        "last_failed": sched.last_failed,
+        "last_error": sched.last_error,
+    }
+
+
+class BiweeklyScheduleIn(BaseModel):
+    branch_id: UUID
+    enabled: bool = False
+    user_ids: list[UUID] = []
+    to: list[str] = []
+    send_day_h1: int = DEFAULT_SEND_DAY_H1
+    send_day_h2: int = DEFAULT_SEND_DAY_H2
+    hour: int = DEFAULT_HOUR
+    minute: int = DEFAULT_MINUTE
+
+
+@router.get("/schedules")
+def get_schedule(
+    branch_id: UUID,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """This branch's automatic-send settings, or the defaults if never set."""
+    if not _may_see_branch(current, branch_id):
+        raise HTTPException(403, "You do not have access to that branch")
+    try:
+        row = db.query(BiweeklyReportSchedule).filter_by(
+            branch_id=branch_id,
+        ).first()
+    except Exception as e:
+        db.rollback()
+        raise _schedule_missing(e)
+    return envelope(_schedule_out(row) if row else _schedule_defaults(branch_id))
+
+
+@router.put("/schedules")
+def put_schedule(
+    body: BiweeklyScheduleIn,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create or update a branch's automatic send.
+
+    Every recipient is checked against the branch here, the same as on a manual
+    send — but a schedule outlives the moment it is saved, so this check is the
+    weaker of the two. The one that matters runs at send time, when access may
+    have been narrowed in the fortnight since.
+
+    Turning it on with nobody to send to is rejected rather than accepted as an
+    empty schedule: it would sit in the dialog reading "on", fire every period,
+    and reach nobody.
+    """
+    if (current.role or "") not in ("admin", "editor"):
+        raise HTTPException(403, "Editor or admin only")
+    if not _may_see_branch(current, body.branch_id):
+        raise HTTPException(403, "You do not have access to that branch")
+
+    lo, hi = DAY_H1_RANGE
+    if not (lo <= body.send_day_h1 <= hi):
+        raise HTTPException(
+            400,
+            f"The 1st–14th report can only go out on day {lo}–{hi} — before "
+            "that the period has not finished.",
+        )
+    lo2, hi2 = DAY_H2_RANGE
+    if not (lo2 <= body.send_day_h2 <= hi2):
+        raise HTTPException(
+            400,
+            f"The 15th–end-of-month report goes out the FOLLOWING month, on "
+            f"day {lo2}–{hi2}.",
+        )
+    if not (0 <= body.hour <= 23):
+        raise HTTPException(400, "hour must be 0–23")
+    if not (0 <= body.minute <= 59):
+        raise HTTPException(400, "minute must be 0–59")
+
+    user_ids = list(dict.fromkeys(body.user_ids))
+    if user_ids:
+        users = db.query(User).filter(User.id.in_(user_ids)).all()
+        found = {u.id for u in users}
+        missing = [str(i) for i in user_ids if i not in found]
+        if missing:
+            raise HTTPException(400, f"Unknown user(s): {', '.join(missing)}")
+        for u in users:
+            if not _user_may_see_branch(u, body.branch_id):
+                raise HTTPException(
+                    403,
+                    f"{u.email} is not allowed to see this branch — grant "
+                    "access on the Users page first",
+                )
+
+    extra: list[str] = []
+    for raw in body.to:
+        addr = (raw or "").strip()
+        if not addr:
+            continue
+        if "@" not in addr or " " in addr:
+            raise HTTPException(400, f"{addr!r} is not an email address")
+        if addr.lower() not in {e.lower() for e in extra}:
+            extra.append(addr)
+
+    if body.enabled and not user_ids and not extra:
+        raise HTTPException(
+            400, "Pick at least one recipient before turning this on",
+        )
+
+    try:
+        row = db.query(BiweeklyReportSchedule).filter_by(
+            branch_id=body.branch_id,
+        ).first()
+        if row is None:
+            row = BiweeklyReportSchedule(branch_id=body.branch_id)
+            db.add(row)
+        row.is_enabled = body.enabled
+        row.recipient_user_ids = [str(u) for u in user_ids]
+        row.extra_emails = extra
+        row.send_day_h1 = body.send_day_h1
+        row.send_day_h2 = body.send_day_h2
+        row.hour = body.hour
+        row.minute = body.minute
+        row.updated_by = current.id
+        db.commit()
+        db.refresh(row)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise _schedule_missing(e)
+
+    logger.info(
+        "biweekly schedule saved by %s: branch=%s enabled=%s day_h1=%s "
+        "day_h2=%s at %02d:%02d ICT",
+        current.email, body.branch_id, body.enabled, body.send_day_h1,
+        body.send_day_h2, body.hour, body.minute,
+    )
+    return envelope(_schedule_out(row))
+
+
+def send_scheduled_report(db: Session, sched: BiweeklyReportSchedule,
+                          p: Period) -> dict:
+    """One scheduled send. Called by the runner with the row already locked.
+
+    Recipients are resolved fresh every time rather than frozen at save time:
+    a user who was deactivated, lost their access to this branch, or had their
+    address changed since the schedule was written must not receive the next
+    fortnight's figures because of a decision made a month ago.
+
+    Never raises for an ordinary outcome — a branch with no data, or a list
+    that has emptied out, comes back as `error` so the runner can record it on
+    the schedule and move to the next branch.
+    """
+    ids = [UUID(str(u)) for u in (sched.recipient_user_ids or [])]
+    recipients: list = []
+    dropped: list = []
+    if ids:
+        users = (
+            db.query(User)
+            .filter(User.id.in_(ids), User.is_active == True)  # noqa: E712
+            .all()
+        )
+        for u in users:
+            if not u.email:
+                continue
+            if not _user_may_see_branch(u, sched.branch_id):
+                dropped.append(u.email)
+                continue
+            recipients.append((u.name, u.email))
+    for addr in (sched.extra_emails or []):
+        addr = (addr or "").strip()
+        if addr:
+            recipients.append((None, addr))
+
+    seen = set()
+    recipients = [
+        r for r in recipients
+        if not (r[1].lower() in seen or seen.add(r[1].lower()))
+    ]
+    if not recipients:
+        return {
+            "sent_to": [], "failed": [],
+            "error": (
+                "Nobody on this schedule can be emailed any more — every "
+                "recipient is deactivated or has lost access to this branch."
+            ),
+        }
+
+    try:
+        out = _dispatch_branch_report(
+            db, p, sched.branch_id, recipients, created_by=sched.updated_by,
+        )
+    except _NoBranchData:
+        return {
+            "sent_to": [], "failed": [],
+            "error": f"{p.key}: this branch has no data in that period's report",
+        }
+
+    error = None
+    if dropped:
+        # Not a failure — a silent drop is worse than a noted one, and the
+        # dialog shows this line so somebody can fix the access or the list.
+        error = (
+            "Skipped (no longer allowed to see this branch): "
+            + ", ".join(dropped)
+        )
+    return {**out, "error": error}
+
+
+@router.post("/schedules/run", dependencies=[Depends(verify_sync_token)])
+def run_schedules_now():
+    """Run the auto-send sweep immediately. Token-gated.
+
+    The same sweep APScheduler ticks every 15 minutes, exposed so a send can
+    be verified on Zeabur without waiting for the clock. It is not a "send
+    now" button: a schedule that is not due is still not due, and one already
+    sent for this period stays sent.
+    """
+    from app.database import SessionLocal
+    from app.services.biweekly_schedule import run_due_schedules
+
+    return envelope(run_due_schedules(SessionLocal))
 
 
 def _share_gone_html() -> str:
