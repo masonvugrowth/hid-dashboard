@@ -437,6 +437,19 @@ TOOL_DEFS: list[dict] = [
                 "booked_from": {"type": "string", "description": "ISO date YYYY-MM-DD — start of the booking window. Overrides `days`."},
                 "booked_to": {"type": "string", "description": "ISO date YYYY-MM-DD — end of the booking window, default today."},
                 "compare_last_year": {"type": "boolean", "description": "Include the year-ago snapshot, default true."},
+                "room_category": {
+                    "type": "string",
+                    "enum": ["Room", "Dorm"],
+                    "description": (
+                        "Narrow to one side of the inventory: 'Room' = private "
+                        "rooms only, 'Dorm' = dorm beds only. Omit for the whole "
+                        "branch. The denominator follows — private rooms are "
+                        "counted against total_room_count, dorms against "
+                        "total_dorm_count — so occ_pct stays comparable. Use for "
+                        "'private-room pace', 'how full are the private rooms in "
+                        "Q4', or any campaign scoped to one room type."
+                    ),
+                },
             },
         },
     },
@@ -1760,6 +1773,7 @@ def _fetch_pace(
     booked_from: date,
     booked_to: date,
     as_of: date,
+    room_category: Optional[str] = None,
 ) -> dict[tuple[str, str], dict]:
     """Room-nights on the books per (branch, stay month) for one snapshot.
 
@@ -1774,12 +1788,21 @@ def _fetch_pace(
     uses. Cancelled / no-show and maintenance rows are out; revenue also drops
     the non-paying sources (blogger / KOL / house use / special case) but their
     nights still occupy inventory, exactly as the OCC rules require.
+
+    `room_category` narrows to one side of the inventory ("Room" = private
+    rooms, "Dorm" = beds), reading the column derived at ingestion. The caller
+    owns the matching denominator - counting private-room nights against the
+    whole-branch inventory would understate occupancy badly.
     """
     bf, params = _b_filter_clause(branch_id, "r")
     params.update({
         "span_start": span_start, "span_end": span_end,
         "bk_from": booked_from, "bk_to": booked_to, "as_of": as_of,
     })
+    rc = ""
+    if room_category:
+        rc = "AND r.room_type_category = :rcat"
+        params["rcat"] = room_category
     rows = db.execute(text(f"""
         WITH stay AS (
             SELECT r.branch_id,
@@ -1800,6 +1823,7 @@ def _fetch_pace(
               AND lower(coalesce(r.status, '')) NOT IN ({_EXCL_STATUS_SQL})
               AND lower(coalesce(r.source, '')) NOT IN ({_EXCL_SRC_OCC_SQL})
               {bf}
+              {rc}
         )
         SELECT branch_id,
                to_char(date_trunc('month', stay_date), 'YYYY-MM') AS stay_month,
@@ -1887,9 +1911,15 @@ def tool_get_booking_pace(db: Session, inp: dict, default_branch: Optional[str])
     compare_ly = inp.get("compare_last_year")
     compare_ly = True if compare_ly is None else bool(compare_ly)
 
+    # Room / Dorm split. Accepted case-insensitively, then normalised to the
+    # exact values map_room_type_category() stores.
+    room_category = (inp.get("room_category") or "").strip().lower()
+    room_category = {"room": "Room", "dorm": "Dorm"}.get(room_category)
+
     # as_of = the end of the booking window, so "on the books" and "picked up"
     # are read at the same instant. Last year uses the same day one year back.
-    cur = _fetch_pace(db, branch_id, span_start, span_end, booked_from, booked_to, booked_to)
+    cur = _fetch_pace(db, branch_id, span_start, span_end, booked_from, booked_to,
+                      booked_to, room_category)
 
     ly: dict = {}
     ly_window: Optional[dict] = None
@@ -1900,7 +1930,7 @@ def tool_get_booking_pace(db: Session, inp: dict, default_branch: Optional[str])
             db, branch_id,
             _shift_one_year(span_start),
             date(ly_last[0], ly_last[1], _cal.monthrange(*ly_last)[1]),
-            ly_booked_from, ly_booked_to, ly_booked_to,
+            ly_booked_from, ly_booked_to, ly_booked_to, room_category,
         )
         ly_window = {
             "booked_from": ly_booked_from.isoformat(),
@@ -1909,8 +1939,19 @@ def tool_get_booking_pace(db: Session, inp: dict, default_branch: Optional[str])
             "as_of": ly_booked_to.isoformat(),
         }
 
+    # Denominator follows the filter: private-room nights are counted against
+    # total_room_count, dorm nights against total_dorm_count, and the unfiltered
+    # call against total_rooms (which mixes the two).
+    inv_attr = {"Room": "total_room_count", "Dorm": "total_dorm_count"}.get(
+        room_category, "total_rooms"
+    )
     branches = {
-        str(b.id): {"name": b.name, "total_rooms": b.total_rooms or 0, "currency": b.currency}
+        str(b.id): {
+            "name": b.name,
+            "total_rooms": b.total_rooms or 0,
+            "units": getattr(b, inv_attr, None) or 0,
+            "currency": b.currency,
+        }
         for b in db.query(Branch).filter_by(is_active=True).all()
     }
     if branch_id:
@@ -1922,7 +1963,7 @@ def tool_get_booking_pace(db: Session, inp: dict, default_branch: Optional[str])
             key = f"{y:04d}-{m:02d}"
             c = cur.get((bid, key), {})
             dim = _cal.monthrange(y, m)[1]
-            avail = info["total_rooms"] * dim
+            avail = info["units"] * dim
             otb_n = c.get("otb_nights", 0)
             pickup_n = c.get("pickup_nights", 0)
 
@@ -1932,6 +1973,7 @@ def tool_get_booking_pace(db: Session, inp: dict, default_branch: Optional[str])
                 "currency": info["currency"],
                 "stay_month": key,
                 "total_rooms": info["total_rooms"],
+                "units_in_scope": info["units"],
                 "days_in_month": dim,
                 "available_room_nights": avail,
                 "otb_room_nights": otb_n,
@@ -1949,7 +1991,7 @@ def tool_get_booking_pace(db: Session, inp: dict, default_branch: Optional[str])
             if compare_ly:
                 ly_key = f"{y - 1:04d}-{m:02d}"
                 l = ly.get((bid, ly_key), {})
-                ly_avail = info["total_rooms"] * _cal.monthrange(y - 1, m)[1]
+                ly_avail = info["units"] * _cal.monthrange(y - 1, m)[1]
                 ly_otb = l.get("otb_nights", 0)
                 ly_pickup = l.get("pickup_nights", 0)
                 ly_final = l.get("final_nights", 0)
@@ -2028,9 +2070,16 @@ def tool_get_booking_pace(db: Session, inp: dict, default_branch: Optional[str])
             "Room-nights come from reservations expanded night by night and clipped "
             "to each stay month, one unit-night per reservation row (the "
             "reservation_daily basis) - NOT the Cloudbeds Insights OCC behind "
-            "get_performance, so it can read a little under it. Denominator = "
-            "branches.total_rooms x days in month, and total_rooms mixes private "
-            "rooms with dorm beds. otb_* = everything on the books as of the "
+            "get_performance, so it can read a little under it. " + (
+                "Scope: private rooms only (room_type_category = 'Room'); "
+                "denominator = branches.total_room_count x days in month."
+                if room_category == "Room" else
+                "Scope: dorm beds only (room_type_category = 'Dorm'); "
+                "denominator = branches.total_dorm_count x days in month."
+                if room_category == "Dorm" else
+                "Denominator = branches.total_rooms x days in month, and "
+                "total_rooms mixes private rooms with dorm beds."
+            ) + " otb_* = everything on the books as of the "
             "window end; pickup_* = only what was booked inside the window. "
             "LAST YEAR CAVEAT: the year-ago snapshot is rebuilt from today's "
             "reservation rows, so bookings that were live back then but cancelled "
@@ -2040,6 +2089,7 @@ def tool_get_booking_pace(db: Session, inp: dict, default_branch: Optional[str])
             "ended up. Occupancy gaps are in percentage POINTS."
         ),
         "branch_id": branch_id or "all",
+        "room_category": room_category or "all",
         "booking_window": {
             "booked_from": booked_from.isoformat(),
             "booked_to": booked_to.isoformat(),

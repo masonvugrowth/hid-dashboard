@@ -35,8 +35,9 @@ from app.services.chat_tools import (
 # ── Fake plumbing ───────────────────────────────────────────────────────────
 
 class _FakeBranch:
-    def __init__(self, bid, name, rooms, currency="TWD"):
+    def __init__(self, bid, name, rooms, currency="TWD", room_count=None, dorm_count=None):
         self.id, self.name, self.total_rooms, self.currency = bid, name, rooms, currency
+        self.total_room_count, self.total_dorm_count = room_count, dorm_count
 
 
 class _FakeBranchQuery:
@@ -284,3 +285,111 @@ def test_note_warns_that_last_year_lost_its_later_cancellations():
     db = _FakeDB([[], []], [branch])
     note = tool_get_booking_pace(db, dict(Q4), None)["note"]
     assert "cancelled" in note and "LAST YEAR CAVEAT" in note
+
+
+# ── Room / Dorm scope ───────────────────────────────────────────────────────
+#
+# The private-room half of the Q4 campaign sheet could not be built from this
+# tool at all: it only ever counted the whole branch against total_rooms, which
+# mixes 30 private rooms with 108 dorm beds. Filtering the nights without also
+# moving the denominator would be worse than not filtering — private-room
+# occupancy would read at a third of its real value.
+
+def test_room_category_filters_the_nights_and_moves_the_denominator():
+    # Taipei: 138 units in all, of which 30 are private rooms. 292 private
+    # room-nights in a 31-day month is 31.40% of the private inventory (930) —
+    # against the whole 4,278 it would read 6.83% and mean nothing.
+    branch = _FakeBranch(BID, "MEANDER Taipei", 138, room_count=30, dorm_count=108)
+    db = _FakeDB([[_row(BID, "2026-10", final=292, otb=292, pickup=292)], []], [branch])
+    out = tool_get_booking_pace(db, dict(Q4, room_category="Room"), None)
+
+    row = out["rows"][0]
+    assert row["available_room_nights"] == 930
+    assert row["units_in_scope"] == 30
+    assert row["total_rooms"] == 138          # still reported, for context
+    assert row["pickup_occ_pct"] == 31.4
+
+    assert "r.room_type_category = :rcat" in db.sql[0]
+    assert db.params[0]["rcat"] == "Room"
+    assert out["room_category"] == "Room"
+
+
+def test_dorm_scope_counts_against_the_bed_inventory():
+    branch = _FakeBranch(BID, "MEANDER Taipei", 138, room_count=30, dorm_count=108)
+    db = _FakeDB([[_row(BID, "2026-10", final=0, otb=0, pickup=1674)], []], [branch])
+    out = tool_get_booking_pace(db, dict(Q4, room_category="Dorm"), None)
+
+    assert db.params[0]["rcat"] == "Dorm"
+    assert out["rows"][0]["available_room_nights"] == 108 * 31
+    assert out["rows"][0]["pickup_occ_pct"] == 50.0
+
+
+def test_last_year_snapshot_carries_the_same_scope():
+    # A private-room pace compared against last year's whole branch would be
+    # nonsense, so the filter has to reach the year-ago query too.
+    branch = _FakeBranch(BID, "MEANDER Taipei", 138, room_count=30, dorm_count=108)
+    db = _FakeDB([[], []], [branch])
+    tool_get_booking_pace(db, dict(Q4, room_category="Room"), None)
+
+    assert len(db.sql) == 2
+    assert all("r.room_type_category = :rcat" in sql for sql in db.sql)
+    assert [p["rcat"] for p in db.params] == ["Room", "Room"]
+
+
+def test_no_room_category_leaves_the_query_and_the_denominator_alone():
+    branch = _FakeBranch(BID, "MEANDER Taipei", 138, room_count=30, dorm_count=108)
+    db = _FakeDB([[_row(BID, "2026-10", final=358, otb=358, pickup=330)], []], [branch])
+    out = tool_get_booking_pace(db, dict(Q4), None)
+
+    assert "room_type_category" not in db.sql[0]
+    assert "rcat" not in db.params[0]
+    assert out["rows"][0]["available_room_nights"] == 138 * 31
+    assert out["room_category"] == "all"
+
+
+def test_room_category_is_case_insensitive_and_junk_falls_back_to_whole_branch():
+    branch = _FakeBranch(BID, "MEANDER Taipei", 138, room_count=30, dorm_count=108)
+
+    db = _FakeDB([[], []], [branch])
+    assert tool_get_booking_pace(db, dict(Q4, room_category="room"), None)["room_category"] == "Room"
+    assert db.params[0]["rcat"] == "Room"
+
+    # An unrecognised value must not silently bind and return zero rows.
+    db = _FakeDB([[], []], [branch])
+    out = tool_get_booking_pace(db, dict(Q4, room_category="suite"), None)
+    assert out["room_category"] == "all"
+    assert "rcat" not in db.params[0]
+
+
+def test_branch_with_no_beds_reports_no_occupancy_rather_than_dividing_by_zero():
+    # Osaka is 71 private rooms and 0 dorm beds. Asked for its dorm pace the
+    # answer is "there is no such inventory", not a crash and not 0%.
+    branch = _FakeBranch("bid-osaka", "MEANDER Osaka", 71, room_count=71, dorm_count=0)
+    db = _FakeDB([[], []], [branch])
+    out = tool_get_booking_pace(db, dict(Q4, room_category="Dorm"), None)
+
+    row = out["rows"][0]
+    assert row["available_room_nights"] == 0
+    assert row["pickup_occ_pct"] is None
+    assert row["otb_occ_pct"] is None
+
+
+def test_note_states_which_inventory_the_percentages_are_against():
+    branch = _FakeBranch(BID, "MEANDER Taipei", 138, room_count=30, dorm_count=108)
+
+    db = _FakeDB([[], []], [branch])
+    assert "total_room_count" in tool_get_booking_pace(db, dict(Q4, room_category="Room"), None)["note"]
+
+    db = _FakeDB([[], []], [branch])
+    assert "total_dorm_count" in tool_get_booking_pace(db, dict(Q4, room_category="Dorm"), None)["note"]
+
+    db = _FakeDB([[], []], [branch])
+    note = tool_get_booking_pace(db, dict(Q4), None)["note"]
+    assert "total_rooms mixes private rooms with dorm beds" in note
+
+
+def test_room_category_is_advertised_to_the_chat_model():
+    schema = next(t for t in TOOL_DEFS if t["name"] == "get_booking_pace")["input_schema"]
+    prop = schema["properties"]["room_category"]
+    assert prop["enum"] == ["Room", "Dorm"]
+    assert "private" in prop["description"]

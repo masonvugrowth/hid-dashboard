@@ -391,6 +391,7 @@ def register_tools(mcp: FastMCP) -> None:
         booked_from: Optional[str] = None,
         booked_to: Optional[str] = None,
         compare_last_year: bool = True,
+        room_category: Optional[str] = None,
     ) -> dict:
         """BOOKING PACE / PICKUP for FUTURE stay months: how much of each
         upcoming month is already sold, how much of it was booked inside a
@@ -414,6 +415,11 @@ def register_tools(mcp: FastMCP) -> None:
         stay_month_from / stay_month_to are 'YYYY-MM' (max 12 months); default
         is the next 3 whole months, booked in the last `days` (60) days.
 
+        room_category narrows to one side of the inventory — 'Room' for private
+        rooms, 'Dorm' for beds — and moves the denominator with it
+        (total_room_count / total_dorm_count), so occ_pct stays comparable.
+        Omit it for the whole branch.
+
         CAVEAT to pass on: last year's snapshot is rebuilt from today's rows,
         so bookings that were live back then but cancelled later are missing
         from it — last year reads slightly low. For occupancy that ALREADY
@@ -424,4 +430,5 @@ def register_tools(mcp: FastMCP) -> None:
             "stay_month_from": stay_month_from, "stay_month_to": stay_month_to,
             "days": days, "booked_from": booked_from, "booked_to": booked_to,
             "compare_last_year": compare_last_year,
+            "room_category": room_category,
         })
