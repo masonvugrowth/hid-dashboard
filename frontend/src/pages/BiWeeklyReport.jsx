@@ -8,8 +8,11 @@
  * anchor so switching branches costs nothing.
  *
  * "Send report" emails one branch's summary to chosen users, with a link that
- * opens the full report — notes included — without a HiD login. See
- * SendReportModal below and backend/app/services/biweekly_share.py.
+ * opens the full report — notes included — without a HiD login. Its second tab
+ * saves that as a standing schedule, so the same email goes out on its own once
+ * each period closes. See SendReportModal below,
+ * backend/app/services/biweekly_share.py for the documents, and
+ * backend/app/services/biweekly_schedule.py for when the automatic one fires.
  *
  * Two ways to leave a comment, both on the Weekly Report's comment table
  * (tagged report_type='biweekly'):
@@ -37,6 +40,8 @@ import {
   sendBranchReport,
   getShare,
   revokeShare,
+  getSchedule,
+  putSchedule,
 } from "../api/biweekly";
 import { useAuth } from "../context/AuthContext";
 import { useBranch } from "../context/BranchContext";
@@ -697,7 +702,316 @@ function BranchNotes({ period, branchId, branchName }) {
 }
 
 /**
- * "Send report" — pick who gets this branch's report by email.
+ * The recipient checkboxes, shared by both tabs of the send dialog.
+ *
+ * The list is a disclosure control rather than a convenience — it only offers
+ * people who are already allowed to see this branch — so both the one-off send
+ * and the standing schedule draw from exactly the same set.
+ */
+function RecipientPicker({ recipients, picked, onToggle }) {
+  return (
+    <div className="space-y-1">
+      {recipients.map(r => (
+        <label
+          key={r.id}
+          className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 cursor-pointer"
+        >
+          <input
+            type="checkbox"
+            checked={picked.has(r.id)}
+            onChange={() => onToggle(r.id)}
+            className="w-4 h-4 accent-teal-700"
+          />
+          <span className="flex-1 min-w-0">
+            <span className="block text-sm text-gray-800 truncate">{r.name}</span>
+            <span className="block text-[11px] text-gray-400 truncate">
+              {r.email}
+            </span>
+          </span>
+          <span className="text-[10px] uppercase tracking-wide text-gray-400">
+            {r.role}
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+const H1_DAYS = Array.from({ length: 14 }, (_, i) => 15 + i);   // 15–28
+const H2_DAYS = Array.from({ length: 14 }, (_, i) => 1 + i);    // 1–14
+const HOURS = Array.from({ length: 24 }, (_, i) => i);
+const MINUTES = [0, 15, 30, 45];
+
+const pad = n => String(n).padStart(2, "0");
+
+/** "Tue, 15 Sep 2026, 08:00" — the ICT wall clock the backend scheduled. */
+function whenText(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return d.toLocaleString("en-GB", {
+    weekday: "short", day: "numeric", month: "short", year: "numeric",
+    hour: "2-digit", minute: "2-digit", timeZone: "Asia/Ho_Chi_Minh",
+  });
+}
+
+/**
+ * "Send automatically" — the standing version of the tab beside it.
+ *
+ * Two things are deliberately not free-form. The send days are picked from
+ * bounded lists (15–28 for the 1st–14th report, 1–14 of the FOLLOWING month
+ * for the 15th–EOM one) so a schedule cannot be set to mail a period that has
+ * not finished — an early report is not early, it is wrong. And the recipient
+ * list is the same permission-scoped list the one-off send uses, re-checked by
+ * the backend at send time rather than trusted from when it was saved.
+ *
+ * The free-typed addresses below it are the exception, and they are labelled as
+ * one: a branch manager with no HiD account is exactly who this report is for,
+ * and there is no account to check them against.
+ */
+function AutoSendTab({ branch, recipients }) {
+  const queryClient = useQueryClient();
+  const [form, setForm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [saved, setSaved] = useState(false);
+  const initialisedFor = useRef(null);
+
+  const { data: sched, isPending, isError, error: loadError } = useQuery({
+    queryKey: ["biweekly-schedule", branch?.id],
+    queryFn: () => getSchedule(branch.id),
+    enabled: Boolean(branch?.id),
+  });
+
+  // Seeded once per branch, not on every refetch: a refetch landing while
+  // somebody is halfway through editing must not throw their changes away.
+  useEffect(() => {
+    if (!sched || initialisedFor.current === branch?.id) return;
+    initialisedFor.current = branch?.id;
+    setForm({
+      enabled: Boolean(sched.enabled),
+      userIds: new Set(sched.user_ids || []),
+      extra: (sched.to || []).join(", "),
+      day1: sched.send_day_h1,
+      day2: sched.send_day_h2,
+      hour: sched.hour,
+      minute: sched.minute,
+    });
+  }, [sched, branch?.id]);
+
+  const set = patch => {
+    setForm(f => ({ ...f, ...patch }));
+    setSaved(false);
+  };
+
+  const toggle = id =>
+    setForm(f => {
+      const next = new Set(f.userIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { ...f, userIds: next };
+    });
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    try {
+      await putSchedule({
+        branch_id: branch.id,
+        enabled: form.enabled,
+        user_ids: [...form.userIds],
+        to: form.extra.split(/[,\n;]/).map(s => s.trim()).filter(Boolean),
+        send_day_h1: form.day1,
+        send_day_h2: form.day2,
+        hour: form.hour,
+        minute: form.minute,
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["biweekly-schedule", branch.id],
+      });
+      setSaved(true);
+    } catch (e) {
+      setError(e?.response?.data?.detail || e?.message || "Could not save");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (isPending) return <p className="text-sm text-gray-500">Loading…</p>;
+  if (isError) {
+    return (
+      <ErrorBox
+        title="Could not load the automatic-send settings"
+        detail={loadError?.response?.data?.detail || loadError?.message}
+      />
+    );
+  }
+  if (!form) return null;
+
+  const nothingPicked = form.userIds.size === 0 && !form.extra.trim();
+
+  return (
+    <div className="space-y-4">
+      <label className="flex items-start gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={form.enabled}
+          onChange={e => set({ enabled: e.target.checked })}
+          className="w-4 h-4 mt-0.5 accent-teal-700"
+        />
+        <span>
+          <span className="block text-sm font-medium text-gray-800">
+            Email {branch?.name}'s report automatically, every period
+          </span>
+          <span className="block text-[11px] text-gray-500 mt-0.5">
+            HiD sends it once the period has finished — you do not have to open
+            this dialog again.
+          </span>
+        </span>
+      </label>
+
+      <div className="border-t border-gray-100 pt-3">
+        <p className="text-[11px] font-semibold text-gray-500 mb-1">When</p>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 flex-wrap text-sm text-gray-700">
+            <span className="text-gray-500 text-xs w-[86px] shrink-0">
+              1st–14th
+            </span>
+            <span className="text-xs text-gray-500">goes out on day</span>
+            <select
+              value={form.day1}
+              onChange={e => set({ day1: Number(e.target.value) })}
+              className="border border-gray-200 rounded-lg px-2 py-1 text-sm"
+            >
+              {H1_DAYS.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+            <span className="text-xs text-gray-500">of the same month</span>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap text-sm text-gray-700">
+            <span className="text-gray-500 text-xs w-[86px] shrink-0">
+              15th–month end
+            </span>
+            <span className="text-xs text-gray-500">goes out on day</span>
+            <select
+              value={form.day2}
+              onChange={e => set({ day2: Number(e.target.value) })}
+              className="border border-gray-200 rounded-lg px-2 py-1 text-sm"
+            >
+              {H2_DAYS.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+            <span className="text-xs text-gray-500">of the NEXT month</span>
+          </div>
+          <div className="flex items-center gap-2 text-sm text-gray-700">
+            <span className="text-gray-500 text-xs w-[86px] shrink-0">At</span>
+            <select
+              value={form.hour}
+              onChange={e => set({ hour: Number(e.target.value) })}
+              className="border border-gray-200 rounded-lg px-2 py-1 text-sm"
+            >
+              {HOURS.map(h => <option key={h} value={h}>{pad(h)}</option>)}
+            </select>
+            <span className="text-gray-400">:</span>
+            <select
+              value={form.minute}
+              onChange={e => set({ minute: Number(e.target.value) })}
+              className="border border-gray-200 rounded-lg px-2 py-1 text-sm"
+            >
+              {MINUTES.map(m => <option key={m} value={m}>{pad(m)}</option>)}
+            </select>
+            <span className="text-xs text-gray-500">Vietnam time (ICT)</span>
+          </div>
+        </div>
+        <p className="text-[11px] text-gray-500 mt-2 leading-relaxed">
+          The days you can pick all fall after the period they cover has ended,
+          so an automatic email never reports a half-counted fortnight.
+        </p>
+      </div>
+
+      <div className="border-t border-gray-100 pt-3">
+        <p className="text-[11px] font-semibold text-gray-500 mb-1">Who</p>
+        {recipients.length === 0 ? (
+          <p className="text-sm text-gray-600">
+            Nobody has access to {branch?.name} yet — grant it on the Users
+            page, or add an address below.
+          </p>
+        ) : (
+          <RecipientPicker
+            recipients={recipients}
+            picked={form.userIds}
+            onToggle={toggle}
+          />
+        )}
+        <div className="mt-3">
+          <label className="block text-[11px] font-semibold text-gray-500 mb-1">
+            Other addresses (comma separated)
+          </label>
+          <input
+            type="text"
+            value={form.extra}
+            onChange={e => set({ extra: e.target.value })}
+            placeholder="manager@example.com"
+            className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm"
+          />
+          <p className="text-[11px] text-amber-700 mt-1 leading-relaxed">
+            For branch managers with no HiD account. These are not checked
+            against anyone's branch access — whatever you type here receives
+            {" "}{branch?.name}'s figures every period until you remove it.
+          </p>
+        </div>
+      </div>
+
+      {sched?.next_run && form.enabled && (
+        <p className="text-xs text-gray-600">
+          Next send: <b>{whenText(sched.next_run)}</b>
+          {saved ? "" : " — as currently saved"}
+        </p>
+      )}
+
+      {sched?.last_sent_at && (
+        <div className="border-t border-gray-100 pt-3 text-[11px] text-gray-500 leading-relaxed">
+          Last automatic send: <b>{sched.last_sent_period_key}</b> on{" "}
+          {whenText(sched.last_sent_at)}
+          {sched.last_sent_to?.length > 0 && (
+            <> → {sched.last_sent_to.join(", ")}</>
+          )}
+          {sched.last_failed?.length > 0 && (
+            <span className="text-red-600">
+              {" "}· did not reach {sched.last_failed.join(", ")}
+            </span>
+          )}
+          {sched.last_error && (
+            <span className="block text-amber-700 mt-0.5">
+              {sched.last_error}
+            </span>
+          )}
+        </div>
+      )}
+
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      {saved && !error && (
+        <p className="text-xs text-green-700">Saved.</p>
+      )}
+
+      <div className="flex justify-end">
+        <button
+          onClick={save}
+          disabled={busy || (form.enabled && nothingPicked)}
+          title={
+            form.enabled && nothingPicked
+              ? "Pick at least one recipient before turning this on"
+              : undefined
+          }
+          className="px-4 py-1.5 bg-teal-700 text-white text-sm rounded-lg hover:bg-teal-800 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {busy ? "Saving…" : "Save schedule"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "Send report" — pick who gets this branch's report by email, now or every
+ * period.
  *
  * The email carries a summary plus a link that opens the full report with no
  * HiD login, so the picker is a disclosure control, not a convenience: it only
@@ -709,9 +1023,11 @@ function BranchNotes({ period, branchId, branchName }) {
  * Result reporting is deliberately literal. A send that reached three of four
  * recipients renders as three sent and one failed, never as "Sent" — the
  * sender cannot verify delivery themselves, so this is the only place the
- * truth is available.
+ * truth is available. The automatic tab prints the same thing for the last
+ * run it made, for the same reason: nobody was watching when it went out.
  */
 function SendReportModal({ period, periodLabel, branch, onClose }) {
+  const [tab, setTab] = useState("now");
   const [picked, setPicked] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -803,6 +1119,20 @@ Anyone who already has it — ` +
     }
   }
 
+  const tabButton = (id, label) => (
+    <button
+      onClick={() => setTab(id)}
+      className={
+        "px-3 py-1.5 text-sm rounded-lg " +
+        (tab === id
+          ? "bg-teal-50 text-teal-800 font-medium"
+          : "text-gray-500 hover:bg-gray-50")
+      }
+    >
+      {label}
+    </button>
+  );
+
   return createPortal(
     <div
       className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
@@ -814,10 +1144,16 @@ Anyone who already has it — ` +
             📧 Send {branch?.name} report
           </h3>
           <p className="text-[11px] text-gray-500 mt-0.5">{periodLabel}</p>
+          <div className="flex gap-1 mt-3 -mb-1">
+            {tabButton("now", "Send now")}
+            {tabButton("auto", "Send automatically")}
+          </div>
         </div>
 
         <div className="px-5 py-4 overflow-y-auto flex-1">
-          {result ? (
+          {tab === "auto" ? (
+            <AutoSendTab branch={branch} recipients={recipients} />
+          ) : result ? (
             <div className="space-y-3">
               {result.sent_to?.length > 0 && (
                 <div className="bg-green-50 border border-green-200 rounded-lg p-3">
@@ -863,32 +1199,11 @@ Anyone who already has it — ` +
               <p className="text-xs text-gray-500 mb-2">
                 Everyone here can already see {branch?.name} in HiD.
               </p>
-              <div className="space-y-1">
-                {recipients.map(r => (
-                  <label
-                    key={r.id}
-                    className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={picked.has(r.id)}
-                      onChange={() => toggle(r.id)}
-                      className="w-4 h-4 accent-teal-700"
-                    />
-                    <span className="flex-1 min-w-0">
-                      <span className="block text-sm text-gray-800 truncate">
-                        {r.name}
-                      </span>
-                      <span className="block text-[11px] text-gray-400 truncate">
-                        {r.email}
-                      </span>
-                    </span>
-                    <span className="text-[10px] uppercase tracking-wide text-gray-400">
-                      {r.role}
-                    </span>
-                  </label>
-                ))}
-              </div>
+              <RecipientPicker
+                recipients={recipients}
+                picked={picked}
+                onToggle={toggle}
+              />
               <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
                 <p className="text-[11px] text-amber-800 leading-relaxed">
                   The email contains a summary and a link that opens{" "}
@@ -901,7 +1216,7 @@ Anyone who already has it — ` +
             </>
           )}
 
-          {liveUrl && (
+          {tab === "now" && liveUrl && (
             <div className="mt-4 border-t border-gray-100 pt-3">
               <p className="text-[11px] font-semibold text-gray-500 mb-1">
                 No-login link for this period
@@ -927,14 +1242,14 @@ Anyone who already has it — ` +
             </div>
           )}
 
-          {revoked && (
+          {tab === "now" && revoked && (
             <p className="text-xs text-gray-600 mt-3">
               The old link no longer works. Send the report again to issue a
               fresh one.
             </p>
           )}
 
-          {error && (
+          {tab === "now" && error && (
             <p className="text-xs text-red-600 mt-3">{error}</p>
           )}
         </div>
@@ -944,9 +1259,9 @@ Anyone who already has it — ` +
             onClick={onClose}
             className="px-3 py-1.5 text-sm text-gray-600 rounded-lg hover:bg-gray-100"
           >
-            {result ? "Done" : "Cancel"}
+            {result || tab === "auto" ? "Done" : "Cancel"}
           </button>
-          {!result && (
+          {tab === "now" && !result && (
             <button
               onClick={send}
               disabled={busy || picked.size === 0}
@@ -965,7 +1280,6 @@ Anyone who already has it — ` +
     document.body
   );
 }
-
 
 export default function BiWeeklyReport() {
   const queryClient = useQueryClient();

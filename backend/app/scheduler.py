@@ -97,6 +97,37 @@ def start_scheduler() -> None:
     # max_instances=1 from job_defaults means a tick that is still running
     # never overlaps the next one; coalesce=True collapses ticks missed
     # during a redeploy into a single catch-up run.
+    def send_due_biweekly_reports() -> None:
+        """Email each branch's Bi-Weekly report on the day its period closes.
+
+        Ticks every 15 minutes rather than firing once at the configured hour,
+        because the configured hour is exactly when a deploy is most likely to
+        have the process restarting: 08:00 is when people push. A tick that
+        finds nothing due does two indexed queries and stops, and the job
+        catches up for a few days after a missed send — so the cost of the
+        frequent tick is negligible and the thing it buys is a report that
+        still goes out after an outage.
+
+        Sending exactly once is not the schedule's job but the runner's:
+        `last_sent_period_key` is read under SELECT FOR UPDATE and written in
+        the same transaction as the send, so overlapping ticks, a second
+        worker, and the catch-up window all resolve to one email.
+        """
+        from app.database import SessionLocal
+        from app.services.biweekly_schedule import run_due_schedules
+
+        try:
+            run_due_schedules(SessionLocal)
+        except Exception:
+            logger.exception("Bi-weekly report auto-send failed")
+
+    scheduler.add_job(
+        send_due_biweekly_reports,
+        trigger=IntervalTrigger(minutes=15),
+        id="biweekly_report_auto_send",
+        replace_existing=True,
+        executor="default",
+    )
     scheduler.add_job(
         evaluate_rate_plan_quotas,
         trigger=IntervalTrigger(minutes=30),
@@ -110,7 +141,8 @@ def start_scheduler() -> None:
     realtime = sorted(settings.webhook_realtime_branches)
     logger.info(
         "Scheduler started - Cloudbeds poll every 10 min, rate plan quota "
-        "eval every 30 min; realtime branches=%s",
+        "eval every 30 min, bi-weekly report auto-send check every 15 min; "
+        "realtime branches=%s",
         ",".join(realtime) or "none",
     )
 
