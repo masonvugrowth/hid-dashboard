@@ -642,6 +642,29 @@ def debug_cancellation_leadtime(
     }, db, None))
 
 
+@router.get("/debug/booking-pace")
+def debug_booking_pace(
+    branch_id: Optional[UUID] = Query(None),
+    stay_month_from: Optional[str] = Query(None, description="YYYY-MM"),
+    stay_month_to: Optional[str] = Query(None, description="YYYY-MM"),
+    days: int = Query(60, ge=1, description="Booking-window length ending today"),
+    booked_from: Optional[str] = Query(None, description="YYYY-MM-DD, overrides days"),
+    booked_to: Optional[str] = Query(None, description="YYYY-MM-DD, default today"),
+    room_category: Optional[str] = Query(None, description="Room | Dorm. Omit for whole branch."),
+    compare_last_year: bool = Query(True),
+    db: Session = Depends(get_db),
+):
+    """Debug passthrough: run the get_booking_pace chat/MCP tool over HTTP so
+    its output can be inspected without an MCP/chat round-trip."""
+    from app.services.chat_tools import execute_tool
+    return _envelope(execute_tool("get_booking_pace", {
+        "branch_id": str(branch_id) if branch_id else None,
+        "stay_month_from": stay_month_from, "stay_month_to": stay_month_to,
+        "days": days, "booked_from": booked_from, "booked_to": booked_to,
+        "room_category": room_category, "compare_last_year": compare_last_year,
+    }, db, None))
+
+
 @router.post("/daily-revenue")
 def trigger_daily_revenue_sync(
     branch_id: Optional[UUID] = Query(None),
