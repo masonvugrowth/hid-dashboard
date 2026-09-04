@@ -269,7 +269,7 @@ BRANCH_CURRENCY: dict[str, str] = {
     "osaka":  "JPY",
     "taipei": "TWD",
     "1948":   "TWD",
-    "oani":   "JPY",
+    "oani":   "TWD",
 }
 
 # How to display revenue in each currency
