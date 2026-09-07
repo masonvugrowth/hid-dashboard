@@ -145,12 +145,18 @@ class TestSpendConversion:
 
 
 def _stub_sides(monkeypatch, *, spend_vnd=0.0, ads=(0, 0.0), actual=(0, 0, 0.0),
-                metrics=None):
+                metrics=None, from_metrics=None):
+    """Stub both ad sources. ``ads`` is what the booking matcher would say;
+    ``from_metrics`` is what the campaign's own ad rows say, as
+    (bookings, revenue_vnd, usable) — None means the export carried no
+    conversion field, which is what sends the caller to the matcher."""
     monkeypatch.setattr(sc, "_ad_scope", lambda *a, **k: {
         "ad_ids": {"a1"}, "campaign_ids": {"c1"}, "currency_by_ad": {},
     })
     monkeypatch.setattr(sc, "fetch_ad_metrics", lambda *a, **k: metrics)
     monkeypatch.setattr(sc, "_spend_vnd", lambda *a, **k: spend_vnd)
+    monkeypatch.setattr(sc, "_ads_from_metrics",
+                        lambda *a, **k: from_metrics or (0, 0.0, False))
     monkeypatch.setattr(sc, "_ads_bookings", lambda *a, **k: ads)
     monkeypatch.setattr(sc, "actual_bookings", lambda *a, **k: actual)
 
@@ -169,7 +175,7 @@ class TestRowArithmetic:
     def test_cost_pct_is_charged_on_actual_revenue_not_ad_revenue(self, monkeypatch):
         _stub_sides(
             monkeypatch, metrics={}, spend_vnd=10_000_000,
-            ads=(5, 200_000_000),          # ad-attributed revenue is smaller
+            from_metrics=(5, 200_000_000, True),   # ad-side is smaller
             actual=(12, 24, 500_000_000),  # every booking on the rate plan
         )
         row = _build(_Campaign(cost_pct=20))
@@ -179,13 +185,15 @@ class TestRowArithmetic:
 
     def test_ads_roas_uses_ad_attributed_revenue_over_spend_alone(self, monkeypatch):
         _stub_sides(monkeypatch, metrics={}, spend_vnd=10_000_000,
-                    ads=(5, 40_000_000), actual=(12, 24, 500_000_000))
+                    from_metrics=(5, 40_000_000, True),
+                    actual=(12, 24, 500_000_000))
         row = _build(_Campaign(cost_pct=20))
         assert row["roas_ads"] == 4.0
 
     def test_zero_cost_pct_leaves_the_real_roas_on_ad_spend_alone(self, monkeypatch):
         _stub_sides(monkeypatch, metrics={}, spend_vnd=10_000_000,
-                    ads=(5, 40_000_000), actual=(12, 24, 50_000_000))
+                    from_metrics=(5, 40_000_000, True),
+                    actual=(12, 24, 50_000_000))
         row = _build(_Campaign(cost_pct=0))
         assert row["campaign_cost"] == 0
         assert row["total_cost"] == 10_000_000
@@ -195,7 +203,8 @@ class TestRowArithmetic:
         """The gap between ad-attributed and actual bookings is the reason the
         tab exists — neither may be quietly substituted for the other."""
         _stub_sides(monkeypatch, metrics={}, spend_vnd=1_000,
-                    ads=(5, 40_000_000), actual=(12, 24, 500_000_000))
+                    from_metrics=(5, 40_000_000, True),
+                    actual=(12, 24, 500_000_000))
         row = _build(_Campaign())
         assert (row["ads_bookings"], row["actual_bookings"]) == (5, 12)
         assert (row["ads_revenue"], row["actual_revenue"]) == (40_000_000, 500_000_000)
@@ -228,6 +237,124 @@ class TestSpendUnavailable:
         assert row["campaign_cost"] == 100_000_000
 
 
+class TestAdsSourceSelection:
+    """Bookings and revenue from ads come off the campaign's OWN ad rows —
+    the same ones spend is summed from. The booking matcher is the fallback:
+    it reported org-wide zero for all of Sept 2026 while /spend/daily saw 106
+    conversions, and a tab that reads 0 whenever the matcher sleeps is worse
+    than one reading the platform's own conversion count."""
+
+    def test_the_campaigns_own_ad_rows_win(self, monkeypatch):
+        _stub_sides(monkeypatch, metrics={}, spend_vnd=1_000,
+                    from_metrics=(7, 90_000_000, True),
+                    ads=(0, 0.0))          # matcher is asleep
+        row = _build(_Campaign())
+        assert (row["ads_bookings"], row["ads_revenue"]) == (7, 90_000_000)
+        assert row["ads_source"] == "ads_metrics"
+
+    def test_a_genuine_zero_from_the_ad_rows_is_not_second_guessed(self, monkeypatch):
+        """usable=True with 0 conversions means the ads really sold nothing.
+        Reaching for the matcher there would invent bookings the campaign's
+        own ads never reported."""
+        _stub_sides(monkeypatch, metrics={}, spend_vnd=1_000,
+                    from_metrics=(0, 0.0, True),
+                    ads=(9, 99_000_000))
+        row = _build(_Campaign())
+        assert row["ads_bookings"] == 0
+        assert row["ads_source"] == "ads_metrics"
+
+    def test_no_conversion_field_at_all_falls_back_to_the_matcher(self, monkeypatch):
+        """usable=False is a shape problem with the export, not a campaign
+        that sold nothing — so the matcher gets its turn."""
+        _stub_sides(monkeypatch, metrics={}, spend_vnd=1_000,
+                    from_metrics=(0, 0.0, False),
+                    ads=(9, 99_000_000))
+        row = _build(_Campaign())
+        assert (row["ads_bookings"], row["ads_revenue"]) == (9, 99_000_000)
+        assert row["ads_source"] == "booking_matches"
+
+
+class TestAdsFromMetrics:
+    SCOPE = {
+        "ad_ids": {"a1", "a2"},
+        "campaign_ids": {"c1"},
+        "currency_by_ad": {
+            "a1": {"account_id": None, "branch_currency": "TWD"},
+            "a2": {"account_id": None, "branch_currency": "TWD"},
+        },
+    }
+
+    @staticmethod
+    def _rate(cur):
+        return {"VND": 1.0, "TWD": 830.0}.get((cur or "").upper())
+
+    def test_sums_conversions_and_converts_revenue(self):
+        metrics = {
+            "a1": {"conversions": 3, "has_conversions": True, "revenue": 1_000,
+                   "revenue_vnd": None, "currency": "TWD"},
+            "a2": {"conversions": 4, "has_conversions": True, "revenue": 500,
+                   "revenue_vnd": None, "currency": "TWD"},
+        }
+        bookings, revenue_vnd, usable = sc._ads_from_metrics(
+            self.SCOPE, metrics, self._rate)
+        assert (bookings, usable) == (7, True)
+        assert revenue_vnd == 1_500 * 830
+
+    def test_an_export_with_no_conversion_field_reports_unusable(self):
+        metrics = {"a1": {"conversions": 0.0, "has_conversions": False,
+                          "revenue": 1_000, "revenue_vnd": None, "currency": "TWD"}}
+        assert sc._ads_from_metrics(self.SCOPE, metrics, self._rate) == (0, 0.0, False)
+
+    def test_zero_conversions_on_a_real_field_is_usable(self):
+        metrics = {"a1": {"conversions": 0, "has_conversions": True,
+                          "revenue": 0, "revenue_vnd": None, "currency": "TWD"}}
+        assert sc._ads_from_metrics(self.SCOPE, metrics, self._rate) == (0, 0.0, True)
+
+
+class TestMetricsRowReader:
+    """The export publishes no response schema, so the reader has to pick up
+    conversions and revenue without being told their spelling."""
+
+    def _fetch(self, monkeypatch, row):
+        class _Client:
+            def get_accounts(self):
+                return []
+
+            def get_ads_metrics(self, df, dt, platform=None):
+                return [dict(row, ad_id="a1")] if platform == "meta" else []
+
+        monkeypatch.setattr(sc, "get_client", lambda: _Client())
+        return sc.fetch_ad_metrics(_D, _D)["a1"]
+
+    def test_reads_conversions_revenue_and_spend_together(self, monkeypatch):
+        out = self._fetch(monkeypatch,
+                          {"spend": 10, "revenue": 200, "conversions": 3})
+        assert (out["spend"], out["revenue"], out["conversions"]) == (10, 200, 3)
+        assert out["has_conversions"] is True
+
+    def test_accepts_purchases_as_the_conversion_field(self, monkeypatch):
+        out = self._fetch(monkeypatch, {"spend": 10, "purchases": 2})
+        assert out["conversions"] == 2 and out["has_conversions"] is True
+
+    def test_a_row_with_no_conversion_field_is_flagged_not_zeroed(self, monkeypatch):
+        out = self._fetch(monkeypatch, {"spend": 10, "revenue": 200})
+        assert out["has_conversions"] is False
+
+    def test_collects_the_field_names_upstream_actually_sent(self, monkeypatch):
+        class _Client:
+            def get_accounts(self):
+                return []
+
+            def get_ads_metrics(self, df, dt, platform=None):
+                return ([{"ad_id": "a1", "spend": 1, "thruplay": 9}]
+                        if platform == "meta" else [])
+
+        monkeypatch.setattr(sc, "get_client", lambda: _Client())
+        seen = set()
+        sc.fetch_ad_metrics(_D, _D, seen)
+        assert seen == {"ad_id", "spend", "thruplay"}
+
+
 class TestRatePlanOnlyCampaign:
     def test_no_ad_names_means_no_upstream_call_and_no_warning(self, monkeypatch):
         """A campaign sold on a rate plan with no ads behind it really did
@@ -252,7 +379,8 @@ class TestCurrencyView:
         """Single-branch views read in the branch's own currency; the ads side
         arrives in VND and has to be converted like everything else."""
         _stub_sides(monkeypatch, metrics={}, spend_vnd=830_000,
-                    ads=(2, 8_300_000), actual=(3, 6, 16_600_000))
+                    from_metrics=(2, 8_300_000, True),
+                    actual=(3, 6, 16_600_000))
         row = sc.build_rows(
             _FakeSession(), [_Campaign(cost_pct=50)], None, None, None,
             status_filter=None, source_filter=None, rev_col=None,

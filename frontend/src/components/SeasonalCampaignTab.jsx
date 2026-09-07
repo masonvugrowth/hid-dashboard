@@ -10,7 +10,7 @@
  * Set-up is two lists of names the team types once (ad campaign, rate plan)
  * plus the campaign's cost %, which is charged against ACTUAL revenue.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import {
   getSeasonalCampaigns,
@@ -35,6 +35,67 @@ function RoasBadge({ value }) {
     <span className={"px-2 py-0.5 rounded text-xs font-semibold " + cls}>
       {value.toFixed(2)}x
     </span>
+  );
+}
+
+/* Cost % edited in place — the one number on this row a human tunes, and the
+ * one they tune repeatedly while a campaign is running. Making them reopen
+ * the set-up dialog for it turns a two-second correction into six clicks.
+ * Same click-to-edit shape as the Campaign cell on the CRM tab. */
+function CostPctCell({ value, onSave, saving }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef(null);
+
+  const start = () => {
+    setDraft(String(value ?? 0));
+    setEditing(true);
+    setTimeout(() => inputRef.current?.select(), 0);
+  };
+
+  const commit = () => {
+    setEditing(false);
+    const next = Number(draft);
+    // A typo is not an instruction to set 0% — leave the old value alone.
+    if (draft.trim() === "" || Number.isNaN(next)) return;
+    const clamped = Math.min(100, Math.max(0, next));
+    if (clamped !== Number(value ?? 0)) onSave(clamped);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="number"
+        step="0.01"
+        min="0"
+        max="100"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        className="w-20 text-sm text-right border border-blue-400 rounded px-2 py-1 bg-white outline-none"
+      />
+    );
+  }
+
+  return (
+    <button
+      onClick={start}
+      title="Click to edit — charged on actual revenue"
+      className="w-full text-right text-sm rounded px-2 py-1 transition-colors hover:bg-yellow-100"
+    >
+      {saving ? (
+        <span className="text-gray-400">Saving…</span>
+      ) : value ? (
+        `${value}%`
+      ) : (
+        <span className="text-gray-300">0%</span>
+      )}
+    </button>
   );
 }
 
@@ -238,6 +299,7 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
   const queryClient = useQueryClient();
   const [dialog, setDialog] = useState(null); // null | {campaign?: row}
   const [error, setError] = useState(null);
+  const [savingPct, setSavingPct] = useState(null);
 
   const params = {};
   if (branchId) params.branch_id = branchId;
@@ -264,6 +326,24 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["seasonal-campaigns"] });
     queryClient.invalidateQueries({ queryKey: ["seasonal-campaign-performance"] });
+  };
+
+  const saveCostPct = async (row, pct) => {
+    setSavingPct(row.id);
+    setError(null);
+    try {
+      await updateSeasonalCampaign(row.id, { cost_pct: pct });
+      refresh();
+    } catch (e) {
+      // Leave the old % on screen — the cell must never show a value the
+      // server didn't accept.
+      setError(
+        `Could not save the cost % for "${row.name}": ` +
+          (e?.response?.data?.detail || e?.message || "unknown error")
+      );
+    } finally {
+      setSavingPct(null);
+    }
   };
 
   const remove = async (row) => {
@@ -293,8 +373,10 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
         larger, and truer, number.
         <br />
         <span className="text-gray-400">
-          Both sides cover {periodLabel}, filtered by Date Booked. Campaign Cost is
-          the cost % charged on actual revenue; Total Cost adds ad spend on top.
+          Both sides cover {periodLabel}, filtered by Date Booked. Spend, Bookings and
+          Revenue from Ads all come off the named ad campaign&apos;s own rows. Cost %
+          is editable in place and charged on actual revenue; Total Cost adds ad
+          spend on top.
         </span>
       </p>
       <button
@@ -379,9 +461,13 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
                       title={[
                         `Ads: ${r.ads_campaign_names.join(", ") || "—"}`,
                         `Rate plans: ${r.rate_plan_names.join(", ") || "—"}`,
+                        r.ads_source === "booking_matches"
+                          ? "Ad columns came from the booking matcher — the ad rows carried no conversion field."
+                          : "Ad columns came from this campaign's own ad rows.",
                       ].join("\n")}
                     >
                       {r.matched_ads} ad{r.matched_ads === 1 ? "" : "s"} matched
+                      {r.ads_source === "booking_matches" ? " · via matcher" : ""}
                       {r.is_active ? "" : " · inactive"}
                     </p>
                   </td>
@@ -391,8 +477,12 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
                   <td className="px-3 py-3 text-right"><RoasBadge value={r.roas_ads} /></td>
                   <td className="px-3 py-3 text-right border-l font-medium">{fmtNum(r.actual_bookings)}</td>
                   <td className="px-3 py-3 text-right font-medium">{fmtNum(r.actual_revenue)}</td>
-                  <td className="px-3 py-3 text-right text-gray-500">
-                    {r.cost_pct ? `${r.cost_pct}%` : "—"}
+                  <td className="px-1 py-2">
+                    <CostPctCell
+                      value={r.cost_pct}
+                      saving={savingPct === r.id}
+                      onSave={(pct) => saveCostPct(r, pct)}
+                    />
                   </td>
                   <td className="px-3 py-3 text-right">{fmtNum(r.campaign_cost)}</td>
                   <td className="px-3 py-3 text-right">{fmtNum(r.total_cost)}</td>

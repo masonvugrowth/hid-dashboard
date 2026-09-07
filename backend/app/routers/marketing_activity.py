@@ -1393,21 +1393,29 @@ def debug_seasonal_spend(
     from datetime import datetime as _dt
 
     from app.services.seasonal_campaigns import (
-        _ad_scope, _ads_bookings, _spend_vnd, fetch_ad_metrics,
+        _ad_scope, _ads_bookings, _ads_from_metrics, _spend_vnd, fetch_ad_metrics,
     )
 
     df = _dt.fromisoformat(date_from).date()
     dt = _dt.fromisoformat(date_to).date()
 
     scope = _ad_scope(db, [ads_campaign_name], branch_id)
-    metrics = fetch_ad_metrics(df, dt)
-    ads_bookings, ads_revenue_vnd = _ads_bookings(db, scope, df, dt, branch_id)
+    keys_seen: set = set()
+    metrics = fetch_ad_metrics(df, dt, keys_seen)
+    matcher_bookings, matcher_revenue_vnd = _ads_bookings(
+        db, scope, df, dt, branch_id,
+    )
 
     matched = {
         ad_id: metrics.get(ad_id)
         for ad_id in sorted(scope["ad_ids"])
         if metrics and ad_id in metrics
     }
+    if metrics is None:
+        from_metrics = (0, 0.0, False)
+    else:
+        from_metrics = _ads_from_metrics(scope, metrics, _get_rate_to_vnd)
+
     return _envelope({
         "pattern": ads_campaign_name,
         "resolved": {
@@ -1416,14 +1424,26 @@ def debug_seasonal_spend(
             "sample_ad_ids": sorted(scope["ad_ids"])[:10],
         },
         "metrics_available": metrics is not None,
+        # What the export actually sends — the endpoint publishes no response
+        # schema, so this is the only way to see which spellings arrived.
+        "upstream_fields": sorted(keys_seen),
         "ads_with_metrics_rows": len(matched),
         "sample_metric_rows": dict(list(matched.items())[:10]),
         "spend_vnd": (
             _spend_vnd(scope, metrics, _get_rate_to_vnd)
             if metrics is not None else None
         ),
-        "ads_bookings": ads_bookings,
-        "ads_revenue_vnd": ads_revenue_vnd,
+        # The two candidate sources side by side, and which one the tab took.
+        "from_ad_metrics": {
+            "bookings": from_metrics[0],
+            "revenue_vnd": from_metrics[1],
+            "usable": from_metrics[2],
+        },
+        "from_booking_matcher": {
+            "bookings": matcher_bookings,
+            "revenue_vnd": matcher_revenue_vnd,
+        },
+        "tab_uses": "ads_metrics" if from_metrics[2] else "booking_matches",
     })
 
 
