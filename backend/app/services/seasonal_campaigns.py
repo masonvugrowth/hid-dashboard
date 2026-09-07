@@ -61,6 +61,10 @@ log = logging.getLogger(__name__)
 
 _PLATFORMS = ("meta", "google", "tiktok")
 
+# "not supplied", so a caller CAN pass metrics=None to mean "upstream is down"
+# without build_rows helpfully going and fetching them itself.
+_UNSET = object()
+
 
 def list_campaigns(db: Session) -> list[SeasonalCampaign]:
     """Every campaign definition, newest name-ordered.
@@ -399,6 +403,7 @@ def build_rows(
     rev_col,
     rate_for,
     to_view_currency,
+    metrics=_UNSET,
 ) -> list[dict]:
     """One performance row per campaign, in the caller's display currency.
 
@@ -406,18 +411,23 @@ def build_rows(
     for All Branches, the branch's own currency otherwise); ``rate_for``
     gives native->VND for a currency code. Both are injected so this module
     stays free of the router's currency plumbing.
+
+    Pass ``metrics`` to reuse an already-fetched ad-metrics dict (None for
+    "upstream was down"). The branch comparison calls this once per branch
+    and must not hit the Ads Platform five times for one page.
     """
     if not campaigns:
         return []
 
-    # Skip the upstream call entirely when nobody named an ad campaign: a
-    # rate-plan-only campaign has a real spend of zero, and calling out just to
-    # fail would put an "Ads Platform unavailable" warning on a tab where ad
-    # spend was never part of the answer.
-    if any(c.ads_campaign_names for c in campaigns):
-        metrics = fetch_ad_metrics(d_from, d_to)
-    else:
-        metrics = {}
+    if metrics is _UNSET:
+        # Skip the upstream call entirely when nobody named an ad campaign: a
+        # rate-plan-only campaign has a real spend of zero, and calling out
+        # just to fail would put an "Ads Platform unavailable" warning on a
+        # tab where ad spend was never part of the answer.
+        metrics = (
+            fetch_ad_metrics(d_from, d_to)
+            if any(c.ads_campaign_names for c in campaigns) else {}
+        )
     ads_available = metrics is not None
 
     rows = []

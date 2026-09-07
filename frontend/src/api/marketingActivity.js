@@ -27,6 +27,11 @@ export const getSeasonalCampaignPerformance = (params = {}) =>
   axios.get(`${BASE}/seasonal-campaigns/performance`, { params })
     .then(r => r.data.data);
 
+// Campaign x branch matrix, always VND so the five branches are comparable.
+export const getSeasonalBranchComparison = (params = {}) =>
+  axios.get(`${BASE}/seasonal-campaigns/branch-comparison`, { params })
+    .then(r => r.data.data);
+
 export const createSeasonalCampaign = (body) =>
   axios.post(`${BASE}/seasonal-campaigns`, body).then(r => r.data.data);
 

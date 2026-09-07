@@ -10,15 +10,18 @@
  * Set-up is two lists of names the team types once (ad campaign, rate plan)
  * plus the campaign's cost %, which is charged against ACTUAL revenue.
  */
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
+import { useBranch } from "../context/BranchContext";
 import {
   getSeasonalCampaigns,
   getSeasonalCampaignPerformance,
+  getSeasonalBranchComparison,
   createSeasonalCampaign,
   updateSeasonalCampaign,
   deleteSeasonalCampaign,
 } from "../api/marketingActivity";
+import ComparisonMatrix from "./ComparisonMatrix";
 
 function fmtNum(val) {
   if (val == null) return "—";
@@ -295,11 +298,160 @@ function SetupDialog({ campaign, onClose, onSaved }) {
   );
 }
 
+/* ── Compare Branches — campaign × branch ────────────────────────────────── */
+// Every figure is VND regardless of the branch's own currency: five branches
+// on TWD/JPY/VND only become comparable once they're on one scale. That is
+// also why this view ignores the page's branch selector — it IS the answer to
+// "which branch did this land in".
+const COMPARE_METRICS = [
+  { key: "actual_revenue", label: "Revenue actual" },
+  { key: "actual_bookings", label: "Bookings actual" },
+  { key: "spend", label: "Spend" },
+  { key: "ads_revenue", label: "Revenue from Ads" },
+  { key: "ads_bookings", label: "Bookings from Ads" },
+  { key: "total_cost", label: "Total cost" },
+  { key: "roas_actual", label: "ROAS actual", ratio: true },
+];
+
+/* Search matches the campaign name AND the ad-campaign / rate-plan names
+ * behind it: six months from now the team will remember "the one on EARLY26"
+ * long after they've forgotten what they called it. Filtering client-side is
+ * deliberate — the definitions are already loaded, and a request per keystroke
+ * would make a small list feel slower than a big one. */
+function matchesSearch(row, needle) {
+  if (!needle) return true;
+  const q = needle.toLowerCase();
+  return [
+    row.name,
+    ...(row.ads_campaign_names || []),
+    ...(row.rate_plan_names || []),
+    row.notes || "",
+  ].some((s) => (s || "").toLowerCase().includes(q));
+}
+
+function SearchBox({ value, onChange, count, total }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="relative">
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Search campaigns…"
+          className="border border-gray-200 rounded-lg pl-3 pr-7 py-1.5 text-sm w-56"
+        />
+        {value && (
+          <button
+            onClick={() => onChange("")}
+            title="Clear"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-sm leading-none"
+          >
+            ×
+          </button>
+        )}
+      </div>
+      {value && (
+        <span className="text-xs text-gray-400 whitespace-nowrap">
+          {count} of {total}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function SeasonalBranchComparison({ month, ytd, periodLabel, search, searchBox }) {
+  const { branches: allowedBranches } = useBranch();
+  const [metric, setMetric] = useState("actual_revenue");
+
+  const params = ytd ? { date_from: ytd.date_from, date_to: ytd.date_to } : { month };
+  const { data, isPending, isPlaceholderData } = useQuery({
+    queryKey: ["seasonal-branch-comparison", month, ytd?.date_from, ytd?.date_to],
+    queryFn: () => getSeasonalBranchComparison(params),
+    placeholderData: keepPreviousData,
+  });
+
+  // Only branches this user may see, in the backend's display order.
+  const branches = useMemo(() => {
+    if (!data?.branches) return [];
+    const allowed = new Set(allowedBranches.map((b) => b.id));
+    return data.branches.filter((b) => allowed.size === 0 || allowed.has(b.branch_id));
+  }, [data, allowedBranches]);
+
+  const allRows = data?.rows || [];
+  const rows = allRows.filter((r) => matchesSearch(r, search));
+
+  if (isPending && !data) {
+    return <div className="text-center text-gray-400 py-12 text-sm animate-pulse">Loading…</div>;
+  }
+  if (!data || branches.length === 0 || allRows.length === 0) {
+    return (
+      <p className="text-gray-400 text-sm text-center py-8">
+        No seasonal campaign data to compare for {periodLabel}.
+      </p>
+    );
+  }
+
+  const active = COMPARE_METRICS.find((m) => m.key === metric);
+  const isRatio = Boolean(active?.ratio);
+
+  return (
+    <div className={"space-y-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <p className="text-sm text-gray-500 max-w-2xl">
+          Each seasonal campaign split across branches, in VND for cross-branch parity
+          — so a Taipei row and a Saigon row can be read against each other. Filtered by
+          Date Booked over {periodLabel}.
+        </p>
+        <div className="flex items-center gap-2 flex-wrap">
+          {searchBox(rows.length, allRows.length)}
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit flex-wrap">
+            {COMPARE_METRICS.map((m) => (
+              <button key={m.key} onClick={() => setMetric(m.key)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                  metric === m.key ? "bg-white text-gray-800 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                }`}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <p className="text-gray-400 text-sm text-center py-8">
+          No campaign matches &ldquo;{search}&rdquo;.
+        </p>
+      ) : (
+      <ComparisonMatrix
+        title={`By Campaign × Branch — ${active.label}${isRatio ? "" : " (VND)"}`}
+        subtitle={periodLabel}
+        branches={branches}
+        rows={rows}
+        rowLabel="Campaign"
+        metric={metric}
+        rowTitle={(r) => r.name}
+        rowHint={(r) => `Cost %: ${r.cost_pct || 0}%`}
+        formatValue={isRatio ? fmtRoas : fmtNum}
+        // A ROAS column has no meaningful column sum — the Total row would be
+        // adding ratios together, which means nothing.
+        totalMode={isRatio ? "none" : "sum"}
+      />
+      )}
+    </div>
+  );
+}
+
+function fmtRoas(val) {
+  if (val == null) return "—";
+  return `${val.toFixed(2)}x`;
+}
+
 export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodLabel }) {
   const queryClient = useQueryClient();
   const [dialog, setDialog] = useState(null); // null | {campaign?: row}
   const [error, setError] = useState(null);
   const [savingPct, setSavingPct] = useState(null);
+  const [view, setView] = useState("campaign"); // "campaign" | "compare"
+  const [search, setSearch] = useState("");
 
   const params = {};
   if (branchId) params.branch_id = branchId;
@@ -357,11 +509,52 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
     }
   };
 
-  const rows = data?.rows || [];
+  const allRows = data?.rows || [];
+  const rows = allRows.filter((r) => matchesSearch(r, search));
   const anySpendMissing = rows.some((r) => r.spend == null);
+  // Warn only about campaigns currently on screen — a search that hides the
+  // half-configured one should hide its warning too.
   const unconfigured = (definitions || []).filter(
-    (d) => !d.ads_campaign_names?.length && !d.rate_plan_names?.length
+    (d) =>
+      !d.ads_campaign_names?.length &&
+      !d.rate_plan_names?.length &&
+      matchesSearch(d, search)
   );
+
+  const searchBox = (count, total) => (
+    <SearchBox value={search} onChange={setSearch} count={count} total={total} />
+  );
+
+  const subToggle = (
+    <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
+      {[
+        { key: "campaign", label: "By Campaign" },
+        { key: "compare", label: "Compare Branches" },
+      ].map((v) => (
+        <button key={v.key} onClick={() => setView(v.key)}
+          className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+            view === v.key ? "bg-white text-gray-800 shadow-sm" : "text-gray-500 hover:text-gray-700"
+          }`}>
+          {v.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (view === "compare") {
+    return (
+      <div className="space-y-4">
+        {subToggle}
+        <SeasonalBranchComparison
+          month={month}
+          ytd={ytd}
+          periodLabel={periodLabel}
+          search={search}
+          searchBox={searchBox}
+        />
+      </div>
+    );
+  }
 
   const header = (
     <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -379,18 +572,22 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
           spend on top.
         </span>
       </p>
-      <button
-        onClick={() => setDialog({})}
-        className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 whitespace-nowrap"
-      >
-        + Add campaign
-      </button>
+      <div className="flex items-center gap-2 flex-wrap">
+        {searchBox(rows.length, allRows.length)}
+        <button
+          onClick={() => setDialog({})}
+          className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 whitespace-nowrap"
+        >
+          + Add campaign
+        </button>
+      </div>
     </div>
   );
 
   if (isPending && !data) {
     return (
       <div className="space-y-4">
+        {subToggle}
         {header}
         <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading…</div>
       </div>
@@ -399,6 +596,7 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
 
   return (
     <div className="space-y-4">
+      {subToggle}
       {header}
 
       {error && (
@@ -424,8 +622,14 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
 
       {rows.length === 0 ? (
         <p className="text-gray-400 text-sm text-center py-12">
-          No seasonal campaigns yet. Add one with the ad campaign name and the rate
-          plan name it sells on.
+          {search ? (
+            <>No campaign matches &ldquo;{search}&rdquo;.</>
+          ) : (
+            <>
+              No seasonal campaigns yet. Add one with the ad campaign name and the
+              rate plan name it sells on.
+            </>
+          )}
         </p>
       ) : (
         <div

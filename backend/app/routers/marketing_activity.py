@@ -42,6 +42,7 @@ from app.services.rate_plan_campaigns import campaign_map, label_rows
 from app.services.seasonal_campaigns import (
     build_rows as build_seasonal_rows,
     clean_patterns as clean_campaign_patterns,
+    fetch_ad_metrics as fetch_seasonal_ad_metrics,
     list_campaigns as list_seasonal_campaigns,
     serialize as serialize_seasonal,
 )
@@ -775,6 +776,98 @@ def get_seasonal_campaign_performance(
     return _envelope({
         "rows": rows,
         "currency": currency,
+        "period": label,
+        "date_from": d_from.isoformat(),
+        "date_to": d_to.isoformat(),
+    })
+
+
+@router.get("/seasonal-campaigns/branch-comparison")
+def get_seasonal_branch_comparison(
+    month: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Campaign x branch matrix — which branch a seasonal push actually landed in.
+
+    Everything is VND regardless of the branch's own currency, the same choice
+    /crm-branch-comparison makes: five branches on TWD/JPY/VND are only
+    comparable once they are on one scale.
+
+    Ad metrics are fetched ONCE here and handed to every per-branch pass. The
+    obvious loop would call the Ads Platform five times for one page load.
+    """
+    d_from, d_to, label = _resolve_range(month, date_from, date_to)
+    campaigns = list_seasonal_campaigns(db)
+
+    branches = sorted(
+        db.query(Branch).filter(Branch.is_active.is_(True)).all(),
+        key=lambda b: _branch_display_sort_key(b.name),
+    )
+    branch_list = [{"branch_id": str(b.id), "name": b.name} for b in branches]
+
+    if not campaigns:
+        return _envelope({
+            "branches": branch_list, "rows": [], "currency": "VND",
+            "period": label,
+        })
+
+    metrics = (
+        fetch_seasonal_ad_metrics(d_from, d_to)
+        if any(c.ads_campaign_names for c in campaigns) else {}
+    )
+
+    # Additive across branches; ROAS is recomputed from the totals rather than
+    # averaged, because a mean of ratios is not the ratio of the sums.
+    _SUMMED = ("spend", "ads_bookings", "ads_revenue", "actual_bookings",
+               "actual_revenue", "campaign_cost", "total_cost")
+
+    by_campaign: dict = {}
+    for b in branches:
+        rows = build_seasonal_rows(
+            db, campaigns, d_from, d_to, b.id,
+            status_filter=_status_filter(),
+            source_filter=_revenue_source_filter(),
+            rev_col=Reservation.grand_total_vnd,
+            rate_for=_get_rate_to_vnd,
+            to_view_currency=lambda vnd: vnd,
+            metrics=metrics,
+        )
+        for r in rows:
+            entry = by_campaign.setdefault(r["id"], {
+                "id": r["id"],
+                "name": r["name"],
+                "cost_pct": r["cost_pct"],
+                # Carried so the tab's search box matches the same fields in
+                # both views — people look a campaign up by the rate plan or
+                # ad name behind it as often as by what they named it.
+                "ads_campaign_names": r["ads_campaign_names"],
+                "rate_plan_names": r["rate_plan_names"],
+                "notes": r["notes"],
+                "cells": {},
+                "total": {k: 0.0 for k in _SUMMED},
+            })
+            cell = {k: (r[k] or 0) for k in _SUMMED}
+            cell["roas_ads"] = r["roas_ads"]
+            cell["roas_actual"] = r["roas_actual"]
+            entry["cells"][str(b.id)] = cell
+            for k in _SUMMED:
+                entry["total"][k] += cell[k]
+
+    result = list(by_campaign.values())
+    for entry in result:
+        t = entry["total"]
+        t["roas_ads"] = (round(t["ads_revenue"] / t["spend"], 2)
+                         if t["spend"] > 0 else None)
+        t["roas_actual"] = (round(t["actual_revenue"] / t["total_cost"], 2)
+                            if t["total_cost"] > 0 else None)
+    result.sort(key=lambda e: -e["total"]["actual_revenue"])
+
+    return _envelope({
+        "branches": branch_list,
+        "rows": result,
+        "currency": "VND",
         "period": label,
         "date_from": d_from.isoformat(),
         "date_to": d_to.isoformat(),
