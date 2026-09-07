@@ -374,6 +374,32 @@ class TestRatePlanOnlyCampaign:
         assert row["roas_actual"] == 10.0
 
 
+class TestSuppliedMetrics:
+    """The branch comparison runs build_rows once per branch. If each pass
+    fetched its own metrics, one page load would hit the Ads Platform five
+    times, so the fetch is hoisted and the result handed in."""
+
+    def test_a_supplied_dict_is_used_without_calling_upstream(self, monkeypatch):
+        calls = []
+        _stub_sides(monkeypatch, spend_vnd=5_000, from_metrics=(1, 9_000, True))
+        monkeypatch.setattr(sc, "fetch_ad_metrics",
+                            lambda *a, **k: calls.append(1) or {})
+        row = _build(_Campaign(), metrics={})
+        assert calls == []
+        assert row["spend"] == 5_000
+
+    def test_supplying_none_means_upstream_was_down_not_go_fetch(self, monkeypatch):
+        """None is a real value here — 'the fetch already happened and
+        failed' — and must not be mistaken for 'no argument given'."""
+        calls = []
+        _stub_sides(monkeypatch, from_metrics=(1, 9_000, True))
+        monkeypatch.setattr(sc, "fetch_ad_metrics",
+                            lambda *a, **k: calls.append(1) or {})
+        row = _build(_Campaign(), metrics=None)
+        assert calls == []
+        assert row["spend"] is None and row["spend_available"] is False
+
+
 class TestCurrencyView:
     def test_money_passes_through_the_view_converter(self, monkeypatch):
         """Single-branch views read in the branch's own currency; the ads side
