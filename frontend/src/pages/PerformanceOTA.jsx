@@ -8,6 +8,12 @@
  * Check-in share on the booked basis mostly restated the check-in-date view, so
  * the booked cohort gets the metric that actually belongs to it: how much of
  * what we booked survived, cancellations and no-shows removed.
+ *
+ * The booked basis also carries a second table underneath: Channel Distribution,
+ * the split of a day's bookings across sources (columns sum to 100%). Every
+ * non-OTA source — website, walk-in, email, extension, FB, phone, PR and local
+ * travel agents — rolls into one Direct Booking row, so the question it answers
+ * is "of what we booked that day, how much did we book ourselves".
  */
 import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
@@ -43,6 +49,16 @@ function checkinBg(rate) {
   const r = Math.round(220 - t * 85);
   const g = Math.round(200 + t * 47);
   const b = Math.round(220 - t * 75);
+  return { backgroundColor: `rgb(${r},${g},${b})` };
+}
+
+// Distribution share: white → indigo, capped at 50% so the leaders stay separable
+function shareBg(rate) {
+  if (rate === null) return {};
+  const t = Math.min(Math.max(rate / 0.5, 0), 1);
+  const r = Math.round(255 - t * 56);
+  const g = Math.round(255 - t * 45);
+  const b = Math.round(255 - t * 1);
   return { backgroundColor: `rgb(${r},${g},${b})` };
 }
 
@@ -87,7 +103,9 @@ export default function PerformanceOTA() {
         <div>
           <h1 className="text-xl font-bold text-gray-800">OTA Channel Mix</h1>
           <p className="text-sm text-gray-500">
-            Cancellation &amp; {isBooked ? "valid booking" : "check-in"} rate by booking source
+            {isBooked
+              ? "Cancellation & valid booking rate by source, plus the daily channel split"
+              : "Cancellation & check-in rate by booking source"}
             <SyncBadge timestamp={data?.data_synced_at} />
           </p>
         </div>
@@ -151,6 +169,13 @@ export default function PerformanceOTA() {
       ) : (
         <div className={"transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           <RatesPivotTable periods={data.periods} channels={data.channels} isBooked={isBooked} />
+          {/* Booked basis only: the check-in basis already answers "who arrived",
+              and a distribution over check-in dates would restate it. */}
+          {isBooked && (
+            <div className="mt-5">
+              <ChannelDistribution periods={data.periods} channels={data.channels} />
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -444,5 +469,201 @@ function CheckinTotalRow({ periods, channels, grandTotal }) {
         ) : "—"}
       </td>
     </tr>
+  );
+}
+
+// ── Channel Distribution (booked basis only) ──────────────────────────────────
+// Where a period's bookings came from: each OTA on its own row, everything else
+// merged into Direct Booking. Unlike the rate sections above, this is a share of
+// one denominator — the period's bookings — so every column sums to 100%.
+//
+// Basis "all" counts every booking made that period, cancellations included: the
+// raw intake mix. Basis "valid" drops cancelled + no-show, which is the mix that
+// actually turns into stays — the two differ whenever channels cancel at
+// different rates, which on this page they always do.
+const DIRECT_LABEL = "Direct Booking";
+const DIRECT_SUBLABEL = "Web · Walk-in · Email · Extension · FB · Phone · PR · Local TA";
+
+function buildDistribution(channels, periods, basis) {
+  const n = periods.length;
+  const countOf = (ch, pi) =>
+    basis === "valid"
+      ? (ch.valid_cells?.[pi]?.valid ?? 0)
+      : (ch.cancel_cells?.[pi]?.total ?? 0);
+
+  // `category` is the reservation's derived source_category, so an OTA row is an
+  // OTA by ingestion, not by how its label happens to read.
+  const isOta = ch => (ch.category ?? (ch.is_direct ? "Direct" : "OTA")) === "OTA";
+
+  const rows = channels.filter(isOta).map(ch => ({
+    label:  ch.channel,
+    counts: Array.from({ length: n }, (_, pi) => countOf(ch, pi)),
+    direct: false,
+  }));
+
+  const nonOta = channels.filter(ch => !isOta(ch));
+  if (nonOta.length > 0) {
+    rows.push({
+      label:    DIRECT_LABEL,
+      sublabel: DIRECT_SUBLABEL,
+      counts:   Array.from({ length: n }, (_, pi) =>
+        nonOta.reduce((s, ch) => s + countOf(ch, pi), 0)),
+      direct:   true,
+    });
+  }
+
+  rows.forEach(r => { r.total = r.counts.reduce((s, c) => s + c, 0); });
+  // OTAs by volume, Direct Booking pinned last so the comparison stays anchored.
+  const otaRows = rows.filter(r => !r.direct).sort((a, b) => b.total - a.total);
+  const ordered = [...otaRows, ...rows.filter(r => r.direct)];
+
+  const periodTotals = Array.from({ length: n }, (_, pi) =>
+    ordered.reduce((s, r) => s + r.counts[pi], 0));
+  const grandTotal = periodTotals.reduce((s, t) => s + t, 0);
+
+  return { rows: ordered, periodTotals, grandTotal };
+}
+
+function ChannelDistribution({ periods, channels }) {
+  const [basis, setBasis] = useState("all");
+  const { rows, periodTotals, grandTotal } = buildDistribution(channels, periods, basis);
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {/* Card header + basis toggle */}
+      <div className="px-4 py-3 flex items-center justify-between flex-wrap gap-2 border-b border-gray-100">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-800">Channel Distribution</h2>
+          <p className="text-xs text-gray-500">
+            Share of bookings made each period, by source — every column sums to 100%
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {[
+            ["all",   "All bookings"],
+            ["valid", "Valid only"],
+          ].map(([k, label]) => (
+            <button key={k} onClick={() => setBasis(k)}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                basis === k
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "bg-white border border-gray-200 text-gray-600 hover:border-indigo-300"
+              }`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-gray-800 text-white text-xs">
+              <th className="px-4 py-2.5 text-left font-medium uppercase tracking-wide w-52 sticky left-0 bg-gray-800 z-10">
+                Channel
+              </th>
+              {periods.map(p => (
+                <th key={p} className="px-3 py-2.5 text-center font-medium whitespace-nowrap">{p}</th>
+              ))}
+              <th className="px-3 py-2.5 text-center font-medium">Total (share)</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            <SectionHeader
+              label={basis === "valid"
+                ? "Booking Share % (valid bookings only — cancelled & no-show removed)"
+                : "Booking Share % (all bookings made)"}
+              colSpan={periods.length + 2}
+              color="bg-indigo-700"
+            />
+
+            {rows.map((r, i) => {
+              const rowBase = r.direct
+                ? "bg-green-50 text-green-900"
+                : i % 2 === 1 ? "bg-gray-50 text-gray-800" : "bg-white text-gray-800";
+              const labelBg = r.direct ? "bg-green-50" : i % 2 === 1 ? "bg-gray-50" : "bg-white";
+              const totalBg = r.direct ? "bg-green-50 text-green-700" : "bg-gray-50 text-gray-600";
+              const share = grandTotal > 0 ? r.total / grandTotal : null;
+
+              return (
+                <tr key={r.label}
+                  className={`border-b border-gray-100 hover:brightness-95 transition-all ${rowBase}`}>
+                  <td className={`px-4 py-2 text-xs font-medium sticky left-0 z-10 whitespace-nowrap ${labelBg}`}>
+                    <div className="flex flex-col leading-tight">
+                      <span>{r.label}</span>
+                      {r.sublabel && (
+                        <span className="font-normal opacity-60 text-[10px]">{r.sublabel}</span>
+                      )}
+                    </div>
+                  </td>
+
+                  {r.counts.map((count, pi) => {
+                    // A period with no bookings at all has no mix to report — show
+                    // "—" rather than a 0% that reads like a channel went dead.
+                    const rate = periodTotals[pi] > 0 ? count / periodTotals[pi] : null;
+                    return (
+                      <td key={pi} style={shareBg(rate)}
+                        className="px-3 py-2 text-center text-xs tabular-nums text-gray-800">
+                        {rate !== null ? (
+                          <div className="flex flex-col leading-tight">
+                            <span>{pct(rate)}</span>
+                            <span className="font-normal opacity-70 text-[11px]">({count.toLocaleString()})</span>
+                          </div>
+                        ) : <span className="text-gray-300">—</span>}
+                      </td>
+                    );
+                  })}
+
+                  <td className={`px-3 py-2 text-center text-xs font-semibold tabular-nums ${totalBg}`}>
+                    <div className="flex flex-col leading-tight">
+                      <span>{r.total.toLocaleString()}</span>
+                      <span className="font-normal opacity-70 text-[11px]">
+                        {share !== null ? `(${pct(share)})` : "—"}
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+
+            <tr className="bg-gray-100 font-semibold text-gray-700 text-xs border-t border-gray-300">
+              <td className="px-4 py-2 sticky left-0 bg-gray-100 z-10 italic text-gray-500">
+                Total bookings
+              </td>
+              {periodTotals.map((t, i) => (
+                <td key={i} className="px-3 py-2 text-center tabular-nums text-gray-600">
+                  {t > 0 ? (
+                    <div className="flex flex-col leading-tight">
+                      <span>100.00%</span>
+                      <span className="font-normal opacity-70 text-[11px]">({t.toLocaleString()})</span>
+                    </div>
+                  ) : <span className="text-gray-300">—</span>}
+                </td>
+              ))}
+              <td className="px-3 py-2 text-center tabular-nums">
+                {grandTotal > 0 ? (
+                  <div className="flex flex-col leading-tight">
+                    <span>{grandTotal.toLocaleString()}</span>
+                    <span className="font-normal opacity-70 text-[11px]">(100.00%)</span>
+                  </div>
+                ) : "—"}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div className="px-4 py-2.5 border-t border-gray-100 text-xs text-gray-500">
+        <span className="font-medium text-gray-400 uppercase tracking-wide mr-2">Direct Booking:</span>
+        <span className="text-gray-400">
+          every non-OTA source rolled into one row — website &amp; booking engine, walk-in, email,
+          extension, Facebook, phone, PR, and local travel agents.
+          {basis === "valid"
+            ? " Counts exclude cancelled and no-show bookings."
+            : " Counts include bookings later cancelled — switch to Valid only for the mix that survived."}
+        </span>
+      </div>
+    </div>
   );
 }

@@ -150,3 +150,42 @@ def test_no_show_spellings_are_fully_covered():
 
     assert set(CANCELLED_STATUSES) | set(NO_SHOW_STATUSES) == EXCLUDED_STATUSES
     assert not set(CANCELLED_STATUSES) & set(NO_SHOW_STATUSES)
+
+
+# ── category, the split the Channel Distribution table rolls up on ─────────────
+
+_MIXED_WEEK = _CLOUDBEDS_WEEK + [
+    _row(_LAST_WEEK, "Website",       "Direct",              60, 18, 2, 20),
+    _row(_LAST_WEEK, "Walk-in",       "Direct",              40, 12, 0, 15),
+    _row(_LAST_WEEK, "Công ty ABC",   "Local travel agency",  8,  0, 0,  3),
+]
+
+
+def test_every_channel_carries_its_source_category():
+    """Channel Distribution merges every non-OTA source into one Direct Booking
+    row, and it splits on this field rather than on how a label reads — a source
+    named "Special Case" is an OTA row only because ingestion said so."""
+    cats = {c["channel"]: c["category"] for c in _trend(_MIXED_WEEK)["channels"]}
+
+    assert cats["Ctrip"] == "OTA"
+    assert cats["Booking.com"] == "OTA"
+    assert cats["Direct"] == "Direct"
+    assert cats["Local travel agency"] == "Local travel agency"
+
+
+def test_only_the_rolled_up_rows_are_non_ota():
+    """Rolling up on category must not swallow an OTA: the non-OTA side is
+    exactly the two aggregated rows, never a raw OTA source that happened to
+    sort next to them."""
+    channels = _trend(_MIXED_WEEK)["channels"]
+    non_ota = {c["channel"] for c in channels if c["category"] != "OTA"}
+
+    assert non_ota == {"Direct", "Local travel agency"}
+    # 100 direct + 8 local TA — what the merged Direct Booking row must total.
+    assert sum(c["total"] for c in channels if c["category"] != "OTA") == 108
+
+
+def test_category_is_present_on_the_check_in_basis_too():
+    """Both bases ship the full payload; only the frontend decides what to draw."""
+    channels = _trend(_MIXED_WEEK, date_type="check_in")["channels"]
+    assert all("category" in c for c in channels)

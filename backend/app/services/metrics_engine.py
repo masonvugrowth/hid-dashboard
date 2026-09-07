@@ -1431,6 +1431,10 @@ def get_rates_trend(
         result_channels.append({
             "channel":       channel,
             "is_direct":     channel == "Direct",
+            # Derived source_category, echoed so callers can roll the pivot up
+            # without re-deriving "is this row an OTA" from the label. Rolled-up
+            # rows are named after their category; every other row is an OTA.
+            "category":      channel if channel in _AGGREGATED_CATEGORIES else "OTA",
             "total":         channel_totals[channel],
             "cancel_cells":  cancel_cells,
             "checkin_cells": checkin_cells,
