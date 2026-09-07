@@ -20,13 +20,23 @@ Where each figure comes from, and why:
                     spend figure traceable to one campaign - see
                     AdsPlatformClient.get_ads_metrics for what that costs us
                     (Google campaign-grain spend can read low).
-  ads bookings/rev  ads_booking_matches, the de-duped booking-level table
-                    that carries external_campaign_id. Deliberately NOT the
-                    conversions on the metrics rows above, which under-count
-                    at ad grain by upstream design.
+  ads bookings/rev  the conversions and revenue on those same metrics rows.
+                    ads_booking_matches would be the better-attributed
+                    source - it ties each booking to a real reservation -
+                    but the upstream matcher goes quiet for whole months at
+                    a time (org-wide zero for Sept 2026, while /spend/daily
+                    reported 106 conversions), and a campaign tab that
+                    reads 0 whenever the matcher sleeps is worse than one
+                    reading the platform's own conversion count. It stays
+                    as the fallback for when metrics carries no conversion
+                    field at all, and each row says which source it used.
   actual bookings   reservations matched on rate plan, by Date Booked, with
     /revenue        the same status + non-paying-source exclusions the rest
                     of Marketing Activity uses.
+
+Taking spend AND ad-side revenue from one set of rows has a second benefit:
+the ROAS (Ads) numerator and denominator sit on the same ledger, so it can
+be argued with as a ratio even where ad-grain attribution under-counts both.
 
 Campaign cost is ``cost_pct`` percent of ACTUAL revenue (not ad-attributed
 revenue): the discount and amenity a campaign gives away are owed on every
@@ -144,8 +154,9 @@ def _ad_scope(db: Session, patterns: Iterable[str], branch_id) -> dict:
     return scope
 
 
-def fetch_ad_metrics(d_from: date, d_to: date) -> Optional[dict]:
-    """{ad_id: {spend, currency}} for the window, or None if Ads is down.
+def fetch_ad_metrics(d_from: date, d_to: date,
+                     keys_seen: Optional[set] = None) -> Optional[dict]:
+    """{ad_id: {spend, revenue, conversions, currency}}, or None if Ads is down.
 
     None rather than an empty dict on failure: a 0 spend would turn every
     ROAS on the tab into a confident-looking infinity, and the team would act
@@ -187,17 +198,37 @@ def fetch_ad_metrics(d_from: date, d_to: date) -> Optional[dict]:
                 continue
             any_platform_ok = True
             for r in rows or []:
+                if keys_seen is not None:
+                    keys_seen.update(r.keys())
                 ad_id = str(r.get("ad_id") or r.get("id") or "").strip()
                 if not ad_id:
                     continue
-                entry = rows_by_ad.setdefault(
-                    ad_id, {"spend": 0.0, "spend_vnd": None, "currency": None},
-                )
+                entry = rows_by_ad.setdefault(ad_id, {
+                    "spend": 0.0, "spend_vnd": None,
+                    "revenue": 0.0, "revenue_vnd": None,
+                    "conversions": 0.0, "has_conversions": False,
+                    "currency": None,
+                })
                 entry["spend"] += _num(r.get("spend"), r.get("cost"),
                                        r.get("spend_native"))
                 vnd = _num_or_none(r.get("spend_vnd"), r.get("cost_vnd"))
                 if vnd is not None:
                     entry["spend_vnd"] = (entry["spend_vnd"] or 0.0) + vnd
+
+                entry["revenue"] += _num(r.get("revenue"), r.get("revenue_native"))
+                rev_vnd = _num_or_none(r.get("revenue_vnd"))
+                if rev_vnd is not None:
+                    entry["revenue_vnd"] = (entry["revenue_vnd"] or 0.0) + rev_vnd
+
+                # has_conversions distinguishes "this ad genuinely sold
+                # nothing" from "this export doesn't carry a conversion
+                # field", which decide different fallbacks downstream.
+                conv = _num_or_none(r.get("conversions"), r.get("purchases"),
+                                    r.get("bookings"))
+                if conv is not None:
+                    entry["conversions"] += conv
+                    entry["has_conversions"] = True
+
                 cur = (r.get("currency") or "").upper() or None
                 if cur is None:
                     acc = str(r.get("account_id") or "")
@@ -231,29 +262,58 @@ def _num_or_none(*candidates) -> Optional[float]:
     return None
 
 
-def _spend_vnd(scope: dict, metrics: dict, rate_for) -> float:
-    """Sum this campaign's ad spend, in VND.
+def _money_vnd(scope: dict, metrics: dict, rate_for, field: str) -> float:
+    """Sum one money field across this campaign's ads, in VND.
 
-    Upstream reports spend in the AD ACCOUNT's currency (same convention
+    Upstream reports money in the AD ACCOUNT's currency (same convention
     ads_platform_sync._sync_spend_daily reads it under), so each row is
-    converted with its own account's rate rather than the branch's.
+    converted with its own account's rate rather than the branch's. A row
+    that already carries a ``<field>_vnd`` figure is taken as-is.
     """
     total = 0.0
     for ad_id in scope["ad_ids"]:
         row = metrics.get(ad_id)
         if not row:
             continue
-        if row.get("spend_vnd") is not None:
-            total += row["spend_vnd"]
+        if row.get(f"{field}_vnd") is not None:
+            total += row[f"{field}_vnd"]
             continue
         meta = scope["currency_by_ad"].get(ad_id) or {}
         currency = row.get("currency") or meta.get("branch_currency") or "VND"
         rate = rate_for(currency)
         if not rate:
-            log.warning("no FX rate for %s - ad %s spend dropped", currency, ad_id)
+            log.warning("no FX rate for %s - ad %s %s dropped",
+                        currency, ad_id, field)
             continue
-        total += row["spend"] * rate
+        total += (row.get(field) or 0.0) * rate
     return total
+
+
+def _spend_vnd(scope: dict, metrics: dict, rate_for) -> float:
+    """This campaign's ad spend, in VND."""
+    return _money_vnd(scope, metrics, rate_for, "spend")
+
+
+def _ads_from_metrics(scope: dict, metrics: dict, rate_for):
+    """(bookings, revenue_vnd, usable) straight off the campaign's ad rows.
+
+    ``usable`` is False when not one of the campaign's ads carried a
+    conversion field — that is a shape problem with the export, not a
+    campaign that sold nothing, and the caller falls back to the matcher
+    rather than printing a confident zero.
+    """
+    bookings = 0
+    usable = False
+    for ad_id in scope["ad_ids"]:
+        row = metrics.get(ad_id)
+        if not row:
+            continue
+        if row.get("has_conversions"):
+            usable = True
+            bookings += int(round(row.get("conversions") or 0))
+    if not usable:
+        return 0, 0.0, False
+    return bookings, _money_vnd(scope, metrics, rate_for, "revenue"), True
 
 
 def _ads_bookings(db: Session, scope: dict, d_from: date, d_to: date,
@@ -363,9 +423,20 @@ def build_rows(
     rows = []
     for c in campaigns:
         scope = _ad_scope(db, c.ads_campaign_names, branch_id)
-        ads_bookings, ads_revenue_vnd = _ads_bookings(
-            db, scope, d_from, d_to, branch_id,
+
+        # Bookings and revenue come off the campaign's own ad rows, the same
+        # ones spend is summed from. The matcher is the fallback, not the
+        # default: it reported org-wide zero for all of Sept 2026 while
+        # /spend/daily saw 106 conversions.
+        ads_bookings, ads_revenue_vnd, from_metrics = (
+            _ads_from_metrics(scope, metrics, rate_for) if ads_available
+            else (0, 0.0, False)
         )
+        if not from_metrics:
+            ads_bookings, ads_revenue_vnd = _ads_bookings(
+                db, scope, d_from, d_to, branch_id,
+            )
+
         spend = (
             to_view_currency(_spend_vnd(scope, metrics, rate_for))
             if ads_available else None
@@ -398,6 +469,7 @@ def build_rows(
             "matched_ads": len(scope["ad_ids"]),
             "matched_ad_campaigns": len(scope["campaign_ids"]),
             "spend_available": ads_available,
+            "ads_source": "ads_metrics" if from_metrics else "booking_matches",
         })
 
     rows.sort(key=lambda r: -(r["actual_revenue"] or 0))
