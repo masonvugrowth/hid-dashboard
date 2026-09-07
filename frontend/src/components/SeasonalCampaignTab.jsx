@@ -28,6 +28,132 @@ function fmtNum(val) {
   return new Intl.NumberFormat("en").format(Math.round(val));
 }
 
+/* ── Tooltips ─────────────────────────────────────────────────────────────
+ * Every column here is either read from a different system or derived from
+ * two others, and the table alone can't say which. So each header explains
+ * where its number comes from, and each derived cell shows the arithmetic on
+ * THIS row's figures — "366,943,000 x 11% = 40,363,730" settles an argument
+ * that a formula in the abstract does not.
+ *
+ * Positioned `fixed` off the trigger's own rect rather than absolutely: the
+ * table sits in an overflow-x-auto box, which clips an absolutely positioned
+ * child on both axes.
+ */
+function Tip({ text, children, className = "" }) {
+  const [pos, setPos] = useState(null);
+
+  const show = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setPos({
+      // Keep the bubble on screen at either edge of a wide table.
+      x: Math.min(Math.max(r.left + r.width / 2, 150), window.innerWidth - 150),
+      y: r.bottom + 6,
+    });
+  };
+
+  return (
+    <span
+      className={"relative " + className}
+      onMouseEnter={show}
+      onMouseLeave={() => setPos(null)}
+    >
+      {children}
+      {pos && (
+        <span
+          role="tooltip"
+          style={{ left: pos.x, top: pos.y, transform: "translateX(-50%)" }}
+          className="fixed z-50 w-72 rounded-lg bg-gray-900 px-3 py-2 text-xs font-normal leading-relaxed text-gray-100 shadow-lg pointer-events-none normal-case tracking-normal text-left"
+        >
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+// Header cell that carries an explanation. The dotted underline is the only
+// hint a reader gets that there is one, so it is always visible, not on hover.
+function Th({ tip, label, sub, className = "" }) {
+  return (
+    <th className={"px-3 py-3 font-semibold text-gray-600 align-bottom " + className}>
+      <Tip text={tip} className="inline-block cursor-help">
+        <span className="border-b border-dotted border-gray-400">{label}</span>
+        {sub && (
+          <>
+            <br />
+            <span className="font-normal text-gray-400">{sub}</span>
+          </>
+        )}
+      </Tip>
+    </th>
+  );
+}
+
+// The four derived cells, each shown as the sum it actually performed. A
+// formula in the abstract still leaves "but why is MY number that?" open.
+function workedOut(r) {
+  const n = fmtNum;
+  const pct = r.cost_pct || 0;
+  return {
+    roasAds:
+      r.spend == null
+        ? "No ROAS: ad spend could not be read from the Ads Platform for this period."
+        : r.spend <= 0
+        ? "No ROAS: this campaign's ads spent nothing in this period."
+        : `${n(r.ads_revenue)} revenue from ads ÷ ${n(r.spend)} spend = ${(r.roas_ads ?? 0).toFixed(2)}x`,
+    campaignCost: pct
+      ? `${n(r.actual_revenue)} actual revenue × ${pct}% = ${n(r.campaign_cost)}`
+      : "Cost % is 0, so the campaign is charged nothing beyond its ad spend.",
+    totalCost:
+      r.total_cost == null
+        ? "Unknown: ad spend could not be read, so the full cost cannot be added up."
+        : `${n(r.spend)} ad spend + ${n(r.campaign_cost)} campaign cost = ${n(r.total_cost)}`,
+    roasActual:
+      r.roas_actual == null
+        ? "No ROAS: total cost is unknown or zero, so there is nothing to divide by."
+        : `${n(r.actual_revenue)} actual revenue ÷ ${n(r.total_cost)} total cost = ${r.roas_actual.toFixed(2)}x`,
+  };
+}
+
+const TIPS = (cur) => ({
+  campaign:
+    "Set up by hand. The ad campaign name(s) you enter drive the four Ads columns; " +
+    "the Rate Plan Name(s) drive the four actual columns. Both match as " +
+    "case-insensitive substrings, so a partial tag catches every decorated variant.",
+  spend:
+    `What the named ad campaigns spent over this period, summed from their ads on ` +
+    `the Ads Platform and converted to ${cur} at each ad account's own currency. ` +
+    `Meta is complete; a Google campaign with no ad-level rows can read low.`,
+  adsBookings:
+    "Purchases the ad platform itself counted for those campaigns. It only sees what " +
+    "it can tie back to a click, so it misses the guest who saw the ad and booked " +
+    "days later by phone or OTA.",
+  adsRevenue:
+    "Revenue the ad platform attributed to those same ads — the money behind the " +
+    "Bookings from Ads count, not all revenue the campaign caused.",
+  roasAds:
+    "Revenue from Ads ÷ Spend. Both come off the same ad rows, so it stays a fair " +
+    "ratio even where ad attribution under-counts — but it is the ad platform's " +
+    "view of itself, not the whole campaign.",
+  actualBookings:
+    "Every reservation that came in on this campaign's Rate Plan Name(s), counted by " +
+    "Date Booked (not stay date). Excludes cancelled bookings and non-paying sources " +
+    "(Blogger / House Use / Special Case / Work Exchange).",
+  actualRevenue:
+    "What those same reservations actually billed. Normally larger than Revenue from " +
+    "Ads, because it includes every booking on the rate plan however the guest found it.",
+  costPct:
+    "Typed by hand — the campaign's own cost (room discount, amenity, gift) as a share " +
+    "of the revenue it brought in. Click the cell to change it; nothing recomputes it.",
+  campaignCost: "Revenue actual × Cost %.",
+  totalCost:
+    "Spend + Campaign cost — everything the campaign cost you, ad money and giveaway " +
+    "together.",
+  roasActual:
+    "Revenue actual ÷ Total cost. The number to plan on: every booking the rate plan " +
+    "brought in, against everything the campaign cost.",
+});
+
 function RoasBadge({ value }) {
   if (value == null) return <span className="text-gray-400">—</span>;
   const cls =
@@ -85,20 +211,33 @@ function CostPctCell({ value, onSave, saving }) {
     );
   }
 
+  // Reads as a field, not as text: a permanent bordered box plus a pencil, so
+  // nobody has to hover the cell to discover it is the one number here they
+  // are allowed to change.
   return (
     <button
       onClick={start}
       title="Click to edit — charged on actual revenue"
-      className="w-full text-right text-sm rounded px-2 py-1 transition-colors hover:bg-yellow-100"
+      className="ml-auto flex items-center gap-1.5 rounded-md border border-dashed border-gray-300 bg-white px-2 py-1 text-sm tabular-nums transition-colors hover:border-indigo-400 hover:bg-indigo-50"
     >
       {saving ? (
         <span className="text-gray-400">Saving…</span>
-      ) : value ? (
-        `${value}%`
       ) : (
-        <span className="text-gray-300">0%</span>
+        <>
+          <span className={value ? "text-gray-800" : "text-gray-400"}>{value || 0}%</span>
+          <PencilIcon />
+        </>
       )}
     </button>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
+         className="h-3 w-3 shrink-0 text-gray-400">
+      <path d="M13.586 3.586a2 2 0 1 1 2.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793 3 14.172V17h2.828l8.379-8.379-2.828-2.828z" />
+    </svg>
   );
 }
 
@@ -304,13 +443,20 @@ function SetupDialog({ campaign, onClose, onSaved }) {
 // also why this view ignores the page's branch selector — it IS the answer to
 // "which branch did this land in".
 const COMPARE_METRICS = [
-  { key: "actual_revenue", label: "Revenue actual" },
-  { key: "actual_bookings", label: "Bookings actual" },
-  { key: "spend", label: "Spend" },
-  { key: "ads_revenue", label: "Revenue from Ads" },
-  { key: "ads_bookings", label: "Bookings from Ads" },
-  { key: "total_cost", label: "Total cost" },
-  { key: "roas_actual", label: "ROAS actual", ratio: true },
+  { key: "actual_revenue", label: "Revenue actual",
+    tip: "Billed by every reservation on the campaign's rate plan, by Date Booked." },
+  { key: "actual_bookings", label: "Bookings actual",
+    tip: "Reservations that came in on the campaign's rate plan, by Date Booked." },
+  { key: "spend", label: "Spend",
+    tip: "What the campaign's ads spent, from the Ads Platform." },
+  { key: "ads_revenue", label: "Revenue from Ads",
+    tip: "Revenue the ad platform attributed to those ads — only what it could tie to a click." },
+  { key: "ads_bookings", label: "Bookings from Ads",
+    tip: "Purchases the ad platform counted for those ads." },
+  { key: "total_cost", label: "Total cost",
+    tip: "Ad spend + the campaign's own cost (actual revenue × cost %)." },
+  { key: "roas_actual", label: "ROAS actual", ratio: true,
+    tip: "Revenue actual ÷ total cost, per branch. No column total — adding ratios means nothing." },
 ];
 
 /* Search matches the campaign name AND the ad-campaign / rate-plan names
@@ -399,13 +545,14 @@ function SeasonalBranchComparison({ month, ytd, periodLabel, search, searchBox }
         <p className="text-sm text-gray-500 max-w-2xl">
           Each seasonal campaign split across branches, in VND for cross-branch parity
           — so a Taipei row and a Saigon row can be read against each other. Filtered by
-          Date Booked over {periodLabel}.
+          Date Booked over {periodLabel}. Shading is per row: the darkest cell is the
+          branch that led that campaign. Hover a metric button for what it counts.
         </p>
         <div className="flex items-center gap-2 flex-wrap">
           {searchBox(rows.length, allRows.length)}
           <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit flex-wrap">
             {COMPARE_METRICS.map((m) => (
-              <button key={m.key} onClick={() => setMetric(m.key)}
+              <button key={m.key} onClick={() => setMetric(m.key)} title={m.tip}
                 className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
                   metric === m.key ? "bg-white text-gray-800 shadow-sm" : "text-gray-500 hover:text-gray-700"
                 }`}>
@@ -525,6 +672,8 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
     <SearchBox value={search} onChange={setSearch} count={count} total={total} />
   );
 
+  const tips = TIPS(cur);
+
   const subToggle = (
     <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
       {[
@@ -566,10 +715,9 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
         larger, and truer, number.
         <br />
         <span className="text-gray-400">
-          Both sides cover {periodLabel}, filtered by Date Booked. Spend, Bookings and
-          Revenue from Ads all come off the named ad campaign&apos;s own rows. Cost %
-          is editable in place and charged on actual revenue; Total Cost adds ad
-          spend on top.
+          Both sides cover {periodLabel}, filtered by Date Booked. Hover any column
+          heading for where its number comes from, or a calculated cell for the sum
+          on this row. Cost % is the only figure you type.
         </span>
       </p>
       <div className="flex items-center gap-2 flex-wrap">
@@ -641,17 +789,17 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
               <tr>
-                <th className="text-left px-4 py-3 font-semibold text-gray-600">Campaign</th>
-                <th className="text-right px-3 py-3 font-semibold text-gray-600">Spend ({cur})</th>
-                <th className="text-right px-3 py-3 font-semibold text-gray-600">Bookings<br /><span className="font-normal text-gray-400">from Ads</span></th>
-                <th className="text-right px-3 py-3 font-semibold text-gray-600">Revenue<br /><span className="font-normal text-gray-400">from Ads</span></th>
-                <th className="text-right px-3 py-3 font-semibold text-gray-600">ROAS<br /><span className="font-normal text-gray-400">Ads</span></th>
-                <th className="text-right px-3 py-3 font-semibold text-gray-600 border-l">Bookings<br /><span className="font-normal text-gray-400">actual</span></th>
-                <th className="text-right px-3 py-3 font-semibold text-gray-600">Revenue<br /><span className="font-normal text-gray-400">actual</span></th>
-                <th className="text-right px-3 py-3 font-semibold text-gray-600">Cost %</th>
-                <th className="text-right px-3 py-3 font-semibold text-gray-600">Campaign<br /><span className="font-normal text-gray-400">cost</span></th>
-                <th className="text-right px-3 py-3 font-semibold text-gray-600">Total<br /><span className="font-normal text-gray-400">cost</span></th>
-                <th className="text-right px-3 py-3 font-semibold text-gray-600">ROAS<br /><span className="font-normal text-gray-400">actual</span></th>
+                <Th className="text-left" tip={tips.campaign} label="Campaign" />
+                <Th className="text-right" tip={tips.spend} label={`Spend (${cur})`} />
+                <Th className="text-right" tip={tips.adsBookings} label="Bookings" sub="from Ads" />
+                <Th className="text-right" tip={tips.adsRevenue} label="Revenue" sub="from Ads" />
+                <Th className="text-right" tip={tips.roasAds} label="ROAS" sub="Ads" />
+                <Th className="text-right border-l" tip={tips.actualBookings} label="Bookings" sub="actual" />
+                <Th className="text-right" tip={tips.actualRevenue} label="Revenue" sub="actual" />
+                <Th className="text-right" tip={tips.costPct} label="Cost %" sub="editable" />
+                <Th className="text-right" tip={tips.campaignCost} label="Campaign" sub="cost" />
+                <Th className="text-right" tip={tips.totalCost} label="Total" sub="cost" />
+                <Th className="text-right" tip={tips.roasActual} label="ROAS" sub="actual" />
                 <th className="px-3 py-3"></th>
               </tr>
             </thead>
@@ -678,7 +826,11 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
                   <td className="px-3 py-3 text-right">{fmtNum(r.spend)}</td>
                   <td className="px-3 py-3 text-right">{fmtNum(r.ads_bookings)}</td>
                   <td className="px-3 py-3 text-right">{fmtNum(r.ads_revenue)}</td>
-                  <td className="px-3 py-3 text-right"><RoasBadge value={r.roas_ads} /></td>
+                  <td className="px-3 py-3 text-right">
+                    <Tip text={workedOut(r).roasAds} className="cursor-help">
+                      <RoasBadge value={r.roas_ads} />
+                    </Tip>
+                  </td>
                   <td className="px-3 py-3 text-right border-l font-medium">{fmtNum(r.actual_bookings)}</td>
                   <td className="px-3 py-3 text-right font-medium">{fmtNum(r.actual_revenue)}</td>
                   <td className="px-1 py-2">
@@ -688,9 +840,21 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
                       onSave={(pct) => saveCostPct(r, pct)}
                     />
                   </td>
-                  <td className="px-3 py-3 text-right">{fmtNum(r.campaign_cost)}</td>
-                  <td className="px-3 py-3 text-right">{fmtNum(r.total_cost)}</td>
-                  <td className="px-3 py-3 text-right"><RoasBadge value={r.roas_actual} /></td>
+                  <td className="px-3 py-3 text-right">
+                    <Tip text={workedOut(r).campaignCost} className="cursor-help border-b border-dotted border-gray-300">
+                      {fmtNum(r.campaign_cost)}
+                    </Tip>
+                  </td>
+                  <td className="px-3 py-3 text-right">
+                    <Tip text={workedOut(r).totalCost} className="cursor-help border-b border-dotted border-gray-300">
+                      {fmtNum(r.total_cost)}
+                    </Tip>
+                  </td>
+                  <td className="px-3 py-3 text-right">
+                    <Tip text={workedOut(r).roasActual} className="cursor-help">
+                      <RoasBadge value={r.roas_actual} />
+                    </Tip>
+                  </td>
                   <td className="px-3 py-3 text-right whitespace-nowrap">
                     <button
                       onClick={() =>
