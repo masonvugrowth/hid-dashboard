@@ -12,6 +12,7 @@ import {
   saveRatePlanCampaign,
 } from "../api/marketingActivity";
 import { getEmailSummary, getEmailByCampaign } from "../api/emailMarketing";
+import SeasonalCampaignTab from "../components/SeasonalCampaignTab";
 
 // Map HiD branch name to GHL location name (5 branches × different naming)
 function branchToGHL(branchName) {
@@ -138,6 +139,7 @@ export default function MarketingActivity() {
   const TABS = [
     { key: "overview", label: "Overview" },
     { key: "crm-rate-plans", label: "CRM Reservations" },
+    { key: "seasonal", label: "Seasonal Campaign" },
     { key: "email-stat", label: "Email Stat" },
   ];
 
@@ -145,6 +147,12 @@ export default function MarketingActivity() {
   const prevLabel = viewMode === "ytd"
     ? ytdPrevLabel(ytdYear)
     : (prevMonth ? new Date(prevMonth + "-01").toLocaleDateString("en", { month: "short", year: "numeric" }) : "");
+
+  // The window the numbers cover, spelled out for tabs that describe their
+  // own period rather than comparing against a previous one.
+  const periodLabel = viewMode === "ytd"
+    ? `${ytdYear} YTD`
+    : new Date(month + "-01").toLocaleDateString("en", { month: "long", year: "numeric" });
 
   const minYear = 2024;
   const maxYear = today.getFullYear();
@@ -196,6 +204,16 @@ export default function MarketingActivity() {
           month={viewMode === "ytd" ? null : month}
           ytdBounds={viewMode === "ytd" ? ytdBounds(ytdYear) : null}
           onViewRevenue={() => setTab("crm-rate-plans")}
+        />
+      ) : tab === "seasonal" ? (
+        // Also self-fetching: its numbers come from the ads + rate plan join,
+        // not from the summary payload the other two tabs share.
+        <SeasonalCampaignTab
+          branchId={isAll ? null : selected}
+          month={viewMode === "ytd" ? null : month}
+          ytd={viewMode === "ytd" ? ytdBounds(ytdYear) : null}
+          cur={cur}
+          periodLabel={periodLabel}
         />
       ) : isPending && !data ? (
         <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>

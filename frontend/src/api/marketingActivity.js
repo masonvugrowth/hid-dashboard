@@ -16,3 +16,22 @@ export const getRatePlanCampaigns = () =>
 export const saveRatePlanCampaign = (rate_plan_name, campaign_name) =>
   axios.put(`${BASE}/rate-plan-campaigns`, { rate_plan_name, campaign_name })
     .then(r => r.data.data);
+
+// Seasonal campaigns — the definitions the set-up dialog edits (ad campaign
+// names + rate plan names + cost %), separate from the computed performance
+// table so editing one campaign doesn't refetch every campaign's numbers.
+export const getSeasonalCampaigns = () =>
+  axios.get(`${BASE}/seasonal-campaigns`).then(r => r.data.data);
+
+export const getSeasonalCampaignPerformance = (params = {}) =>
+  axios.get(`${BASE}/seasonal-campaigns/performance`, { params })
+    .then(r => r.data.data);
+
+export const createSeasonalCampaign = (body) =>
+  axios.post(`${BASE}/seasonal-campaigns`, body).then(r => r.data.data);
+
+export const updateSeasonalCampaign = (id, body) =>
+  axios.patch(`${BASE}/seasonal-campaigns/${id}`, body).then(r => r.data.data);
+
+export const deleteSeasonalCampaign = (id) =>
+  axios.delete(`${BASE}/seasonal-campaigns/${id}`).then(r => r.data.data);

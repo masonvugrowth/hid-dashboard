@@ -35,6 +35,9 @@ from app.models.rate_plan_quota import RatePlanQuota, RatePlanQuotaStatus
 # Hand-typed rate plan → campaign labels (Marketing Activity → CRM tab)
 from app.models.rate_plan_campaign import RatePlanCampaign
 
+# Seasonal campaigns (Marketing Activity → Seasonal Campaign tab)
+from app.models.seasonal_campaign import SeasonalCampaign
+
 # Weekly Report JSON cache (refreshed Mon 03:00 ICT)
 from app.models.weekly_report_cache import WeeklyReportCache
 from app.models.weekly_report_comment import WeeklyReportComment
@@ -62,6 +65,7 @@ __all__ = [
     "AlertRule", "AlertHistory", "AlertNotificationLog",
     "RatePlanQuota", "RatePlanQuotaStatus",
     "RatePlanCampaign",
+    "SeasonalCampaign",
     "WeeklyReportCache",
     "WeeklyReportComment", "WeeklyReportArchive",
     "BiweeklyReportCache", "BiweeklyFlagOverride", "BiweeklyReportShare",

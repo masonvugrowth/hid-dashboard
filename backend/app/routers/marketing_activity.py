@@ -33,11 +33,18 @@ from app.models.branch import Branch
 from app.models.marketing_activity_cache import MarketingActivityCache
 from app.models.rate_plan_campaign import RatePlanCampaign
 from app.models.reservation import Reservation
+from app.models.seasonal_campaign import SeasonalCampaign
 from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
 from app.services.ads_platform import branch_slug_for, get_client as _get_ads_client
 from app.services.crm_filters import crm_rate_plan_label_expr, crm_reservation_filter
 from app.services.kol_engine import fetch_kol_revenue, resolve_hotel_id_from_branch_name
 from app.services.rate_plan_campaigns import campaign_map, label_rows
+from app.services.seasonal_campaigns import (
+    build_rows as build_seasonal_rows,
+    clean_patterns as clean_campaign_patterns,
+    list_campaigns as list_seasonal_campaigns,
+    serialize as serialize_seasonal,
+)
 from app.config import settings
 
 router = APIRouter()
@@ -682,6 +689,188 @@ def upsert_rate_plan_campaign(payload: RatePlanCampaignIn, db: Session = Depends
     return _envelope({"rate_plan_name": rate_plan_name, "campaign_name": campaign_name})
 
 
+# ── Seasonal campaigns ───────────────────────────────────────────────────────
+#
+# A seasonal push is bought through ads and sold through a rate plan, so the
+# team types both keys once here and the performance endpoint joins them. See
+# app/services/seasonal_campaigns.py for where every column comes from.
+
+
+class SeasonalCampaignIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    ads_campaign_names: list[str] = Field(default_factory=list)
+    rate_plan_names: list[str] = Field(default_factory=list)
+    cost_pct: float = Field(0, ge=0, le=100)
+    notes: Optional[str] = Field(None, max_length=500)
+    is_active: bool = True
+
+
+class SeasonalCampaignUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    ads_campaign_names: Optional[list[str]] = None
+    rate_plan_names: Optional[list[str]] = None
+    cost_pct: Optional[float] = Field(None, ge=0, le=100)
+    notes: Optional[str] = Field(None, max_length=500)
+    is_active: Optional[bool] = None
+
+
+def _resolve_range(month: Optional[str], date_from: Optional[str],
+                   date_to: Optional[str]) -> tuple[date, date, str]:
+    """(from, to, label) for the page's Monthly / YTD picker."""
+    if date_from and date_to:
+        from datetime import datetime as _dt
+        d_from = _dt.fromisoformat(date_from).date()
+        d_to = _dt.fromisoformat(date_to).date()
+        return d_from, d_to, date_from[:4]
+    today = date.today()
+    current_month = month or f"{today.year}-{today.month:02d}"
+    d_from, d_to = _month_range(current_month)
+    return d_from, d_to, current_month
+
+
+@router.get("/seasonal-campaigns/performance")
+def get_seasonal_campaign_performance(
+    branch_id: Optional[UUID] = Query(None),
+    month: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Ads spend vs. real rate-plan bookings, one row per seasonal campaign.
+
+    Declared above the ``/{campaign_id}`` routes so "performance" is never
+    parsed as a campaign id.
+    """
+    d_from, d_to, label = _resolve_range(month, date_from, date_to)
+    use_native = branch_id is not None
+
+    currency = "VND"
+    if use_native:
+        b = db.query(Branch).filter(Branch.id == branch_id).first()
+        if b and b.currency:
+            currency = b.currency.upper()
+
+    rate = _get_rate_to_vnd(currency) if currency != "VND" else 1.0
+    if use_native and currency != "VND":
+        def to_view_currency(vnd):
+            return _vnd_to_native(vnd, currency, rate)
+    else:
+        def to_view_currency(vnd):
+            return vnd
+
+    rev_col = (Reservation.grand_total_native if use_native
+               else Reservation.grand_total_vnd)
+
+    rows = build_seasonal_rows(
+        db,
+        list_seasonal_campaigns(db),
+        d_from, d_to, branch_id,
+        status_filter=_status_filter(),
+        source_filter=_revenue_source_filter(),
+        rev_col=rev_col,
+        rate_for=_get_rate_to_vnd,
+        to_view_currency=to_view_currency,
+    )
+
+    return _envelope({
+        "rows": rows,
+        "currency": currency,
+        "period": label,
+        "date_from": d_from.isoformat(),
+        "date_to": d_to.isoformat(),
+    })
+
+
+@router.get("/seasonal-campaigns")
+def get_seasonal_campaigns(db: Session = Depends(get_db)):
+    """The campaign definitions themselves — what the set-up dialog edits."""
+    return _envelope([serialize_seasonal(c) for c in list_seasonal_campaigns(db)])
+
+
+@router.post("/seasonal-campaigns")
+def create_seasonal_campaign(payload: SeasonalCampaignIn,
+                             db: Session = Depends(get_db)):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    existing = (
+        db.query(SeasonalCampaign)
+        .filter(func.lower(SeasonalCampaign.name) == name.lower())
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=409,
+                            detail=f'A campaign named "{name}" already exists')
+
+    row = SeasonalCampaign(
+        name=name,
+        ads_campaign_names=clean_campaign_patterns(payload.ads_campaign_names),
+        rate_plan_names=clean_campaign_patterns(payload.rate_plan_names),
+        cost_pct=payload.cost_pct,
+        notes=(payload.notes or "").strip() or None,
+        is_active=payload.is_active,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _envelope(serialize_seasonal(row))
+
+
+@router.patch("/seasonal-campaigns/{campaign_id}")
+def update_seasonal_campaign(campaign_id: UUID, payload: SeasonalCampaignUpdate,
+                             db: Session = Depends(get_db)):
+    row = (
+        db.query(SeasonalCampaign)
+        .filter(SeasonalCampaign.id == campaign_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name cannot be blank")
+        clash = (
+            db.query(SeasonalCampaign)
+            .filter(func.lower(SeasonalCampaign.name) == name.lower(),
+                    SeasonalCampaign.id != campaign_id)
+            .first()
+        )
+        if clash:
+            raise HTTPException(
+                status_code=409, detail=f'A campaign named "{name}" already exists')
+        row.name = name
+    if payload.ads_campaign_names is not None:
+        row.ads_campaign_names = clean_campaign_patterns(payload.ads_campaign_names)
+    if payload.rate_plan_names is not None:
+        row.rate_plan_names = clean_campaign_patterns(payload.rate_plan_names)
+    if payload.cost_pct is not None:
+        row.cost_pct = payload.cost_pct
+    if payload.notes is not None:
+        row.notes = payload.notes.strip() or None
+    if payload.is_active is not None:
+        row.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(row)
+    return _envelope(serialize_seasonal(row))
+
+
+@router.delete("/seasonal-campaigns/{campaign_id}")
+def delete_seasonal_campaign(campaign_id: UUID, db: Session = Depends(get_db)):
+    row = (
+        db.query(SeasonalCampaign)
+        .filter(SeasonalCampaign.id == campaign_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    db.delete(row)
+    db.commit()
+    return _envelope({"id": str(campaign_id), "deleted": True})
+
+
 # ── Activity cache helpers ────────────────────────────────────────────────────
 
 def _cache_read(
@@ -1182,6 +1371,59 @@ def debug_paid_ads_sources(
         "params": {"date_from": date_from, "date_to": date_to, "branch": branch},
         "local_db": local_summary,
         "ads_platform_api": api_results,
+    })
+
+
+@router.get("/debug/seasonal-spend")
+def debug_seasonal_spend(
+    ads_campaign_name: str = Query(..., description="One name pattern to resolve"),
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    branch_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Show the working behind one campaign's Spend column.
+
+    ``/export/ads/metrics`` has no response schema published, so the reader in
+    services/seasonal_campaigns.py accepts several plausible spellings of the
+    spend field. Hit this to see which one upstream actually sends, which ads
+    the name pattern resolved to, and what they summed to — before anyone
+    argues with the number on the tab.
+    """
+    from datetime import datetime as _dt
+
+    from app.services.seasonal_campaigns import (
+        _ad_scope, _ads_bookings, _spend_vnd, fetch_ad_metrics,
+    )
+
+    df = _dt.fromisoformat(date_from).date()
+    dt = _dt.fromisoformat(date_to).date()
+
+    scope = _ad_scope(db, [ads_campaign_name], branch_id)
+    metrics = fetch_ad_metrics(df, dt)
+    ads_bookings, ads_revenue_vnd = _ads_bookings(db, scope, df, dt, branch_id)
+
+    matched = {
+        ad_id: metrics.get(ad_id)
+        for ad_id in sorted(scope["ad_ids"])
+        if metrics and ad_id in metrics
+    }
+    return _envelope({
+        "pattern": ads_campaign_name,
+        "resolved": {
+            "ads": len(scope["ad_ids"]),
+            "ad_campaigns": sorted(scope["campaign_ids"]),
+            "sample_ad_ids": sorted(scope["ad_ids"])[:10],
+        },
+        "metrics_available": metrics is not None,
+        "ads_with_metrics_rows": len(matched),
+        "sample_metric_rows": dict(list(matched.items())[:10]),
+        "spend_vnd": (
+            _spend_vnd(scope, metrics, _get_rate_to_vnd)
+            if metrics is not None else None
+        ),
+        "ads_bookings": ads_bookings,
+        "ads_revenue_vnd": ads_revenue_vnd,
     })
 
 

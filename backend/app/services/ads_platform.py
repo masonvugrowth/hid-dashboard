@@ -232,6 +232,45 @@ class AdsPlatformClient:
             },
         ) or []
 
+    def get_ads_metrics(
+        self,
+        date_from: str,
+        date_to: str,
+        *,
+        platform: Optional[str] = None,
+    ) -> list[dict]:
+        """Per-ad_id metrics for a window: ``{ad_id, spend, impressions,
+        clicks, conversions, revenue, …}``, AD-LEVEL ROWS ONLY.
+
+        The only export that carries a spend figure you can trace back to a
+        single campaign — ``/spend/daily`` stops at date x platform x account,
+        and there is no campaign-grain metrics endpoint. Seasonal Campaign
+        spend is built by summing these for the ads belonging to the campaigns
+        the team named.
+
+        Two consequences of "ad-level only" worth knowing before you reuse it:
+
+        - Meta spend is complete here (campaign spend IS the sum of its ads),
+          but Google Search / PMax report at campaign grain and can leave no
+          ad-level row at all, so their spend can read low or zero.
+        - Ad-level CONVERSIONS and REVENUE under-count on purpose upstream
+          (see /export/kpi/paid-ads-monthly, which uses campaign-level rows
+          for exactly this reason). Take bookings and revenue from
+          ``ads_booking_matches`` instead; take only spend from here.
+
+        No pagination — the endpoint returns the whole window in one response.
+        """
+        data = self._get(
+            "/api/export/ads/metrics",
+            params={
+                "date_from": date_from, "date_to": date_to,
+                "platform": platform,
+            },
+        )
+        if isinstance(data, dict):
+            return data.get("items") or data.get("rows") or []
+        return data or []
+
     def get_booking_matches(
         self,
         date_from: Optional[str] = None,
